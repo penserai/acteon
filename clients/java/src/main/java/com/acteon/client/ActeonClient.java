@@ -497,6 +497,28 @@ public class ActeonClient implements AutoCloseable {
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
         catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
     }
+    /** List sanitized outbound delivery evidence under reconciliation authority. */
+    public Governance.FederationDeliveryEvidencePage federationDeliveryEvidence(String namespace,
+        String tenant, String after, Integer limit) throws ActeonException {
+        Map<String, List<String>> query = new HashMap<>();
+        query.put("namespace", List.of(namespace));
+        query.put("tenant", List.of(tenant));
+        if (after != null) query.put("after", List.of(after));
+        if (limit != null) query.put("limit", List.of(limit.toString()));
+        var node = platformRequest(PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
+            null, query, null);
+        try {
+            var page = objectMapper.treeToValue(node, Governance.FederationDeliveryEvidencePage.class);
+            if (page.deliveries() == null || page.deliveries().stream().anyMatch(delivery ->
+                delivery.deliveryId() == null || delivery.deliveryId().isEmpty()
+                    || delivery.parentExecutionId() == null || delivery.parentExecutionId().isEmpty())) {
+                throw new ConnectionException("Federation delivery evidence identity mismatch", null);
+            }
+            return page;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation delivery evidence", e);
+        }
+    }
     /** Authenticate as a configured peer and retain imported authority without executing it. */
     public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
         Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {

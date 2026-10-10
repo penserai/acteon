@@ -208,6 +208,52 @@ class FederationExportReceipt:
 
 
 @dataclass
+class FederationDeliveryEvidence:
+    delivery_id: str
+    parent_execution_id: str
+    source: PrincipalIdentity
+    agent_id: str
+    message_id: str
+    trust_id: str
+    trust_revision: int
+    key_id: str
+    issuer_epoch: int
+    created_at_ms: int
+    expires_at_ms: int
+    expired: bool
+    exact_replay_idempotent: bool
+    status: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryEvidence":
+        if (
+            not isinstance(data.get("delivery_id"), str)
+            or not data["delivery_id"]
+            or not isinstance(data.get("parent_execution_id"), str)
+            or not data["parent_execution_id"]
+            or not isinstance(data.get("status"), dict)
+        ):
+            raise ValueError("invalid federation delivery evidence")
+        return cls(**{**data, "source": PrincipalIdentity(**data["source"])})
+
+
+@dataclass
+class FederationDeliveryEvidencePage:
+    deliveries: list[FederationDeliveryEvidence]
+    next_cursor: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryEvidencePage":
+        deliveries = data.get("deliveries")
+        if not isinstance(deliveries, list):
+            raise ValueError("invalid federation delivery evidence page")
+        return cls(
+            [FederationDeliveryEvidence.from_dict(item) for item in deliveries],
+            data.get("next_cursor"),
+        )
+
+
+@dataclass
 class FederationTrustView:
     trust: FederationTrustDeclaration
     revoked: bool
@@ -778,6 +824,25 @@ class _GovernanceMixin:
             )
         )
 
+    def federation_delivery_evidence(
+        self,
+        namespace: str,
+        tenant: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> FederationDeliveryEvidencePage:
+        query: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        if after is not None:
+            query["after"] = after
+        if limit is not None:
+            query["limit"] = limit
+        return FederationDeliveryEvidencePage.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
+                query=query,
+            )
+        )
+
     def import_federation_envelope(
         self,
         namespace: str,
@@ -1014,6 +1079,25 @@ class _AsyncGovernanceMixin:
         return GovernanceChangeReceipt.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    async def federation_delivery_evidence(
+        self,
+        namespace: str,
+        tenant: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> FederationDeliveryEvidencePage:
+        query: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        if after is not None:
+            query["after"] = after
+        if limit is not None:
+            query["limit"] = limit
+        return FederationDeliveryEvidencePage.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
+                query=query,
             )
         )
 

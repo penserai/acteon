@@ -67,6 +67,8 @@ from .errors import (
     RetryableError,
 )
 from .governance import (
+    FederationDeliveryEvidence,
+    FederationDeliveryEvidencePage,
     FederationGrantCeilingDeclaration,
     FederationExportReceipt,
     FederationImportReceipt,
@@ -437,6 +439,8 @@ __all__ = [
 from .platform_catalog import PlatformOperation as PlatformOperation
 
 __all__ += [
+    "FederationDeliveryEvidence",
+    "FederationDeliveryEvidencePage",
     "FederationGrantCeilingDeclaration",
     "FederationExportReceipt",
     "FederationImportReceipt",

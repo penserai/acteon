@@ -14,7 +14,9 @@ pub use agent_services::{
 pub use federation::{FederationAgentInvocation, FederationImportAdmission};
 pub use federation_export::{AgentFederationExportRequest, FederationExportRuntimeError};
 mod management;
-pub use management::{ManagementError, TrustedReconciliationInstallation};
+pub use management::{
+    FederationDeliveryEvidencePage, ManagementError, TrustedReconciliationInstallation,
+};
 mod peer_transport;
 pub use peer_transport::{
     AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest, AgentPeerCancelInvocation,

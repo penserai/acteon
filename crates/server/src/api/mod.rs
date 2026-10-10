@@ -201,6 +201,10 @@ pub fn router(state: AppState) -> Router {
             get(governance::provider_history),
         )
         .route(
+            "/v1/governance/federation/deliveries",
+            get(governance::federation_delivery_evidence),
+        )
+        .route(
             "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
             get(governance::reconciliation_correlation),
         )

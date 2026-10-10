@@ -51,12 +51,85 @@ pub struct FederationExportReceipt {
     pub delivery: FederationExportDelivery,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FederationDeliveryEvidenceStatus {
+    Registered,
+    Importing { claim_expires_at_ms: i64 },
+    ImportUncertain,
+    Imported,
+    Invoking { claim_expires_at_ms: i64 },
+    InvokeUncertain,
+    Accepted,
+    Rejected { stage: String, code: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryEvidence {
+    pub delivery_id: String,
+    pub parent_execution_id: String,
+    pub source: acteon_core::PrincipalIdentity,
+    pub agent_id: String,
+    pub message_id: String,
+    pub trust_id: String,
+    pub trust_revision: u64,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub expired: bool,
+    pub exact_replay_idempotent: bool,
+    pub status: FederationDeliveryEvidenceStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryEvidencePage {
+    pub deliveries: Vec<FederationDeliveryEvidence>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Serialize)]
 struct FederationExportMessage<'a> {
     message: &'a TaskMessage,
 }
 
 impl ActeonClient {
+    /// List sanitized outbound delivery evidence under reconciliation authority.
+    pub async fn federation_delivery_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<FederationDeliveryEvidencePage, Error> {
+        let limit = limit.map(|value| value.to_string());
+        let mut query = vec![("namespace", namespace), ("tenant", tenant)];
+        if let Some(after) = after {
+            query.push(("after", after));
+        }
+        if let Some(limit) = limit.as_deref() {
+            query.push(("limit", limit));
+        }
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceFederationDeliveryEvidence,
+                &[],
+                &query,
+                None,
+            )
+            .await?;
+        let page: FederationDeliveryEvidencePage = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if page.deliveries.iter().any(|delivery| {
+            delivery.delivery_id.is_empty() || delivery.parent_execution_id.is_empty()
+        }) {
+            return Err(Error::Deserialization(
+                "federation delivery evidence identity mismatch".into(),
+            ));
+        }
+        Ok(page)
+    }
+
     /// Inspect the current projection/version under independently granted agent bounds.
     pub async fn registry_projection(
         &self,
@@ -633,6 +706,15 @@ mod federation_wire_tests {
         assert_eq!(
             serde_json::to_value(export_receipt).unwrap(),
             wire["export_receipt"]
+        );
+        let evidence: FederationDeliveryEvidencePage =
+            serde_json::from_value(wire["delivery_evidence_page"].clone()).unwrap();
+        assert_eq!(evidence.deliveries[0].message_id, "export-message-1");
+        assert_eq!(
+            PlatformOperation::GovernanceFederationDeliveryEvidence
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries"
         );
         for (operation, suffix) in [
             (PlatformOperation::FederationExportMessage, "send"),

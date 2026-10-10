@@ -1333,6 +1333,13 @@
       "response": "json"
     },
     {
+      "name": "governance_federation_delivery_evidence",
+      "method": "GET",
+      "path": "/v1/governance/federation/deliveries",
+      "parameters": [],
+      "response": "json"
+    },
+    {
       "name": "governance_inspect",
       "method": "GET",
       "path": "/v1/governance",

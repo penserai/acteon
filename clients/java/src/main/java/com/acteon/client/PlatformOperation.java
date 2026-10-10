@@ -130,6 +130,7 @@ public enum PlatformOperation {
     FEDERATION_OBSERVE_EXPORT_MESSAGE("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe", false, new String[]{"namespace", "tenant", "agent", "task_id", "profile"}),
     FEDERATION_REPLAY_EXPORT_MESSAGE("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay", false, new String[]{"namespace", "tenant", "agent", "task_id", "profile"}),
     GOVERNANCE_ACCEPT_RECONCILIATION("POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", false, new String[]{"execution_id", "ordinal"}),
+    GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE("GET", "/v1/governance/federation/deliveries", false, new String[]{}),
     GOVERNANCE_INSPECT("GET", "/v1/governance", false, new String[]{}),
     GOVERNANCE_INTERVENE("POST", "/v1/governance/changes", false, new String[]{}),
     GOVERNANCE_MUTATE_REGISTRY("POST", "/v1/governance/registry", false, new String[]{}),

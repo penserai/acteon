@@ -9,10 +9,10 @@ use acteon_core::{
     ResourceKind, ResourceRef, Task, TaskMessage, TaskRole,
 };
 use acteon_executor::federation_transport::{
-    DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationDeliveryIntent,
-    FederationDeliveryStatus, FederationImportDisposition, FederationImportRequest,
-    FederationInvokeDisposition, FederationInvokeRequest, FederationTransportAdapter,
-    FederationTransportDependencies, FederationTransportError,
+    DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationDeliveryEvidenceStatus,
+    FederationDeliveryIntent, FederationDeliveryStatus, FederationImportDisposition,
+    FederationImportRequest, FederationInvokeDisposition, FederationInvokeRequest,
+    FederationTransportAdapter, FederationTransportDependencies, FederationTransportError,
 };
 use acteon_governance::{
     RootBudgetLimits,
@@ -332,6 +332,61 @@ async fn registration_can_be_separated_from_authorized_delivery() {
     ));
     assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn reconciliation_evidence_is_sanitized_bounded_and_expiry_aware() {
+    let fixture = Fixture::new(true);
+    let registered = fixture.transport.register(fixture.intent()).await.unwrap();
+    let evidence = fixture
+        .transport
+        .list_evidence("local", "tenant", None, 1)
+        .await
+        .unwrap();
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].delivery_id, registered.delivery_id);
+    assert_eq!(
+        evidence[0].parent_execution_id,
+        fixture.parent.execution_id()
+    );
+    assert_eq!(evidence[0].source.id(), "source-agent");
+    assert_eq!(evidence[0].message_id, "message-1");
+    assert_eq!(evidence[0].trust_id, "remote-trust-1");
+    assert_eq!(evidence[0].key_id, "local-ed25519-1");
+    assert_eq!(evidence[0].issuer_epoch, 1);
+    assert!(!evidence[0].expired);
+    assert!(matches!(
+        evidence[0].status,
+        FederationDeliveryEvidenceStatus::Registered
+    ));
+    assert!(
+        fixture
+            .transport
+            .list_evidence("local", "tenant", Some(registered.delivery_id), 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    fixture
+        .clock
+        .advance_to(Duration::from_millis(4_000))
+        .unwrap();
+    assert!(
+        fixture
+            .transport
+            .list_evidence("local", "tenant", None, 1)
+            .await
+            .unwrap()[0]
+            .expired
+    );
+    assert!(matches!(
+        fixture
+            .transport
+            .list_evidence("local", "tenant", None, 0)
+            .await,
+        Err(FederationTransportError::Invalid)
+    ));
 }
 
 #[tokio::test]

@@ -108,6 +108,45 @@ pub struct FederationDeliveryReceipt {
     pub status: FederationDeliveryStatus,
 }
 
+/// Sanitized durable evidence for operator reconciliation. Signed payloads,
+/// message bodies, credentials and endpoint URLs remain inside the journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationDeliveryEvidence {
+    pub delivery_id: Uuid,
+    pub parent_execution_id: Uuid,
+    pub source: acteon_core::PrincipalIdentity,
+    pub agent_id: String,
+    pub message_id: String,
+    pub trust_id: String,
+    pub trust_revision: u64,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub expired: bool,
+    pub exact_replay_idempotent: bool,
+    pub status: FederationDeliveryEvidenceStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FederationDeliveryEvidenceStatus {
+    Registered,
+    Importing {
+        claim_expires_at_ms: i64,
+    },
+    ImportUncertain,
+    Imported,
+    Invoking {
+        claim_expires_at_ms: i64,
+    },
+    InvokeUncertain,
+    Accepted,
+    Rejected {
+        stage: FederationDeliveryStage,
+        code: String,
+    },
+}
+
 /// Exact trusted-host delivery input. The parent is correlation and local
 /// lineage, not a bearer token. Callers must re-establish current source
 /// authority before every `submit` or `replay_idempotent` call.
@@ -143,6 +182,69 @@ pub enum FederationTransportError {
     Refused,
     #[error("outbound federation delivery storage or adapter unavailable")]
     Unavailable,
+}
+
+/// Adapter-independent reader for retained outbound evidence. Old and
+/// orphaned epochs remain visible after configuration changes, but the reader
+/// has no credential or operation that can replay them.
+pub struct FederationDeliveryEvidenceReader {
+    state: Arc<dyn StateStore>,
+    clock: Arc<dyn Clock>,
+    encryptor: Option<Arc<PayloadEncryptor>>,
+}
+
+impl FederationDeliveryEvidenceReader {
+    #[must_use]
+    pub fn new(
+        state: Arc<dyn StateStore>,
+        clock: Arc<dyn Clock>,
+        encryptor: Option<Arc<PayloadEncryptor>>,
+    ) -> Self {
+        Self {
+            state,
+            clock,
+            encryptor,
+        }
+    }
+
+    pub async fn list_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<FederationDeliveryEvidence>, FederationTransportError> {
+        if namespace.is_empty() || tenant.is_empty() || !(1..=500).contains(&limit) {
+            return Err(FederationTransportError::Invalid);
+        }
+        let mut records = self
+            .state
+            .scan_keys(
+                namespace,
+                tenant,
+                KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+                None,
+            )
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?;
+        records.sort_by(|left, right| left.0.cmp(&right.0));
+        let now_ms = self.clock.now().timestamp_millis();
+        if now_ms < 0 {
+            return Err(FederationTransportError::Invalid);
+        }
+        let mut evidence = Vec::new();
+        for (_, raw) in records {
+            let record = decode_evidence_record(self.encryptor.as_ref(), &raw)?;
+            if after.is_some_and(|cursor| record.delivery_id <= cursor) {
+                continue;
+            }
+            evidence.push(project_evidence(&record, now_ms)?);
+            if evidence.len() == limit {
+                break;
+            }
+        }
+        Ok(evidence)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +312,46 @@ impl DurableFederationTransport {
             adapter,
             timeout,
         })
+    }
+
+    /// List this adapter binding's retained delivery evidence in stable ID
+    /// order. The scan is scope-local and the result is strictly bounded.
+    pub async fn list_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<FederationDeliveryEvidence>, FederationTransportError> {
+        if namespace.is_empty() || tenant.is_empty() || !(1..=500).contains(&limit) {
+            return Err(FederationTransportError::Invalid);
+        }
+        let mut records = self
+            .dependencies
+            .state
+            .scan_keys(
+                namespace,
+                tenant,
+                KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+                None,
+            )
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?;
+        records.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut evidence = Vec::new();
+        for (_, raw) in records {
+            let Some(record) = self.decode_matching(&raw)? else {
+                continue;
+            };
+            if after.is_some_and(|cursor| record.delivery_id <= cursor) {
+                continue;
+            }
+            evidence.push(self.evidence(&record)?);
+            if evidence.len() == limit {
+                break;
+            }
+        }
+        Ok(evidence)
     }
 
     /// Persist exact signed bytes before importing or invoking. Repeated calls
@@ -670,59 +812,14 @@ impl DurableFederationTransport {
     }
 
     fn valid_record(&self, record: &DeliveryRecord) -> bool {
-        if record.schema != DELIVERY_SCHEMA
-            || record.adapter_revision != self.adapter.revision()
+        if record.adapter_revision != self.adapter.revision()
             || record.binding_digest != self.adapter.binding_digest()
             || record.exact_replay_idempotent != self.adapter.exact_replay_idempotent()
-            || !valid_text(&record.adapter_revision, 120)
-            || !valid_digest(&record.binding_digest)
-            || !valid_endpoint(&record.endpoint)
-            || !valid_text(&record.agent_id, 120)
-            || record.created_at_ms < 0
-            || record.message.task_id.is_some()
-            || record.message.validate().is_err()
-            || record.envelope.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
-            || record.invocation.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
-            || !valid_signature(&record.envelope.signature)
-            || !valid_signature(&record.invocation.signature)
-            || delivery_id(&record.parent, &record.invocation).ok() != Some(record.delivery_id)
+            || !valid_evidence_record(record)
         {
             return false;
         }
-        let Ok(envelope) = record.envelope.envelope() else {
-            return false;
-        };
-        let Ok(invocation) = record.invocation.invocation() else {
-            return false;
-        };
-        if invocation.import.id != envelope.id
-            || record.envelope.digest().ok().as_deref()
-                != Some(invocation.import.envelope_digest.as_str())
-            || envelope.agent_resource.id() != record.agent_id
-            || record.parent.principal() != &envelope.source
-            || same_message(&invocation.message, &record.message).ok() != Some(true)
-        {
-            return false;
-        }
-        match &record.state {
-            DeliveryState::Registered | DeliveryState::ImportUncertain => true,
-            DeliveryState::Importing {
-                claim_expires_at_ms,
-                ..
-            } => *claim_expires_at_ms >= record.created_at_ms,
-            DeliveryState::Imported { receipt } | DeliveryState::InvokeUncertain { receipt } => {
-                receipt_matches(record, receipt)
-            }
-            DeliveryState::Invoking {
-                receipt,
-                claim_expires_at_ms,
-                ..
-            } => receipt_matches(record, receipt) && *claim_expires_at_ms >= record.created_at_ms,
-            DeliveryState::Accepted { receipt, task } => {
-                receipt_matches(record, receipt) && task_matches(record, task)
-            }
-            DeliveryState::Rejected { code, .. } => valid_code(code),
-        }
+        true
     }
 
     fn receipt(record: &DeliveryRecord) -> FederationDeliveryReceipt {
@@ -821,6 +918,44 @@ impl DurableFederationTransport {
         Ok(record)
     }
 
+    fn decode_matching(
+        &self,
+        raw: &str,
+    ) -> Result<Option<DeliveryRecord>, FederationTransportError> {
+        if raw.len() > MAX_RECORD_BYTES * 2 {
+            return Err(FederationTransportError::Conflict);
+        }
+        let plain = self.dependencies.encryptor.as_ref().map_or_else(
+            || Ok(raw.to_owned()),
+            |encryptor| {
+                encryptor
+                    .decrypt_str(raw)
+                    .map_err(|_| FederationTransportError::Unavailable)
+            },
+        )?;
+        if plain.len() > MAX_RECORD_BYTES {
+            return Err(FederationTransportError::Conflict);
+        }
+        let record: DeliveryRecord =
+            serde_json::from_str(&plain).map_err(|_| FederationTransportError::Conflict)?;
+        if record.adapter_revision != self.adapter.revision()
+            || record.binding_digest != self.adapter.binding_digest()
+        {
+            return Ok(None);
+        }
+        if !self.valid_record(&record) {
+            return Err(FederationTransportError::Conflict);
+        }
+        Ok(Some(record))
+    }
+
+    fn evidence(
+        &self,
+        record: &DeliveryRecord,
+    ) -> Result<FederationDeliveryEvidence, FederationTransportError> {
+        project_evidence(record, self.now_ms()?)
+    }
+
     async fn load_versioned(
         &self,
         key: &StateKey,
@@ -833,6 +968,138 @@ impl DurableFederationTransport {
             .map(|(raw, version)| self.decode(&raw).map(|record| (record, version)))
             .transpose()
     }
+}
+
+fn decode_evidence_record(
+    encryptor: Option<&Arc<PayloadEncryptor>>,
+    raw: &str,
+) -> Result<DeliveryRecord, FederationTransportError> {
+    if raw.len() > MAX_RECORD_BYTES * 2 {
+        return Err(FederationTransportError::Conflict);
+    }
+    let plain = encryptor.map_or_else(
+        || Ok(raw.to_owned()),
+        |encryptor| {
+            encryptor
+                .decrypt_str(raw)
+                .map_err(|_| FederationTransportError::Unavailable)
+        },
+    )?;
+    if plain.len() > MAX_RECORD_BYTES {
+        return Err(FederationTransportError::Conflict);
+    }
+    let record: DeliveryRecord =
+        serde_json::from_str(&plain).map_err(|_| FederationTransportError::Conflict)?;
+    if !valid_evidence_record(&record) {
+        return Err(FederationTransportError::Conflict);
+    }
+    Ok(record)
+}
+
+fn valid_evidence_record(record: &DeliveryRecord) -> bool {
+    if record.schema != DELIVERY_SCHEMA
+        || !valid_text(&record.adapter_revision, 120)
+        || !valid_digest(&record.binding_digest)
+        || !valid_endpoint(&record.endpoint)
+        || !valid_text(&record.agent_id, 120)
+        || record.created_at_ms < 0
+        || record.message.task_id.is_some()
+        || record.message.validate().is_err()
+        || record.envelope.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
+        || record.invocation.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
+        || !valid_signature(&record.envelope.signature)
+        || !valid_signature(&record.invocation.signature)
+        || delivery_id(&record.parent, &record.invocation).ok() != Some(record.delivery_id)
+    {
+        return false;
+    }
+    let Ok(envelope) = record.envelope.envelope() else {
+        return false;
+    };
+    let Ok(invocation) = record.invocation.invocation() else {
+        return false;
+    };
+    if invocation.import.id != envelope.id
+        || record.envelope.digest().ok().as_deref()
+            != Some(invocation.import.envelope_digest.as_str())
+        || envelope.agent_resource.id() != record.agent_id
+        || record.parent.principal() != &envelope.source
+        || same_message(&invocation.message, &record.message).ok() != Some(true)
+    {
+        return false;
+    }
+    match &record.state {
+        DeliveryState::Registered | DeliveryState::ImportUncertain => true,
+        DeliveryState::Importing {
+            claim_expires_at_ms,
+            ..
+        } => *claim_expires_at_ms >= record.created_at_ms,
+        DeliveryState::Imported { receipt } | DeliveryState::InvokeUncertain { receipt } => {
+            receipt_matches(record, receipt)
+        }
+        DeliveryState::Invoking {
+            receipt,
+            claim_expires_at_ms,
+            ..
+        } => receipt_matches(record, receipt) && *claim_expires_at_ms >= record.created_at_ms,
+        DeliveryState::Accepted { receipt, task } => {
+            receipt_matches(record, receipt) && task_matches(record, task)
+        }
+        DeliveryState::Rejected { code, .. } => valid_code(code),
+    }
+}
+
+fn project_evidence(
+    record: &DeliveryRecord,
+    now_ms: i64,
+) -> Result<FederationDeliveryEvidence, FederationTransportError> {
+    let envelope = record
+        .envelope
+        .envelope()
+        .map_err(|_| FederationTransportError::Conflict)?;
+    let invocation = record
+        .invocation
+        .invocation()
+        .map_err(|_| FederationTransportError::Conflict)?;
+    let status = match &record.state {
+        DeliveryState::Registered => FederationDeliveryEvidenceStatus::Registered,
+        DeliveryState::Importing {
+            claim_expires_at_ms,
+            ..
+        } => FederationDeliveryEvidenceStatus::Importing {
+            claim_expires_at_ms: *claim_expires_at_ms,
+        },
+        DeliveryState::ImportUncertain => FederationDeliveryEvidenceStatus::ImportUncertain,
+        DeliveryState::Imported { .. } => FederationDeliveryEvidenceStatus::Imported,
+        DeliveryState::Invoking {
+            claim_expires_at_ms,
+            ..
+        } => FederationDeliveryEvidenceStatus::Invoking {
+            claim_expires_at_ms: *claim_expires_at_ms,
+        },
+        DeliveryState::InvokeUncertain { .. } => FederationDeliveryEvidenceStatus::InvokeUncertain,
+        DeliveryState::Accepted { .. } => FederationDeliveryEvidenceStatus::Accepted,
+        DeliveryState::Rejected { stage, code } => FederationDeliveryEvidenceStatus::Rejected {
+            stage: *stage,
+            code: code.clone(),
+        },
+    };
+    Ok(FederationDeliveryEvidence {
+        delivery_id: record.delivery_id,
+        parent_execution_id: record.parent.execution_id(),
+        source: envelope.source,
+        agent_id: record.agent_id.clone(),
+        message_id: invocation.message.message_id,
+        trust_id: envelope.trust_id,
+        trust_revision: envelope.trust_revision,
+        key_id: envelope.key_id,
+        issuer_epoch: envelope.issuer_epoch,
+        created_at_ms: record.created_at_ms,
+        expires_at_ms: invocation.expires_at_ms,
+        expired: now_ms >= invocation.expires_at_ms,
+        exact_replay_idempotent: record.exact_replay_idempotent,
+        status,
+    })
 }
 
 fn delivery_id(

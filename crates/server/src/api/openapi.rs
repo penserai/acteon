@@ -111,6 +111,7 @@ use acteon_core::{
         super::governance::registry_projection,
         super::governance::mutate_registry,
         super::governance::provider_history,
+        super::governance::federation_delivery_evidence,
         super::governance::reconciliation_correlation,
         super::governance::accept_reconciliation,
         super::governance::publish_permit,

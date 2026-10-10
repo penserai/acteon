@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { FederationExportReceipt, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
+import type { FederationDeliveryEvidencePage, FederationExportReceipt, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -591,6 +591,16 @@ export class ActeonClient {
   }
   async revokeFederationTrust(request: RevokeFederationTrustRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_revoke_federation_trust", { body: request }) as GovernanceChangeReceipt;
+  }
+  /** List sanitized outbound delivery evidence under reconciliation authority. */
+  async federationDeliveryEvidence(namespace: string, tenant: string, after?: string, limit?: number): Promise<FederationDeliveryEvidencePage> {
+    const page = await this.platformRequest("governance_federation_delivery_evidence", {
+      query: { namespace, tenant, ...(after ? { after } : {}), ...(limit === undefined ? {} : { limit: String(limit) }) },
+    }) as FederationDeliveryEvidencePage;
+    if (!Array.isArray(page.deliveries) || page.deliveries.some((delivery) => !delivery.delivery_id || !delivery.parent_execution_id)) {
+      throw new Error("federation delivery evidence identity mismatch");
+    }
+    return page;
   }
   /** Authenticate as the configured peer and retain authority without starting execution. */
   async importFederationEnvelope(namespace: string, tenant: string, envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {

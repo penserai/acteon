@@ -52,6 +52,20 @@ export interface FederationExportReceipt {
   delivery_id: string;
   delivery: FederationExportDelivery;
 }
+export type FederationDeliveryEvidenceStatus =
+  | { status: "registered" | "import_uncertain" | "imported" | "invoke_uncertain" | "accepted" }
+  | { status: "importing" | "invoking"; claim_expires_at_ms: number }
+  | { status: "rejected"; stage: "import" | "invoke"; code: string };
+export interface FederationDeliveryEvidence {
+  delivery_id: string; parent_execution_id: string; source: PrincipalIdentity;
+  agent_id: string; message_id: string; trust_id: string; trust_revision: number;
+  key_id: string; issuer_epoch: number; created_at_ms: number; expires_at_ms: number;
+  expired: boolean; exact_replay_idempotent: boolean; status: FederationDeliveryEvidenceStatus;
+}
+export interface FederationDeliveryEvidencePage {
+  deliveries: FederationDeliveryEvidence[];
+  next_cursor: string | null;
+}
 export type GovernanceIntervention =
   | { kind: "close_resource" | "reopen_resource"; resource: GovernanceResource }
   | { kind: "revoke_subject"; subject: PrincipalIdentity }

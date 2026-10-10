@@ -24,6 +24,12 @@ use acteon_governance::{
 };
 pub use reconciliation::TrustedReconciliationInstallation;
 
+#[derive(Debug, Clone)]
+pub struct FederationDeliveryEvidencePage {
+    pub deliveries: Vec<acteon_executor::federation_transport::FederationDeliveryEvidence>,
+    pub next_cursor: Option<uuid::Uuid>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ManagementError {
     #[error("current management authority is required")]
@@ -231,6 +237,66 @@ impl ExecutionAuthorityRuntime {
             serde_json::to_value(history).map_err(|_| ManagementError::Unavailable)?,
         )
         .map_err(|_| ManagementError::Unavailable)
+    }
+
+    /// Read a stable, bounded page of sanitized cross-domain delivery
+    /// evidence. The manager must hold independent reconciliation authority
+    /// over the source principal, and that authority is revalidated after IO.
+    pub async fn list_federation_delivery_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<FederationDeliveryEvidencePage, ManagementError> {
+        use acteon_executor::federation_transport::{
+            FederationDeliveryEvidenceReader, FederationTransportError,
+        };
+        if !(1..=200).contains(&limit) {
+            return Err(ManagementError::Invalid);
+        }
+        let observation = self
+            .management_observation(namespace, tenant, authentication)
+            .await?;
+        if !observation.policy.can_reconcile {
+            return Err(ManagementError::Forbidden);
+        }
+        let reader = FederationDeliveryEvidenceReader::new(
+            self.state.clone(),
+            self.clock.clone(),
+            self.encryptor.clone(),
+        );
+        let mut cursor = after;
+        let mut deliveries = Vec::new();
+        while deliveries.len() <= limit {
+            let evidence = reader
+                .list_evidence(namespace, tenant, cursor, 500)
+                .await
+                .map_err(|error| match error {
+                    FederationTransportError::Invalid => ManagementError::Invalid,
+                    FederationTransportError::Conflict => ManagementError::Conflict,
+                    _ => ManagementError::Unavailable,
+                })?;
+            let exhausted = evidence.len() < 500;
+            cursor = evidence.last().map(|delivery| delivery.delivery_id);
+            deliveries.extend(
+                evidence
+                    .into_iter()
+                    .filter(|delivery| observation.policy.subjects.contains(&delivery.source)),
+            );
+            if exhausted || cursor.is_none() {
+                break;
+            }
+        }
+        self.revalidate_management(&observation, authentication)
+            .await?;
+        let next_cursor = (deliveries.len() > limit).then(|| deliveries[limit - 1].delivery_id);
+        deliveries.truncate(limit);
+        Ok(FederationDeliveryEvidencePage {
+            deliveries,
+            next_cursor,
+        })
     }
 
     pub async fn inspect_governance(

@@ -14,13 +14,110 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 pub struct GovernanceQuery {
     pub namespace: String,
     pub tenant: String,
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+pub struct FederationDeliveryEvidenceQuery {
+    pub namespace: String,
+    pub tenant: String,
+    pub after: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationDeliveryEvidencePage {
+    pub deliveries: Vec<FederationDeliveryEvidence>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationDeliveryEvidence {
+    pub delivery_id: String,
+    pub parent_execution_id: String,
+    pub source: acteon_core::PrincipalIdentity,
+    pub agent_id: String,
+    pub message_id: String,
+    pub trust_id: String,
+    pub trust_revision: u64,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub expired: bool,
+    pub exact_replay_idempotent: bool,
+    pub status: FederationDeliveryEvidenceStatus,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FederationDeliveryEvidenceStatus {
+    Registered,
+    Importing { claim_expires_at_ms: i64 },
+    ImportUncertain,
+    Imported,
+    Invoking { claim_expires_at_ms: i64 },
+    InvokeUncertain,
+    Accepted,
+    Rejected { stage: String, code: String },
+}
+
+impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
+    for FederationDeliveryEvidence
+{
+    fn from(evidence: acteon_executor::federation_transport::FederationDeliveryEvidence) -> Self {
+        use acteon_executor::federation_transport::{
+            FederationDeliveryEvidenceStatus as Status, FederationDeliveryStage,
+        };
+        let status = match evidence.status {
+            Status::Registered => FederationDeliveryEvidenceStatus::Registered,
+            Status::Importing {
+                claim_expires_at_ms,
+            } => FederationDeliveryEvidenceStatus::Importing {
+                claim_expires_at_ms,
+            },
+            Status::ImportUncertain => FederationDeliveryEvidenceStatus::ImportUncertain,
+            Status::Imported => FederationDeliveryEvidenceStatus::Imported,
+            Status::Invoking {
+                claim_expires_at_ms,
+            } => FederationDeliveryEvidenceStatus::Invoking {
+                claim_expires_at_ms,
+            },
+            Status::InvokeUncertain => FederationDeliveryEvidenceStatus::InvokeUncertain,
+            Status::Accepted => FederationDeliveryEvidenceStatus::Accepted,
+            Status::Rejected { stage, code } => FederationDeliveryEvidenceStatus::Rejected {
+                stage: match stage {
+                    FederationDeliveryStage::Import => "import",
+                    FederationDeliveryStage::Invoke => "invoke",
+                }
+                .into(),
+                code,
+            },
+        };
+        Self {
+            delivery_id: evidence.delivery_id.to_string(),
+            parent_execution_id: evidence.parent_execution_id.to_string(),
+            source: evidence.source,
+            agent_id: evidence.agent_id,
+            message_id: evidence.message_id,
+            trust_id: evidence.trust_id,
+            trust_revision: evidence.trust_revision,
+            key_id: evidence.key_id,
+            issuer_epoch: evidence.issuer_epoch,
+            created_at_ms: evidence.created_at_ms,
+            expires_at_ms: evidence.expires_at_ms,
+            expired: evidence.expired,
+            exact_replay_idempotent: evidence.exact_replay_idempotent,
+            status,
+        }
+    }
 }
 
 pub struct GovernanceApiError(StatusCode, &'static str);
@@ -180,6 +277,46 @@ pub async fn provider_history(
         runtime(&state)?
             .inspect_provider_history(&query.namespace, &query.tenant, execution_id, &proof)
             .await?,
+    ))
+}
+
+/// List sanitized outbound federation evidence without exposing messages,
+/// signed payloads, endpoints, credentials or signing material.
+#[utoipa::path(get, path = "/v1/governance/federation/deliveries", tag = "Governance",
+    params(FederationDeliveryEvidenceQuery),
+    responses((status = 200, body = FederationDeliveryEvidencePage),
+        (status = 400, description = "Invalid cursor or page size"),
+        (status = 401, description = "Private authentication required"),
+        (status = 403, description = "Independent reconciliation permission required"),
+        (status = 409, description = "Authority or retained evidence conflict"),
+        (status = 503, description = "Federation evidence unavailable")))]
+pub async fn federation_delivery_evidence(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Query(query): Query<FederationDeliveryEvidenceQuery>,
+) -> Result<impl IntoResponse, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    let after = query
+        .after
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ManagementError::Invalid)?;
+    let page = runtime(&state)?
+        .list_federation_delivery_evidence(
+            &query.namespace,
+            &query.tenant,
+            after,
+            query.limit.unwrap_or(50),
+            &proof,
+        )
+        .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(FederationDeliveryEvidencePage {
+            deliveries: page.deliveries.into_iter().map(Into::into).collect(),
+            next_cursor: page.next_cursor.map(|cursor| cursor.to_string()),
+        }),
     ))
 }
 

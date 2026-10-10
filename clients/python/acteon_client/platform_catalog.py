@@ -131,6 +131,7 @@ class PlatformOperation(StrEnum):
     FEDERATION_OBSERVE_EXPORT_MESSAGE = "federation_observe_export_message"
     FEDERATION_REPLAY_EXPORT_MESSAGE = "federation_replay_export_message"
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
+    GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE = "governance_federation_delivery_evidence"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
     GOVERNANCE_MUTATE_REGISTRY = "governance_mutate_registry"
@@ -351,6 +352,7 @@ OPERATIONS = {
     PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe', ('namespace', 'tenant', 'agent', 'task_id', 'profile'), 'json'),
     PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay', ('namespace', 'tenant', 'agent', 'task_id', 'profile'), 'json'),
     PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION: ('POST', '/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation', ('execution_id', 'ordinal'), 'json'),
+    PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE: ('GET', '/v1/governance/federation/deliveries', (), 'json'),
     PlatformOperation.GOVERNANCE_INSPECT: ('GET', '/v1/governance', (), 'json'),
     PlatformOperation.GOVERNANCE_INTERVENE: ('POST', '/v1/governance/changes', (), 'json'),
     PlatformOperation.GOVERNANCE_MUTATE_REGISTRY: ('POST', '/v1/governance/registry', (), 'json'),

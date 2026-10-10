@@ -176,9 +176,23 @@ for accounting after revocation. `message:replay` is explicit, rechecks current
 authority, and works only with the Acteon HTTP binding qualified for exact
 idempotent replay.
 
-Production qualification still requires operator reconciliation views,
-capability exchange, and two-server failure testing on each supported
-production state backend.
+Managers with independent `can_reconcile = true` authority can list a bounded
+page of outbound delivery evidence:
+
+```text
+GET /v1/governance/federation/deliveries?namespace=prod&tenant=acme&limit=50
+```
+
+The cursor is the last returned delivery UUID. Each item identifies the source,
+parent execution, message ID, remote agent, trust/key epoch, timestamps, expiry,
+replay qualification and exact delivery stage. The view excludes the message
+body, signed payloads, endpoint, transport credential and signing material. The
+server filters results to the manager's declared source principals and
+revalidates management authority after reading the state backend.
+
+Production qualification still requires operator disposition workflows for
+ambiguous deliveries, capability exchange, and two-server failure testing on
+each supported production state backend.
 
 ### Discovery (unauthenticated)
 

@@ -2135,6 +2135,13 @@ at issuance. Each epoch owns its signer, credential, trust/key revision and
 reviewed remote agent card, so overlapping rotations preserve old signed bytes
 and adapter bindings without allowing active-epoch rollback.
 
-Operator reconciliation and expiry projections, capability exchange, and
-two-server qualification across Redis, PostgreSQL and DynamoDB remain required
-for the federation release gate.
+Federation managers with independent reconciliation authority can now page
+through sanitized delivery evidence across all retained epochs. The state-backed
+view is filtered to their declared source principals, classifies active,
+uncertain, terminal and expired work, omits payloads and secrets, and rechecks
+authority after reading storage. Rust, Python, TypeScript, Go and Java expose
+the typed operation.
+
+Operator disposition workflows, backend-native journal pagination, capability
+exchange, and two-server qualification across Redis, PostgreSQL and DynamoDB
+remain required for the federation release gate.

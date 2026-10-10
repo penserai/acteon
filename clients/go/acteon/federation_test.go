@@ -38,13 +38,17 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 			t.Fatal("missing authentication")
 		}
 		var body json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
+		if r.Method != http.MethodGet {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			calls = append(calls, body)
 		}
-		calls = append(calls, body)
 		paths = append(paths, r.URL.Path)
 		response := wire["change_receipt"]
-		if bytes.Contains([]byte(r.URL.Path), []byte("/federation/exports/")) {
+		if r.URL.Path == "/v1/governance/federation/deliveries" {
+			response = wire["delivery_evidence_page"]
+		} else if bytes.Contains([]byte(r.URL.Path), []byte("/federation/exports/")) {
 			response = wire["export_receipt"]
 		} else if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
 			response = wire["import_receipt"]
@@ -93,7 +97,12 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if _, err = client.ReplayFederatedExport(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage); err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 7 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
+	limit := 25
+	evidence, err := client.FederationDeliveryEvidence(ctx, "prod", "acme", nil, &limit)
+	if err != nil || len(evidence.Deliveries) != 1 || evidence.Deliveries[0].MessageID != "export-message-1" {
+		t.Fatalf("unexpected delivery evidence: %v (%v)", evidence, err)
+	}
+	if len(paths) != 8 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[7] != "/v1/governance/federation/deliveries" {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
 	for i, action := range []string{"send", "observe", "replay"} {

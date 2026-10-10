@@ -164,6 +164,14 @@ has separate submit, observation and explicit idempotent-replay operations;
 observation performs no network call and remains available for accounting after
 authority changes.
 
+An independently authorized reconciliation manager can page through sanitized
+delivery evidence across every installed export epoch. The projection exposes
+identity, lineage, trust/key epoch, lifecycle stage, claim deadline, signed
+expiry and replay qualification. It omits all payloads, endpoints and secrets,
+filters by the manager's declared source principals, and revalidates both
+management and authentication authority after backend I/O. The five SDKs expose
+the same typed page.
+
 ## Verification
 
 Focused contracts cover separated registration and authorized delivery, exact
@@ -184,8 +192,8 @@ backend.
 
 The remaining production gates are:
 
-1. observation, expiry, reconciliation, and operator controls for ambiguous
-   deliveries;
+1. explicit operator disposition workflows for ambiguous deliveries and
+   backend-native bounded pagination for large journals;
 2. capability/key-card negotiation and credential exchange;
 3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

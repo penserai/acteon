@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 223 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 224 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation
@@ -34,7 +34,7 @@ signed intent and message, validates the returned task scope and ID, and does
 not retry automatically. Accepted source tasks use
 `export_federated_message`, `observe_federated_export`, and
 `replay_federated_export`; both sync and async clients return a typed retained
-receipt and never accept endpoint, credential, signer, permit, or timestamps.
+receipt and never accept endpoint, credential, signer, permit, or timestamps. Reconciliation managers use `federation_delivery_evidence` for typed sanitized pages.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 

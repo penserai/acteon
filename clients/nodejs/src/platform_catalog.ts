@@ -128,6 +128,7 @@ export const platformOperations = {
   federation_observe_export_message: {"name": "federation_observe_export_message", "method": "POST", "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe", "parameters": ["namespace", "tenant", "agent", "task_id", "profile"], "response": "json"},
   federation_replay_export_message: {"name": "federation_replay_export_message", "method": "POST", "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay", "parameters": ["namespace", "tenant", "agent", "task_id", "profile"], "response": "json"},
   governance_accept_reconciliation: {"name": "governance_accept_reconciliation", "method": "POST", "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", "parameters": ["execution_id", "ordinal"], "response": "json"},
+  governance_federation_delivery_evidence: {"name": "governance_federation_delivery_evidence", "method": "GET", "path": "/v1/governance/federation/deliveries", "parameters": [], "response": "json"},
   governance_inspect: {"name": "governance_inspect", "method": "GET", "path": "/v1/governance", "parameters": [], "response": "json"},
   governance_intervene: {"name": "governance_intervene", "method": "POST", "path": "/v1/governance/changes", "parameters": [], "response": "json"},
   governance_mutate_registry: {"name": "governance_mutate_registry", "method": "POST", "path": "/v1/governance/registry", "parameters": [], "response": "json"},

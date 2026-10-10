@@ -125,6 +125,32 @@ type FederationExportReceipt struct {
 	DeliveryID    string                   `json:"delivery_id"`
 	Delivery      FederationExportDelivery `json:"delivery"`
 }
+type FederationDeliveryEvidenceStatus struct {
+	Status           string `json:"status"`
+	ClaimExpiresAtMs *int64 `json:"claim_expires_at_ms,omitempty"`
+	Stage            string `json:"stage,omitempty"`
+	Code             string `json:"code,omitempty"`
+}
+type FederationDeliveryEvidence struct {
+	DeliveryID            string                           `json:"delivery_id"`
+	ParentExecutionID     string                           `json:"parent_execution_id"`
+	Source                PrincipalIdentity                `json:"source"`
+	AgentID               string                           `json:"agent_id"`
+	MessageID             string                           `json:"message_id"`
+	TrustID               string                           `json:"trust_id"`
+	TrustRevision         uint64                           `json:"trust_revision"`
+	KeyID                 string                           `json:"key_id"`
+	IssuerEpoch           uint64                           `json:"issuer_epoch"`
+	CreatedAtMs           int64                            `json:"created_at_ms"`
+	ExpiresAtMs           int64                            `json:"expires_at_ms"`
+	Expired               bool                             `json:"expired"`
+	ExactReplayIdempotent bool                             `json:"exact_replay_idempotent"`
+	Status                FederationDeliveryEvidenceStatus `json:"status"`
+}
+type FederationDeliveryEvidencePage struct {
+	Deliveries []FederationDeliveryEvidence `json:"deliveries"`
+	NextCursor *string                      `json:"next_cursor"`
+}
 type FederationTrustView struct {
 	Trust   FederationTrustDeclaration `json:"trust"`
 	Revoked bool                       `json:"revoked"`
@@ -230,6 +256,30 @@ func (c *Client) RevokeFederationTrust(ctx context.Context, request RevokeFedera
 }
 
 // ImportFederationEnvelope authenticates as a configured peer and retains authority without executing it.
+func (c *Client) FederationDeliveryEvidence(ctx context.Context, namespace, tenant string, after *string, limit *int) (*FederationDeliveryEvidencePage, error) {
+	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
+	if after != nil {
+		query.Set("after", *after)
+	}
+	if limit != nil {
+		query.Set("limit", strconv.Itoa(*limit))
+	}
+	data, err := c.PlatformRequest(ctx, OpGovernanceFederationDeliveryEvidence, nil, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	var page FederationDeliveryEvidencePage
+	if err = json.Unmarshal(data, &page); err != nil {
+		return nil, err
+	}
+	for _, delivery := range page.Deliveries {
+		if delivery.DeliveryID == "" || delivery.ParentExecutionID == "" {
+			return nil, fmt.Errorf("federation delivery evidence identity mismatch")
+		}
+	}
+	return &page, nil
+}
+
 func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant string, envelope SignedFederationEnvelopeDeclaration) (*FederationImportReceipt, error) {
 	data, err := c.PlatformRequest(ctx, OpFederationImportEnvelope,
 		map[string]string{"namespace": namespace, "tenant": tenant}, nil,

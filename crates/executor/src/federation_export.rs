@@ -19,8 +19,8 @@ use acteon_governance::{
 use acteon_time::Clock;
 
 use crate::federation_transport::{
-    DurableFederationTransport, FederationDeliveryIntent, FederationDeliveryReceipt,
-    FederationDeliveryStatus, FederationTransportError,
+    DurableFederationTransport, FederationDeliveryEvidence, FederationDeliveryIntent,
+    FederationDeliveryReceipt, FederationDeliveryStatus, FederationTransportError,
 };
 
 const MAX_EFFECTS: usize = 128;
@@ -226,6 +226,22 @@ impl GovernedFederationExporter {
             signer,
             profile,
         })
+    }
+
+    /// Bounded, sanitized delivery evidence for independently authorized
+    /// operator reconciliation. This grants no replay or delivery authority.
+    pub async fn list_delivery_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> Result<Vec<FederationDeliveryEvidence>, FederationExportError> {
+        self.dependencies
+            .transport
+            .list_evidence(namespace, tenant, after, limit)
+            .await
+            .map_err(Into::into)
     }
 
     /// Persist, reserve and deliver one exact export. Repeating the same stable

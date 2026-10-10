@@ -61,6 +61,24 @@ public final class Governance {
         @JsonProperty("attempt_status") String attemptStatus,
         @JsonProperty("delivery_id") String deliveryId,
         com.fasterxml.jackson.databind.JsonNode delivery) {}
+    public record FederationDeliveryEvidence(
+        @JsonProperty("delivery_id") String deliveryId,
+        @JsonProperty("parent_execution_id") String parentExecutionId,
+        PrincipalIdentity source,
+        @JsonProperty("agent_id") String agentId,
+        @JsonProperty("message_id") String messageId,
+        @JsonProperty("trust_id") String trustId,
+        @JsonProperty("trust_revision") long trustRevision,
+        @JsonProperty("key_id") String keyId,
+        @JsonProperty("issuer_epoch") long issuerEpoch,
+        @JsonProperty("created_at_ms") long createdAtMs,
+        @JsonProperty("expires_at_ms") long expiresAtMs,
+        boolean expired,
+        @JsonProperty("exact_replay_idempotent") boolean exactReplayIdempotent,
+        com.fasterxml.jackson.databind.JsonNode status) {}
+    public record FederationDeliveryEvidencePage(
+        List<FederationDeliveryEvidence> deliveries,
+        @JsonProperty("next_cursor") String nextCursor) {}
     public record FederationTrustView(FederationTrustDeclaration trust, boolean revoked) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Intervention(String kind, Resource resource, PrincipalIdentity subject,

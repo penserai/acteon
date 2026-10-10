@@ -36,7 +36,9 @@ describe("federation management and import", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       requests.push({ url, init });
       const path = new URL(url).pathname;
-      return new Response(JSON.stringify(path.includes("/federation/exports/")
+      return new Response(JSON.stringify(path === "/v1/governance/federation/deliveries"
+        ? federation.delivery_evidence_page
+        : path.includes("/federation/exports/")
         ? federation.export_receipt
         : path.endsWith("message:send")
         ? { id: "federated-task", namespace: "prod", tenant: "acme" }
@@ -53,12 +55,14 @@ describe("federation management and import", () => {
     const exported = await client.exportFederatedMessage("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
     const observed = await client.observeFederatedExport("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
     const replayed = await client.replayFederatedExport("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
+    const evidence = await client.federationDeliveryEvidence("prod", "acme", undefined, 25);
     expect(receipt).toEqual(federation.import_receipt);
     expect(receipt.execution_started).toBe(false);
     expect(task.id).toBe("federated-task");
     expect([exported, observed, replayed]).toEqual([
       federation.export_receipt, federation.export_receipt, federation.export_receipt,
     ]);
+    expect(evidence).toEqual(federation.delivery_evidence_page);
     expect(requests.map(request => new URL(request.url).pathname)).toEqual([
       "/v1/governance/federation/trusts",
       "/v1/governance/federation/trusts/revoke",
@@ -67,8 +71,9 @@ describe("federation management and import", () => {
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:send`,
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:observe`,
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:replay`,
+      "/v1/governance/federation/deliveries",
     ]);
-    expect(requests.map(request => JSON.parse(request.init.body as string))).toEqual([
+    expect(requests.map(request => request.init.body ? JSON.parse(request.init.body as string) : undefined)).toEqual([
       federation.publication,
       federation.revocation,
       { envelope: federation.envelope },
@@ -76,7 +81,9 @@ describe("federation management and import", () => {
       { message: federation.export_message },
       { message: federation.export_message },
       { message: federation.export_message },
+      undefined,
     ]);
+    expect(new URL(requests[7]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme&limit=25");
     for (const request of requests) {
       expect(new Headers(request.init.headers).get("Authorization")).toBe("Bearer federation-key");
     }

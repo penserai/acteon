@@ -107,5 +107,24 @@
     "attempt_status": "in_flight",
     "delivery_id": "4f0ad7d3-3133-4adf-93af-f4f0844fd887",
     "delivery": { "status": "registered" }
+  },
+  "delivery_evidence_page": {
+    "deliveries": [{
+      "delivery_id": "4f0ad7d3-3133-4adf-93af-f4f0844fd887",
+      "parent_execution_id": "11111111-1111-4111-8111-111111111111",
+      "source": { "id": "agent/notifier", "kind": "agent" },
+      "agent_id": "remote-triage",
+      "message_id": "export-message-1",
+      "trust_id": "local-prod",
+      "trust_revision": 2,
+      "key_id": "local-key-v2",
+      "issuer_epoch": 2,
+      "created_at_ms": 1791570000000,
+      "expires_at_ms": 1791570060000,
+      "expired": false,
+      "exact_replay_idempotent": true,
+      "status": { "status": "import_uncertain" }
+    }],
+    "next_cursor": null
   }
 }

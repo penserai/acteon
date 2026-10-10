@@ -16,8 +16,8 @@ pub use runtime::{
     AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
     AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
-    FederationAgentInvocation, FederationExportRuntimeError, FederationImportAdmission,
-    ManagementError, TrustedReconciliationInstallation,
+    FederationAgentInvocation, FederationDeliveryEvidencePage, FederationExportRuntimeError,
+    FederationImportAdmission, ManagementError, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
