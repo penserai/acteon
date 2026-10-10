@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 228 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 224 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation

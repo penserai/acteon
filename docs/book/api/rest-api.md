@@ -765,6 +765,17 @@ history, and artifact selectors defined by A2A 1.0. The four v1 Task push
 notification configuration methods use schema-closed ProtoJSON and cursor
 pagination. Pre-1.0 slash-separated methods remain compatibility aliases.
 
+### `POST /a2a/{namespace}/{tenant}/agents/{agent}`
+
+Official A2A 1.0 JSON-RPC bound to one configured agent service. `SendMessage`
+enters the governed execution runtime and `GetTask` revalidates the original
+authenticated source. Admission returns the opaque
+`X-Acteon-Agent-Source-Context` receipt; agent principals must return it for
+observation or continuation. The route also supports
+`GetExtendedAgentCard`. Methods whose governed lifecycle is not yet complete
+return `UnsupportedOperation` instead of falling back to the tenant Task
+engine.
+
 ### `POST /a2a/{namespace}/{tenant}/v1/message:send`
 
 A2A REST binding for submitting agent messages and tasks. An
@@ -985,6 +996,7 @@ Cancel an active swarm execution run.
 | `POST` | `/v1/queues/tasks/{id}/complete` | Complete worker task |
 | **A2A Protocol & Bus** |||
 | `POST` | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 endpoint |
+| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}` | Exact-agent A2A JSON-RPC through the governed execution runtime |
 | `POST` | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST message/task submit |
 | `GET` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}` | List current safe, source-authorized registry options; descriptions are untrusted and the result grants no authority |
 | `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send` | Governed peer submission from an accepted agent task |

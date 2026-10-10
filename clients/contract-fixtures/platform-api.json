@@ -75,6 +75,16 @@
       "response": "json"
     },
     {
+      "name": "a2a_discovery_discover_agent_v1",
+      "method": "GET",
+      "path": "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+      "parameters": [
+        "namespace",
+        "tenant"
+      ],
+      "response": "json"
+    },
+    {
       "name": "a2a_discovery_get_agent_card",
       "method": "GET",
       "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
@@ -268,6 +278,17 @@
         "id",
         "target",
         "skill"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "agent_services_rpc",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent"
       ],
       "response": "json"
     },

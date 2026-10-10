@@ -112,6 +112,17 @@ mod tests {
     }
 
     #[test]
+    fn governed_agent_rpc_allows_reads_then_enforces_writes_in_handler() {
+        let route = ROUTES
+            .iter()
+            .find(|route| {
+                route.method == "POST" && route.path == "/a2a/{namespace}/{tenant}/agents/{agent}"
+            })
+            .expect("missing governed agent RPC permission inventory entry");
+        assert_eq!(route.permission, Some(Permission::AuditRead));
+    }
+
+    #[test]
     fn federation_separates_peer_admission_from_trust_management() {
         for (path, permission) in [
             (

@@ -6,10 +6,12 @@ use the official ProtoJSON shapes, while Acteon keeps ownership, recovery and
 execution metadata inside the platform. Existing pre-1.0 method names and the
 older stored-card view remain available during migration.
 
-The whole protocol surface (JSON-RPC + REST + SSE) is scoped to one
-namespace and one tenant via the URL prefix `/a2a/{namespace}/{tenant}`,
-so the same multi-tenant model you use elsewhere in Acteon carries
-through unchanged.
+The protocol has two deliberate addressing levels. The tenant endpoint at
+`/a2a/{namespace}/{tenant}` is a durable interoperable Task service. The exact
+agent endpoint at `/a2a/{namespace}/{tenant}/agents/{agent}` invokes one
+operator-qualified agent runtime under Acteon's execution authority. An
+aggregate tenant card is useful for discovery, but it is never used to choose a
+runtime implicitly.
 
 ## When to reach for A2A
 
@@ -76,6 +78,44 @@ required `pageSize`, `totalSize`, and `nextPageToken` fields.
 
 Batch arrays and notifications (requests with no `id`) follow the
 JSON-RPC 2.0 spec exactly.
+
+### Invoke a governed agent through official A2A
+
+Publish an individual agent card whose JSON-RPC interface URL names the exact
+agent endpoint:
+
+```text
+POST /a2a/{namespace}/{tenant}/agents/{agent}
+```
+
+`SendMessage` at this address does more than create a Task row. Acteon verifies
+the current private caller credential, the source-to-agent grant, permits,
+closures, registry qualification, destination credential, shared execution
+budget, and the installed provider binding. It then persists the Task and both
+execution contexts before the background driver may start the provider effect.
+The agent ID comes only from the route and cannot be supplied or changed by a
+model-generated message. An Acteon host can attach its privately held
+`X-Acteon-Execution-Context` and `X-Acteon-Execution-Permits` headers to make
+the call a bounded descendant of existing work; both headers are required as a
+pair and message content cannot manufacture either one.
+
+The governed endpoint currently implements `SendMessage`, `GetTask`, and
+`GetExtendedAgentCard`. A new message may set
+`configuration.returnImmediately=true` to receive durable acceptance. A
+continuation must target the same Task and active input challenge. `ListTasks`,
+official streaming, push configuration, and protocol `CancelTask` return
+`UnsupportedOperation` on this interface while their governed implementations
+are completed. Acteon's native `stop` operation is already available, but it
+fences future provider starts and reports uncertain aborts honestly; it is not
+projected as successful A2A cancellation. This exact-agent endpoint accepts one
+JSON-RPC request or notification per HTTP call; it does not accept batch arrays.
+
+Admission returns `X-Acteon-Agent-Source-Context`, an opaque signed receipt.
+Keep it outside prompts and model output. Human principals can later prove
+ownership from their current credential alone. An agent principal must also
+send this header on `GetTask` and continuation requests, preventing two jobs
+that share one service identity from observing or joining each other. Native
+Acteon SDK agent-service receipts retain this value automatically.
 
 ### Official A2A streaming
 
@@ -673,8 +713,9 @@ banner. Engine actions and the `StreamEvent`s they emit line up by id.
 
 ## Federation status
 
-The public A2A service provides a governed mesh within one Acteon administrative
-domain. Its cross-domain boundary separates authority admission from execution.
+The individual A2A agent service provides governed inbound execution within one
+Acteon administrative domain. Its cross-domain boundary separates authority
+admission from execution.
 A configured peer first submits a signed delegation envelope to:
 
 ```text

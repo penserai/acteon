@@ -106,7 +106,7 @@ fn agent_key(namespace: &str, tenant: &str, agent_id: &str) -> StateKey {
     StateKey::new(namespace, tenant, KeyKind::BusAgent, agent_id)
 }
 
-async fn load_card(
+pub(crate) async fn load_card(
     store: &Arc<dyn StateStore>,
     namespace: &str,
     tenant: &str,

@@ -10,18 +10,20 @@ use crate::{
     },
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
-use acteon_core::TaskMessage;
+use acteon_core::{Task, TaskMessage, TaskState};
 use acteon_executor::delegation::{
     PeerAuthorizationStatus, PeerCancelStatus, PeerContinuationStatus, PeerSendStatus,
 };
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::time::Duration;
 
 const SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
 const EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
@@ -32,6 +34,601 @@ const EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageSend {
     pub message: TaskMessage,
+}
+
+#[derive(Serialize)]
+struct AgentJsonRpcResponse {
+    jsonrpc: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<AgentJsonRpcError>,
+    id: Value,
+}
+
+#[derive(Serialize)]
+struct AgentJsonRpcError {
+    code: i64,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+}
+
+#[derive(Debug)]
+struct AgentRpcFailure {
+    code: i64,
+    message: String,
+}
+
+impl AgentRpcFailure {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: -32602,
+            message: message.into(),
+        }
+    }
+
+    fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            code: -32004,
+            message: message.into(),
+        }
+    }
+
+    fn task_not_found(id: &str) -> Self {
+        Self {
+            code: -32001,
+            message: format!("task '{id}' not found"),
+        }
+    }
+
+    fn push_not_supported(message: impl Into<String>) -> Self {
+        Self {
+            code: -32003,
+            message: message.into(),
+        }
+    }
+
+    fn extended_card_not_configured(message: impl Into<String>) -> Self {
+        Self {
+            code: -32007,
+            message: message.into(),
+        }
+    }
+
+    fn internal() -> Self {
+        Self {
+            code: -32603,
+            message: "internal error".into(),
+        }
+    }
+}
+
+impl From<AgentServiceError> for AgentRpcFailure {
+    fn from(cause: AgentServiceError) -> Self {
+        match cause {
+            AgentServiceError::Invalid | AgentServiceError::Conflict => Self::invalid(
+                "the governed agent request is invalid or conflicts with durable state",
+            ),
+            AgentServiceError::NotFound => Self::task_not_found("unavailable"),
+            AgentServiceError::Forbidden => Self {
+                code: -32010,
+                message: "current governed agent-service authority is required".into(),
+            },
+            AgentServiceError::Limits => Self {
+                code: -32011,
+                message: "governed agent-service capacity or budget is exhausted".into(),
+            },
+            AgentServiceError::Unavailable => Self::internal(),
+        }
+    }
+}
+
+fn agent_rpc_success(id: Value, result: Value) -> AgentJsonRpcResponse {
+    AgentJsonRpcResponse {
+        jsonrpc: "2.0",
+        result: Some(result),
+        error: None,
+        id,
+    }
+}
+
+fn agent_rpc_error(id: Value, failure: AgentRpcFailure) -> AgentJsonRpcResponse {
+    let reason = match failure.code {
+        -32001 => Some("TASK_NOT_FOUND"),
+        -32003 => Some("PUSH_NOTIFICATION_NOT_SUPPORTED"),
+        -32004 => Some("UNSUPPORTED_OPERATION"),
+        -32007 => Some("EXTENDED_AGENT_CARD_NOT_CONFIGURED"),
+        -32009 => Some("VERSION_NOT_SUPPORTED"),
+        _ => None,
+    };
+    AgentJsonRpcResponse {
+        jsonrpc: "2.0",
+        result: None,
+        error: Some(AgentJsonRpcError {
+            code: failure.code,
+            message: failure.message,
+            data: reason.map(|reason| {
+                serde_json::json!([{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": reason,
+                    "domain": "a2a-protocol.org",
+                }])
+            }),
+        }),
+        id,
+    }
+}
+
+fn agent_rpc_response(response: AgentJsonRpcResponse, source: Option<&str>) -> Response {
+    let mut response = (
+        StatusCode::OK,
+        [
+            ("a2a-version", A2A_PROTOCOL_VERSION),
+            ("cache-control", "no-store"),
+        ],
+        Json(response),
+    )
+        .into_response();
+    if let Some(source) = source
+        && let Ok(value) = HeaderValue::from_str(source)
+    {
+        response.headers_mut().insert(SOURCE_CONTEXT_HEADER, value);
+    }
+    response
+}
+
+fn validate_agent_rpc_tenant(params: &Value, tenant: &str) -> Result<(), AgentRpcFailure> {
+    if params
+        .get("tenant")
+        .and_then(Value::as_str)
+        .is_some_and(|selected| !selected.is_empty() && selected != tenant)
+    {
+        return Err(AgentRpcFailure::invalid(
+            "tenant does not match the selected agent interface",
+        ));
+    }
+    Ok(())
+}
+
+fn agent_rpc_return_immediately(params: &Value) -> Result<bool, AgentRpcFailure> {
+    let Some(configuration) = params.get("configuration") else {
+        return Ok(false);
+    };
+    if configuration.is_null() {
+        return Ok(false);
+    }
+    let Some(configuration) = configuration.as_object() else {
+        return Err(AgentRpcFailure::invalid("configuration must be an object"));
+    };
+    if configuration.contains_key("taskPushNotificationConfig") {
+        return Err(AgentRpcFailure::push_not_supported(
+            "inline push notification configuration is not supported by this governed interface",
+        ));
+    }
+    match configuration.get("returnImmediately") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(AgentRpcFailure::invalid(
+            "configuration.returnImmediately must be a boolean",
+        )),
+    }
+}
+
+fn decode_agent_rpc_message(params: &Value) -> Result<TaskMessage, AgentRpcFailure> {
+    let mut message = params
+        .get("message")
+        .cloned()
+        .ok_or_else(|| AgentRpcFailure::invalid("params.message is required"))?;
+    if let Some(role) = message
+        .as_object_mut()
+        .and_then(|message| message.get_mut("role"))
+        && let Some(role) = role.as_str()
+        && let Some(role) = role.strip_prefix("ROLE_")
+    {
+        *message
+            .as_object_mut()
+            .expect("role was read from an object")
+            .get_mut("role")
+            .expect("role still exists") = Value::String(role.to_ascii_lowercase());
+    }
+    serde_json::from_value(message)
+        .map_err(|error| AgentRpcFailure::invalid(format!("invalid params.message: {error}")))
+}
+
+fn project_governed_v1_task(task: &Task) -> Result<Value, AgentRpcFailure> {
+    let mut projected =
+        super::a2a::project_v1_task(task).map_err(|_| AgentRpcFailure::internal())?;
+    if let Some(metadata) = projected.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove(acteon_gateway::agent_runtime::GOVERNED_TASK_METADATA_KEY);
+        if metadata.is_empty() {
+            projected
+                .as_object_mut()
+                .expect("a projected task is an object")
+                .remove("metadata");
+        }
+    }
+    Ok(projected)
+}
+
+async fn await_governed_agent_task(
+    runtime: &crate::execution_authority::ExecutionAuthorityRuntime,
+    namespace: &str,
+    tenant: &str,
+    agent: &str,
+    task_id: uuid::Uuid,
+    proof: &AuthenticatedExecutionConfiguration,
+    source: Option<&acteon_core::ExecutionContextReference>,
+) -> Result<Task, AgentRpcFailure> {
+    loop {
+        let observed = runtime
+            .observe_agent_service(AgentServiceObservation {
+                namespace,
+                tenant,
+                agent_id: agent,
+                task_id,
+                authentication: proof,
+                source_context: source,
+            })
+            .await?;
+        if observed.task.status.state.is_terminal() || observed.task.status.state.is_interrupt() {
+            return Ok(observed.task);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+struct AgentRpcContext<'a> {
+    state: &'a AppState,
+    proof: &'a AuthenticatedExecutionConfiguration,
+    namespace: &'a str,
+    tenant: &'a str,
+    agent: &'a str,
+    headers: &'a HeaderMap,
+}
+
+impl AgentRpcContext<'_> {
+    fn runtime(
+        &self,
+    ) -> Result<&crate::execution_authority::ExecutionAuthorityRuntime, AgentRpcFailure> {
+        self.state
+            .execution_authority
+            .as_deref()
+            .ok_or_else(AgentRpcFailure::internal)
+    }
+
+    fn observation<'a>(
+        &'a self,
+        task_id: uuid::Uuid,
+        source: Option<&'a acteon_core::ExecutionContextReference>,
+    ) -> AgentServiceObservation<'a> {
+        AgentServiceObservation {
+            namespace: self.namespace,
+            tenant: self.tenant,
+            agent_id: self.agent,
+            task_id,
+            authentication: self.proof,
+            source_context: source,
+        }
+    }
+}
+
+async fn send_agent_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    let runtime = context.runtime()?;
+    let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
+    let return_immediately = agent_rpc_return_immediately(params)?;
+    let mut message = decode_agent_rpc_message(params)?;
+    let (task, source_context) = if let Some(task_id) = message.task_id.clone() {
+        let task_id = uuid::Uuid::parse_str(&task_id)
+            .map_err(|_| AgentRpcFailure::invalid("message.taskId is invalid"))?;
+        let observed = runtime
+            .observe_agent_service(context.observation(task_id, source.as_ref()))
+            .await?;
+        if message.context_id.is_none() {
+            message.context_id.clone_from(&observed.task.context_id);
+        } else if message.context_id != observed.task.context_id {
+            return Err(AgentRpcFailure::invalid(
+                "message.contextId must exactly match the existing task",
+            ));
+        }
+        if observed.task.status.state != TaskState::InputRequired {
+            return Err(AgentRpcFailure::invalid(
+                "only an InputRequired task accepts an A2A continuation message",
+            ));
+        }
+        let challenge_id = message
+            .metadata
+            .get(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AgentRpcFailure::invalid(
+                    "an InputRequired response must include metadata.acteon.challengeId",
+                )
+            })?;
+        let observed = runtime
+            .continue_agent_service(AgentServiceContinuation {
+                observation: context.observation(task_id, source.as_ref()),
+                challenge_id,
+                response: &message,
+            })
+            .await?;
+        (observed.task, source)
+    } else {
+        let authentication = context
+            .state
+            .auth
+            .as_ref()
+            .ok_or_else(AgentRpcFailure::internal)?;
+        let parent_input = parse_parent(context.headers).map_err(AgentRpcFailure::invalid)?;
+        let parent = parent_input
+            .as_ref()
+            .map(|(context, permits)| AgentServiceParent { context, permits });
+        let accepted = Box::pin(runtime.accept_agent_service(AgentServiceRequest {
+            namespace: context.namespace,
+            tenant: context.tenant,
+            agent_id: context.agent,
+            message: &message,
+            authentication: context.proof,
+            auth_provider: authentication,
+            parent,
+        }))
+        .await?;
+        (accepted.task, Some(accepted.source_context))
+    };
+    let task_id = uuid::Uuid::parse_str(&task.id).map_err(|_| AgentRpcFailure::internal())?;
+    let task = if return_immediately {
+        task
+    } else {
+        await_governed_agent_task(
+            runtime,
+            context.namespace,
+            context.tenant,
+            context.agent,
+            task_id,
+            context.proof,
+            source_context.as_ref(),
+        )
+        .await?
+    };
+    let encoded_source = source_context
+        .as_ref()
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|_| AgentRpcFailure::internal())?
+        .map(|raw| URL_SAFE_NO_PAD.encode(raw));
+    Ok((
+        serde_json::json!({"task": project_governed_v1_task(&task)?}),
+        encoded_source,
+    ))
+}
+
+async fn get_agent_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AgentRpcFailure::invalid("params.id is required"))?;
+    let task_id = uuid::Uuid::parse_str(id).map_err(|_| AgentRpcFailure::task_not_found(id))?;
+    let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
+    let mut task = context
+        .runtime()?
+        .observe_agent_service(context.observation(task_id, source.as_ref()))
+        .await?
+        .task;
+    if let Some(history_length) = params.get("historyLength") {
+        let history_length = history_length.as_u64().ok_or_else(|| {
+            AgentRpcFailure::invalid("params.historyLength must be a non-negative integer")
+        })?;
+        let history_length = usize::try_from(history_length)
+            .map_err(|_| AgentRpcFailure::invalid("params.historyLength is too large"))?;
+        if task.history.len() > history_length {
+            task.history.drain(0..task.history.len() - history_length);
+        }
+    }
+    Ok((project_governed_v1_task(&task)?, None))
+}
+
+async fn extended_agent_card_rpc(
+    context: &AgentRpcContext<'_>,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    let store = {
+        let gateway = context.state.gateway.read().await;
+        gateway.state_store().clone()
+    };
+    let card =
+        super::a2a_discovery::load_card(&store, context.namespace, context.tenant, context.agent)
+            .await
+            .map_err(|_| AgentRpcFailure::internal())?
+            .ok_or_else(|| {
+                AgentRpcFailure::extended_card_not_configured("the agent card is unavailable")
+            })?;
+    if !card.capabilities.extended_agent_card {
+        return Err(AgentRpcFailure::extended_card_not_configured(
+            "the agent does not publish an extended card",
+        ));
+    }
+    Ok((super::a2a_discovery::project_v1_card(&card), None))
+}
+
+async fn dispatch_agent_rpc(
+    context: &AgentRpcContext<'_>,
+    method: &str,
+    params: Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    validate_agent_rpc_tenant(&params, context.tenant)?;
+    match method {
+        "SendMessage" => send_agent_rpc(context, &params).await,
+        "GetTask" => get_agent_rpc(context, &params).await,
+        "GetExtendedAgentCard" => extended_agent_card_rpc(context).await,
+        "CancelTask" => Err(AgentRpcFailure::unsupported(
+            "A2A cancellation is unavailable until provider abort is reconciled; use the governed stop operation to fence future starts",
+        )),
+        "ListTasks" | "SendStreamingMessage" | "SubscribeToTask" => {
+            Err(AgentRpcFailure::unsupported(format!(
+                "{method} is not supported by this governed agent interface",
+            )))
+        }
+        "CreateTaskPushNotificationConfig"
+        | "GetTaskPushNotificationConfig"
+        | "ListTaskPushNotificationConfigs"
+        | "DeleteTaskPushNotificationConfig" => Err(AgentRpcFailure::push_not_supported(format!(
+            "{method} is not supported by this governed agent interface",
+        ))),
+        _ => Err(AgentRpcFailure {
+            code: -32601,
+            message: format!("method '{method}' is not supported"),
+        }),
+    }
+}
+
+#[derive(Debug)]
+struct ParsedAgentRpc {
+    id: Value,
+    method: String,
+    params: Value,
+    is_notification: bool,
+}
+
+fn invalid_agent_rpc_request(id: Value, message: impl Into<String>) -> Response {
+    agent_rpc_response(
+        agent_rpc_error(
+            id,
+            AgentRpcFailure {
+                code: -32600,
+                message: message.into(),
+            },
+        ),
+        None,
+    )
+}
+
+fn parse_agent_rpc(body: &str) -> Result<ParsedAgentRpc, Box<Response>> {
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        Box::new(agent_rpc_response(
+            agent_rpc_error(
+                Value::Null,
+                AgentRpcFailure {
+                    code: -32700,
+                    message: format!("parse error: {error}"),
+                },
+            ),
+            None,
+        ))
+    })?;
+    let object = parsed.as_object().ok_or_else(|| {
+        Box::new(invalid_agent_rpc_request(
+            Value::Null,
+            "request must be a JSON object",
+        ))
+    })?;
+    let is_notification = !object.contains_key("id");
+    let id = object.get("id").cloned().unwrap_or(Value::Null);
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(Box::new(if is_notification {
+            StatusCode::NO_CONTENT.into_response()
+        } else {
+            invalid_agent_rpc_request(id, "the jsonrpc field must be \"2.0\"")
+        }));
+    }
+    let method = object
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            if is_notification {
+                Box::new(StatusCode::NO_CONTENT.into_response())
+            } else {
+                Box::new(invalid_agent_rpc_request(
+                    id.clone(),
+                    "missing or non-string method",
+                ))
+            }
+        })?
+        .to_owned();
+    let params = object
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    Ok(ParsedAgentRpc {
+        id,
+        method,
+        params,
+        is_notification,
+    })
+}
+
+/// Official A2A 1.0 JSON-RPC bound to one operator-qualified agent service.
+/// The target is carried by the route and can never be selected from a tenant
+/// aggregate card or from model-controlled request data.
+pub async fn rpc(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return agent_rpc_response(
+            agent_rpc_error(
+                Value::Null,
+                AgentRpcFailure {
+                    code: -32009,
+                    message: format!(
+                        "A2A-Version is not supported; this server speaks {A2A_PROTOCOL_VERSION}"
+                    ),
+                },
+            ),
+            None,
+        );
+    }
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    let request = match parse_agent_rpc(&body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    // Observation remains available to the authenticated original source after
+    // role offboarding. Every other method must retain current invocation
+    // authority; method-level runtime checks remain authoritative as well.
+    if request.method != "GetTask"
+        && (!identity.role.has_permission(Permission::Dispatch)
+            || !identity.is_authorized(&tenant, &namespace, &format!("agent.{agent}"), "invoke"))
+    {
+        return error(StatusCode::FORBIDDEN, "agent_service_authority_required");
+    }
+    if request.method == "SendMessage"
+        && let Err((status, body)) =
+            super::a2a::enforce_agent_routable(&state, &identity, &namespace, &tenant).await
+    {
+        return (status, [("a2a-version", A2A_PROTOCOL_VERSION)], body).into_response();
+    }
+    let context = AgentRpcContext {
+        state: &state,
+        proof: &proof,
+        namespace: &namespace,
+        tenant: &tenant,
+        agent: &agent,
+        headers: &headers,
+    };
+    let outcome = dispatch_agent_rpc(&context, &request.method, request.params).await;
+    if request.is_notification {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    match outcome {
+        Ok((result, source)) => {
+            agent_rpc_response(agent_rpc_success(request.id, result), source.as_deref())
+        }
+        Err(failure) => agent_rpc_response(agent_rpc_error(request.id, failure), None),
+    }
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1308,6 +1905,91 @@ fn error(status: StatusCode, code: &str) -> Response {
         Json(ErrorResponse { error: code.into() }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod rpc_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn official_message_role_is_normalized_without_accepting_missing_content() {
+        let message = decode_agent_rpc_message(&json!({
+            "message": {
+                "role": "ROLE_USER",
+                "messageId": "m-1",
+                "parts": [{"kind":"text", "text":"inspect"}]
+            }
+        }))
+        .unwrap();
+        assert_eq!(message.role, acteon_core::TaskRole::User);
+        assert!(decode_agent_rpc_message(&json!({})).is_err());
+    }
+
+    #[test]
+    fn governed_rpc_rejects_unimplemented_inline_push_before_admission() {
+        let failure = agent_rpc_return_immediately(&json!({
+            "configuration": {
+                "returnImmediately": true,
+                "taskPushNotificationConfig": {"url":"https://example.test/push"}
+            }
+        }))
+        .unwrap_err();
+        assert_eq!(failure.code, -32003);
+    }
+
+    #[test]
+    fn governed_rpc_binds_tenant_to_the_selected_interface() {
+        let failure = validate_agent_rpc_tenant(&json!({"tenant":"other"}), "acme").unwrap_err();
+        assert_eq!(failure.code, -32602);
+        validate_agent_rpc_tenant(&json!({"tenant":"acme"}), "acme").unwrap();
+    }
+
+    #[test]
+    fn governed_projection_removes_private_runtime_binding_metadata() {
+        let mut task = Task::new("11111111-1111-4111-8111-111111111111", "prod", "acme");
+        task.metadata.insert(
+            acteon_gateway::agent_runtime::GOVERNED_TASK_METADATA_KEY.into(),
+            json!({"execution_id":"private", "binding_digest":"private"}),
+        );
+        task.metadata.insert("public-label".into(), json!("kept"));
+        let projected = project_governed_v1_task(&task).unwrap();
+        assert!(
+            projected
+                .pointer("/metadata/acteon_governed_execution")
+                .is_none()
+        );
+        assert_eq!(
+            projected.pointer("/metadata/public-label"),
+            Some(&json!("kept"))
+        );
+        assert!(projected.get("namespace").is_none());
+    }
+
+    #[test]
+    fn exact_agent_rpc_accepts_one_request_and_rejects_batches() {
+        let parsed = parse_agent_rpc(
+            r#"{"jsonrpc":"2.0","method":"GetTask","params":{"id":"task"},"id":7}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.method, "GetTask");
+        assert_eq!(parsed.id, json!(7));
+        assert!(parse_agent_rpc("[]").is_err());
+    }
+
+    #[test]
+    fn governed_rpc_uses_canonical_typed_capability_errors() {
+        let response = agent_rpc_error(
+            json!(3),
+            AgentRpcFailure::extended_card_not_configured("missing"),
+        );
+        let encoded = serde_json::to_value(response).unwrap();
+        assert_eq!(encoded["error"]["code"], -32007);
+        assert_eq!(
+            encoded.pointer("/error/data/0/reason"),
+            Some(&json!("EXTENDED_AGENT_CARD_NOT_CONFIGURED"))
+        );
+    }
 }
 
 #[cfg(test)]

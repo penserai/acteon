@@ -8,6 +8,7 @@ class PlatformOperation(StrEnum):
     A2A_A2A_REST_TASK_GET = "a2a_a2a_rest_task_get"
     A2A_DISCOVERY_DELETE_AGENT_CARD = "a2a_discovery_delete_agent_card"
     A2A_DISCOVERY_DISCOVER_AGENT = "a2a_discovery_discover_agent"
+    A2A_DISCOVERY_DISCOVER_AGENT_V1 = "a2a_discovery_discover_agent_v1"
     A2A_DISCOVERY_GET_AGENT_CARD = "a2a_discovery_get_agent_card"
     A2A_DISCOVERY_PUT_AGENT_CARD = "a2a_discovery_put_agent_card"
     A2A_PUSH_REST_DELETE_PUSH_CONFIG = "a2a_push_rest_delete_push_config"
@@ -24,6 +25,7 @@ class PlatformOperation(StrEnum):
     AGENT_SERVICES_PEER_DISCOVER = "agent_services_peer_discover"
     AGENT_SERVICES_PEER_REFRESH = "agent_services_peer_refresh"
     AGENT_SERVICES_PEER_SEND = "agent_services_peer_send"
+    AGENT_SERVICES_RPC = "agent_services_rpc"
     AGENT_SERVICES_TASK_AUTHORIZATION_REQUEST = "agent_services_task_authorization_request"
     AGENT_SERVICES_TASK_AUTHORIZATION_RESOLVE = "agent_services_task_authorization_resolve"
     AGENT_SERVICES_TASK_CONTINUE = "agent_services_task_continue"
@@ -233,6 +235,7 @@ OPERATIONS = {
     PlatformOperation.A2A_A2A_REST_TASK_GET: ('GET', '/a2a/{namespace}/{tenant}/v1/tasks/{id}', ('namespace', 'tenant', 'id'), 'json'),
     PlatformOperation.A2A_DISCOVERY_DELETE_AGENT_CARD: ('DELETE', '/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card', ('namespace', 'tenant', 'agent_id'), 'json'),
     PlatformOperation.A2A_DISCOVERY_DISCOVER_AGENT: ('GET', '/a2a/{namespace}/{tenant}/.well-known/agent.json', ('namespace', 'tenant'), 'json'),
+    PlatformOperation.A2A_DISCOVERY_DISCOVER_AGENT_V1: ('GET', '/a2a/{namespace}/{tenant}/.well-known/agent-card.json', ('namespace', 'tenant'), 'json'),
     PlatformOperation.A2A_DISCOVERY_GET_AGENT_CARD: ('GET', '/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card', ('namespace', 'tenant', 'agent_id'), 'json'),
     PlatformOperation.A2A_DISCOVERY_PUT_AGENT_CARD: ('PUT', '/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card', ('namespace', 'tenant', 'agent_id'), 'json'),
     PlatformOperation.A2A_PUSH_REST_DELETE_PUSH_CONFIG: ('DELETE', '/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}', ('namespace', 'tenant', 'id', 'cfgId'), 'json'),
@@ -249,6 +252,7 @@ OPERATIONS = {
     PlatformOperation.AGENT_SERVICES_PEER_DISCOVER: ('GET', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers', ('namespace', 'tenant', 'agent', 'id'), 'json'),
     PlatformOperation.AGENT_SERVICES_PEER_REFRESH: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh', ('namespace', 'tenant', 'agent', 'id', 'target', 'skill', 'submission'), 'json'),
     PlatformOperation.AGENT_SERVICES_PEER_SEND: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send', ('namespace', 'tenant', 'agent', 'id', 'target', 'skill'), 'json'),
+    PlatformOperation.AGENT_SERVICES_RPC: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}', ('namespace', 'tenant', 'agent'), 'json'),
     PlatformOperation.AGENT_SERVICES_TASK_AUTHORIZATION_REQUEST: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request', ('namespace', 'tenant', 'agent', 'id'), 'json'),
     PlatformOperation.AGENT_SERVICES_TASK_AUTHORIZATION_RESOLVE: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve', ('namespace', 'tenant', 'agent', 'id'), 'json'),
     PlatformOperation.AGENT_SERVICES_TASK_CONTINUE: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send', ('namespace', 'tenant', 'agent', 'id'), 'json'),

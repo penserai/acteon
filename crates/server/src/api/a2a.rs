@@ -127,7 +127,7 @@ const VERSION_NOT_SUPPORTED: i64 = -32009;
 /// value drives both the JSON-RPC error object and the REST HTTP
 /// status, so the two transports report the same failure consistently.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct A2aError {
+pub(crate) struct A2aError {
     code: i64,
     message: String,
 }
@@ -1294,7 +1294,7 @@ fn agent_routability_rejection(
 /// or bound to an id that was never registered, is unaffected — only a
 /// registered, non-routable agent is rejected. Conflicting bindings are
 /// an operator misconfiguration and are refused.
-async fn enforce_agent_routable(
+pub(crate) async fn enforce_agent_routable(
     state: &AppState,
     identity: &CallerIdentity,
     namespace: &str,
@@ -1387,7 +1387,7 @@ fn error_response(id: Value, err: &A2aError) -> JsonRpcResponse {
 /// Convert an internal Task into the schema-closed A2A 1.0 `ProtoJSON` view.
 /// Acteon-only ownership, recovery and execution fields never cross the
 /// protocol boundary.
-fn project_v1_task(task: &Task) -> Result<Value, A2aError> {
+pub(crate) fn project_v1_task(task: &Task) -> Result<Value, A2aError> {
     let mut value = to_value(task)?;
     let Some(object) = value.as_object_mut() else {
         return Err(A2aError::internal("internal error"));

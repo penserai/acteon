@@ -42,6 +42,12 @@
     "permission": null
   },
   {
+    "name": "a2a_discovery_discover_agent_v1",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+    "permission": null
+  },
+  {
     "name": "a2a_discovery_get_agent_card",
     "method": "GET",
     "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
@@ -130,6 +136,12 @@
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
     "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_rpc",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}",
+    "permission": "AuditRead"
   },
   {
     "name": "agent_services_task_authorization_request",

@@ -278,6 +278,10 @@ pub fn router(state: AppState) -> Router {
             post(a2a::a2a_rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}",
+            post(agent_services::rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
             "/a2a/{namespace}/{tenant}/v1/message:send",
             post(a2a::a2a_rest_message_send).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )

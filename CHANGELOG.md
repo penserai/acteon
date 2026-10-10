@@ -2,6 +2,13 @@
 
 ## Unreleased — rehabilitation
 
+- Add an exact-agent A2A 1.0 JSON-RPC endpoint that sends new work through the
+  governed agent-service runtime, preserves private parent authority, binds
+  observation and continuation to authenticated source provenance, and keeps
+  internal execution metadata off the protocol wire. Regenerate the operation
+  catalogs for all five client SDKs and register every public and protected A2A
+  route in the fail-closed permission inventory.
+
 - Derive recurring-action claim leases from the polling interval with two full
   intervals plus a recovery margin. Document pre-dispatch re-arming so delayed
   consumers cannot cause the same due occurrence to be dispatched again.

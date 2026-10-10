@@ -9,6 +9,7 @@ const (
 	OpA2aA2aRestTaskGet PlatformOperation = "a2a_a2a_rest_task_get"
 	OpA2aDiscoveryDeleteAgentCard PlatformOperation = "a2a_discovery_delete_agent_card"
 	OpA2aDiscoveryDiscoverAgent PlatformOperation = "a2a_discovery_discover_agent"
+	OpA2aDiscoveryDiscoverAgentV1 PlatformOperation = "a2a_discovery_discover_agent_v1"
 	OpA2aDiscoveryGetAgentCard PlatformOperation = "a2a_discovery_get_agent_card"
 	OpA2aDiscoveryPutAgentCard PlatformOperation = "a2a_discovery_put_agent_card"
 	OpA2aPushRestDeletePushConfig PlatformOperation = "a2a_push_rest_delete_push_config"
@@ -25,6 +26,7 @@ const (
 	OpAgentServicesPeerDiscover PlatformOperation = "agent_services_peer_discover"
 	OpAgentServicesPeerRefresh PlatformOperation = "agent_services_peer_refresh"
 	OpAgentServicesPeerSend PlatformOperation = "agent_services_peer_send"
+	OpAgentServicesRpc PlatformOperation = "agent_services_rpc"
 	OpAgentServicesTaskAuthorizationRequest PlatformOperation = "agent_services_task_authorization_request"
 	OpAgentServicesTaskAuthorizationResolve PlatformOperation = "agent_services_task_authorization_resolve"
 	OpAgentServicesTaskContinue PlatformOperation = "agent_services_task_continue"
@@ -234,6 +236,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpA2aA2aRestTaskGet: {"GET", "/a2a/{namespace}/{tenant}/v1/tasks/{id}", []string{"namespace", "tenant", "id"}, false},
 	OpA2aDiscoveryDeleteAgentCard: {"DELETE", "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card", []string{"namespace", "tenant", "agent_id"}, false},
 	OpA2aDiscoveryDiscoverAgent: {"GET", "/a2a/{namespace}/{tenant}/.well-known/agent.json", []string{"namespace", "tenant"}, false},
+	OpA2aDiscoveryDiscoverAgentV1: {"GET", "/a2a/{namespace}/{tenant}/.well-known/agent-card.json", []string{"namespace", "tenant"}, false},
 	OpA2aDiscoveryGetAgentCard: {"GET", "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card", []string{"namespace", "tenant", "agent_id"}, false},
 	OpA2aDiscoveryPutAgentCard: {"PUT", "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card", []string{"namespace", "tenant", "agent_id"}, false},
 	OpA2aPushRestDeletePushConfig: {"DELETE", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}", []string{"namespace", "tenant", "id", "cfgId"}, false},
@@ -250,6 +253,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpAgentServicesPeerDiscover: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesPeerRefresh: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
 	OpAgentServicesPeerSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", []string{"namespace", "tenant", "agent", "id", "target", "skill"}, false},
+	OpAgentServicesRpc: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}", []string{"namespace", "tenant", "agent"}, false},
 	OpAgentServicesTaskAuthorizationRequest: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesTaskAuthorizationResolve: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesTaskContinue: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send", []string{"namespace", "tenant", "agent", "id"}, false},

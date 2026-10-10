@@ -379,6 +379,9 @@ actions = ["rpc"]
     fn endpoint(&self) -> String {
         format!("{}/a2a/prod/acme/agents/notifier/v1/message:send", self.url)
     }
+    fn rpc_endpoint(&self) -> String {
+        format!("{}/a2a/prod/acme/agents/notifier", self.url)
+    }
 }
 
 async fn webhook() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
@@ -829,6 +832,114 @@ async fn send_task(server: &Server, client: &reqwest::Client, id: &str) -> (Valu
         .unwrap()
         .to_owned();
     (response.json().await.unwrap(), source)
+}
+
+#[tokio::test]
+async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to_its_receipt() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let request = json!({
+        "jsonrpc":"2.0",
+        "id":"send-1",
+        "method":"SendMessage",
+        "params":{
+            "message":message("official-governed")["message"],
+            "configuration":{"returnImmediately":true}
+        }
+    });
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    assert_eq!(response.headers()["a2a-version"], "1.0");
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    assert_eq!(accepted["id"], "send-1");
+    assert_eq!(
+        accepted.pointer("/result/task/status/state"),
+        Some(&json!("TASK_STATE_SUBMITTED"))
+    );
+    assert!(accepted.pointer("/result/task/namespace").is_none());
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+
+    let get = json!({
+        "jsonrpc":"2.0",
+        "id":"get-without-receipt",
+        "method":"GetTask",
+        "params":{"id":task_id}
+    });
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .json(&get)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let rejected: Value = response.json().await.unwrap();
+    assert_eq!(rejected["error"]["code"], -32001);
+
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = client
+                .post(server.rpc_endpoint())
+                .bearer_auth("alice-secret")
+                .header("x-acteon-agent-source-context", &source)
+                .json(&json!({
+                    "jsonrpc":"2.0",
+                    "id":"get-1",
+                    "method":"GetTask",
+                    "params":{"id":task_id}
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            if body.pointer("/result/status/state") == Some(&json!("TASK_STATE_COMPLETED")) {
+                break body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(completed["result"]["id"], task_id);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", &source)
+        .json(&json!({
+            "jsonrpc":"2.0",
+            "id":"cancel-1",
+            "method":"CancelTask",
+            "params":{"id":task_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let unsupported: Value = response.json().await.unwrap();
+    assert_eq!(unsupported["error"]["code"], -32004);
+    webhook_task.abort();
 }
 
 #[tokio::test]

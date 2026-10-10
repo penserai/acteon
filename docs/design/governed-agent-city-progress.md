@@ -2225,6 +2225,22 @@ card that enables it. The official Python SDK integration now invokes both
 streaming methods before exercising task and push lifecycle operations. A full
 official TCK run remains the external release gate.
 
+An exact-agent official JSON-RPC adapter now connects inbound A2A work to the
+governed agent-service runtime at
+`/a2a/{namespace}/{tenant}/agents/{agent}`. `SendMessage` uses the installed
+service binding, current private caller authentication, source grant, permits,
+registry qualification, destination authentication and bounded execution
+contexts before durable acceptance. `GetTask` revalidates the original source,
+and agent principals must return the opaque source-context receipt issued at
+admission so a shared identity cannot join another job. Input continuation
+uses the same boundary. Trusted hosts may pair a private parent-context header
+with its exact permit references to preserve descendant accounting; neither
+can be supplied through model-controlled message content. The adapter projects schema-closed A2A 1.0 Tasks and
+resolves the exact durable card for `GetExtendedAgentCard`; it never chooses a
+destination from an aggregate tenant card. Governed list, streaming, push and
+confirmed cancellation remain explicit follow-ups and return
+`UnsupportedOperation` on this interface.
+
 ### Signed federation capability negotiation
 
 Federation capability negotiation now has a schema-closed governance contract.
