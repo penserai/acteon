@@ -17,6 +17,15 @@ pub enum CasResult {
     },
 }
 
+/// A stable lexicographic page within one namespace, tenant and key kind.
+/// `next_cursor` is the last returned canonical key and is supplied as
+/// `after` on the next request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateScanPage {
+    pub entries: Vec<(String, String)>,
+    pub next_cursor: Option<String>,
+}
+
 /// Trait for persisting action state.
 ///
 /// Implementations must be `Send + Sync` and safe for concurrent access.
@@ -96,6 +105,38 @@ pub trait StateStore: Send + Sync {
         kind: crate::key::KeyKind,
         prefix: Option<&str>,
     ) -> Result<Vec<(String, String)>, StateError>;
+
+    /// Read one stable, bounded page in canonical-key order. Backends with an
+    /// ordered key index should override this method so work is proportional
+    /// to the requested page. The default preserves correctness for custom
+    /// stores while they adopt native pagination.
+    async fn scan_keys_page(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: crate::key::KeyKind,
+        prefix: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let mut entries = self.scan_keys(namespace, tenant, kind, prefix).await?;
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        if let Some(after) = after {
+            entries.retain(|(key, _)| key.as_str() > after);
+        }
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        let next_cursor = has_more
+            .then(|| entries.last().map(|(key, _)| key.clone()))
+            .flatten();
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
+    }
 
     /// Scan all keys of a given kind across all namespaces and tenants.
     ///

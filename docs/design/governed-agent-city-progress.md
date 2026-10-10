@@ -2148,6 +2148,13 @@ generation, reason, timestamp and stable idempotency ID, preserves the unknown
 peer outcome, blocks replay, and settles the retained local export reservation.
 It cannot assert remote success or rejection and contains no network operation.
 
-Qualified peer-finality evidence, backend-native journal pagination, capability
+The state substrate now exposes ordered, cursor-based, bounded scope/kind pages.
+Federation evidence consumes that generic contract. PostgreSQL uses an ordered
+range query and DynamoDB uses its partition/sort-key `Query`; memory establishes
+the reference semantics. Custom stores remain source compatible through the
+correct scan-and-sort default. Redis still needs an ordered scope/kind index and
+backfill before its implementation is backend bounded.
+
+Qualified peer-finality evidence, Redis ordered-index pagination, capability
 exchange, and two-server qualification across Redis, PostgreSQL and DynamoDB
 remain required for the federation release gate.

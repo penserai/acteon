@@ -511,6 +511,49 @@ mod tests {
             .expect("conformance tests should pass");
     }
 
+    #[tokio::test]
+    async fn ordered_pages_are_bounded_and_resume_after_the_last_key() {
+        let store = MemoryStateStore::new();
+        for id in ["c", "a", "d", "b"] {
+            store
+                .set(&test_key(KeyKind::State, id), id, None)
+                .await
+                .unwrap();
+        }
+        let first = store
+            .scan_keys_page("test-ns", "test-tenant", KeyKind::State, None, None, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .entries
+                .iter()
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        let second = store
+            .scan_keys_page(
+                "test-ns",
+                "test-tenant",
+                KeyKind::State,
+                None,
+                first.next_cursor.as_deref(),
+                2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second
+                .entries
+                .iter()
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            ["c", "d"]
+        );
+        assert!(second.next_cursor.is_none());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn ttl_expiry_via_get() {
         let store = MemoryStateStore::new();

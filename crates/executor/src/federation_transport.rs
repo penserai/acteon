@@ -241,31 +241,35 @@ impl FederationDeliveryEvidenceReader {
         if namespace.is_empty() || tenant.is_empty() || !(1..=500).contains(&limit) {
             return Err(FederationTransportError::Invalid);
         }
-        let mut records = self
+        let cursor = after.map(|delivery_id| {
+            StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+                delivery_id.to_string(),
+            )
+            .canonical()
+        });
+        let page = self
             .state
-            .scan_keys(
+            .scan_keys_page(
                 namespace,
                 tenant,
                 KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
                 None,
+                cursor.as_deref(),
+                limit,
             )
             .await
             .map_err(|_| FederationTransportError::Unavailable)?;
-        records.sort_by(|left, right| left.0.cmp(&right.0));
         let now_ms = self.clock.now().timestamp_millis();
         if now_ms < 0 {
             return Err(FederationTransportError::Invalid);
         }
         let mut evidence = Vec::new();
-        for (_, raw) in records {
+        for (_, raw) in page.entries {
             let record = decode_evidence_record(self.encryptor.as_ref(), &raw)?;
-            if after.is_some_and(|cursor| record.delivery_id <= cursor) {
-                continue;
-            }
             evidence.push(project_evidence(&record, now_ms)?);
-            if evidence.len() == limit {
-                break;
-            }
         }
         Ok(evidence)
     }
