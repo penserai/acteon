@@ -75,6 +75,34 @@ func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
 	}
 }
 
+func TestOfficialAgentServiceCancelPreservesIdentityAndSource(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unexpected cancellation request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request["method"] != "CancelTask" || request["id"] != "cancel:job-1" {
+			t.Fatalf("unexpected envelope: %#v", request)
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		body := `{"jsonrpc":"2.0","id":"cancel:job-1","result":{"id":"job-1","status":{"state":"TASK_STATE_CANCELED"},"metadata":{"acteonCancellation":{"state":"confirmed"}}}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
+	task, err := client.AgentServiceCancelTask(context.Background(), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task["id"] != "job-1" {
+		t.Fatalf("unexpected task: %#v", task)
+	}
+}
+
 func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
 	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "auth_required"}}
 	var calls atomic.Int32

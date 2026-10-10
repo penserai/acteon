@@ -54,6 +54,7 @@ pub struct AgentServiceAcceptance {
 pub struct AgentServiceTaskObservation {
     pub task: Task,
     pub task_version: u64,
+    pub future_starts_blocked: bool,
 }
 
 pub struct AgentServiceObservation<'a> {
@@ -756,7 +757,7 @@ impl ExecutionAuthorityRuntime {
         source_context: ExecutionContextReference,
     ) -> Result<AgentServiceAcceptance, AgentServiceError> {
         let versioned = self
-            .load_versioned_service_task(namespace, tenant, task_id, observed)
+            .load_versioned_service_task(namespace, tenant, task_id, observed, false)
             .await?;
         Ok(AgentServiceAcceptance {
             task: versioned.task,
@@ -782,6 +783,7 @@ impl ExecutionAuthorityRuntime {
             &observed.task.tenant,
             task_id,
             &observed.task,
+            observed.future_starts_blocked,
         )
         .await
     }
@@ -805,6 +807,7 @@ impl ExecutionAuthorityRuntime {
             &continued.task.tenant,
             task_id,
             &continued.task,
+            continued.future_starts_blocked,
         )
         .await
     }
@@ -854,8 +857,14 @@ impl ExecutionAuthorityRuntime {
             )
             .await
             .map_err(AgentServiceError::from)?;
-        self.load_versioned_service_task(request.namespace, request.tenant, request.task_id, &task)
-            .await
+        self.load_versioned_service_task(
+            request.namespace,
+            request.tenant,
+            request.task_id,
+            &task,
+            false,
+        )
+        .await
     }
 
     pub async fn resolve_agent_service_authorization(
@@ -883,7 +892,7 @@ impl ExecutionAuthorityRuntime {
             .resolve_authorization(task_id, request.challenge_id, &source, verifier.as_ref())
             .await
             .map_err(AgentServiceError::from)?;
-        self.load_versioned_service_task(namespace, tenant, task_id, &task)
+        self.load_versioned_service_task(namespace, tenant, task_id, &task, false)
             .await
     }
 
@@ -977,6 +986,7 @@ impl ExecutionAuthorityRuntime {
         tenant: &str,
         task_id: uuid::Uuid,
         observed: &Task,
+        future_starts_blocked: bool,
     ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
         let key = StateKey::new(namespace, tenant, KeyKind::A2aTask, task_id.to_string());
         let (raw, task_version) = self
@@ -994,7 +1004,11 @@ impl ExecutionAuthorityRuntime {
         {
             return Err(AgentServiceError::Conflict);
         }
-        Ok(AgentServiceTaskObservation { task, task_version })
+        Ok(AgentServiceTaskObservation {
+            task,
+            task_version,
+            future_starts_blocked,
+        })
     }
 
     /// Stop only the original accepted recipient subtree. Current private

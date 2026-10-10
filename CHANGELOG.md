@@ -2,6 +2,13 @@
 
 ## Unreleased — rehabilitation
 
+- Add truthful governed `CancelTask` to exact-agent A2A services. Cancellation
+  commits the execution-subtree fence first, projects `Canceled` only for a
+  proven local non-start or qualified provider no-effect receipt, and exposes
+  pending finality through `metadata.acteonCancellation`. Native stop receipts
+  now include `cancellation_confirmed`; all five SDKs expose official cancel
+  helpers and validate the new acknowledgement.
+
 - Add an exact-agent A2A 1.0 JSON-RPC endpoint that sends new work through the
   governed agent-service runtime, preserves private parent authority, binds
   observation and continuation to authenticated source provenance, and keeps

@@ -10,7 +10,7 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
   const [attempted, setAttempted] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [receipts, setReceipts] = useState<(ServiceReceipt & { futureStartsBlocked?: boolean; providerAbort?: ServiceProviderAbort })[]>([])
+  const [receipts, setReceipts] = useState<(ServiceReceipt & { futureStartsBlocked?: boolean; cancellationConfirmed?: boolean; providerAbort?: ServiceProviderAbort })[]>([])
   async function send() {
     setBusy(true); setError(''); setAttempted(true)
     try {
@@ -31,7 +31,7 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
     setBusy(true); setError('')
     try {
       const stopped = await stopServiceTask(receipt)
-      setReceipts(current => current.map(item => item.taskId === receipt.taskId ? { ...item, task: stopped.task, futureStartsBlocked: true, providerAbort: stopped.providerAbort } : item))
+      setReceipts(current => current.map(item => item.taskId === receipt.taskId ? { ...item, task: stopped.task, futureStartsBlocked: true, cancellationConfirmed: stopped.cancellationConfirmed, providerAbort: stopped.providerAbort } : item))
     } catch (cause) { setError(`Stop acknowledgement for task ${receipt.taskId} unavailable. Retry this task’s stop control. ${(cause as Error).message}`) }
     finally { setBusy(false) }
   }
@@ -55,8 +55,10 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
         <Button variant="secondary" disabled={busy} onClick={() => void refresh(receipt)}>Refresh task</Button>
         <Button variant="secondary" disabled={busy || receipt.futureStartsBlocked === true} onClick={() => void stop(receipt)}>Stop future starts</Button>
       </div>
-      {receipt.futureStartsBlocked && <p className="text-sm">{receipt.providerAbort?.state === 'reconciled'
-        ? 'Future starts stopped. Qualified provider finality reconciled the registered attempt.'
+      {receipt.futureStartsBlocked && <p className="text-sm">{receipt.cancellationConfirmed
+        ? 'Cancellation confirmed. No provider effect remains and future starts are stopped.'
+        : receipt.providerAbort?.state === 'reconciled'
+        ? 'Future starts stopped. Qualified provider finality recorded a known non-canceled result.'
         : receipt.providerAbort?.state === 'uncertain'
           ? `Future starts stopped. Provider abort outcome is unresolved for attempt ${receipt.providerAbort.attemptId}; retained capacity requires reconciliation.`
           : receipt.providerAbort?.state === 'restricted_only'

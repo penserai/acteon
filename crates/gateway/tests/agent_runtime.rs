@@ -1868,7 +1868,8 @@ async fn requester_stop_is_durable_idempotent_and_prevents_queued_effects() {
         .await
         .unwrap();
     assert!(stopped.future_starts_blocked);
-    assert_eq!(stopped.task.status.state, TaskState::Submitted);
+    assert!(stopped.cancellation_confirmed);
+    assert_eq!(stopped.task.status.state, TaskState::Canceled);
     let generation = f.coordinator.snapshot().await.unwrap().generation;
     let restarted = f.runtime();
     assert!(
@@ -1882,11 +1883,10 @@ async fn requester_stop_is_durable_idempotent_and_prevents_queued_effects() {
         f.coordinator.snapshot().await.unwrap().generation,
         generation
     );
-    assert!(
-        Box::pin(restarted.resume(f.child.execution_id()))
-            .await
-            .is_err()
-    );
+    let replayed = Box::pin(restarted.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert_eq!(replayed.task.status.state, TaskState::Canceled);
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
     let state = f.coordinator.snapshot().await.unwrap();
     assert!(state.starts.is_empty());
@@ -1961,11 +1961,12 @@ async fn requester_stop_reports_only_reconciliation_verified_provider_abort() {
         stopped.provider_abort,
         Some(ProviderAbortStatus::Reconciled { .. })
     ));
-    assert_eq!(stopped.task.status.state, TaskState::Failed);
+    assert!(stopped.cancellation_confirmed);
+    assert_eq!(stopped.task.status.state, TaskState::Canceled);
     assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
     f.counter.release.add_permits(1);
     let late = running.await.unwrap().unwrap();
-    assert_eq!(late.task.status.state, TaskState::Failed);
+    assert_eq!(late.task.status.state, TaskState::Canceled);
     assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -2032,11 +2033,10 @@ async fn requester_stop_recovers_a_lost_control_write_acknowledgement() {
                 .unwrap()
                 .future_starts_blocked
         );
-        assert!(
-            Box::pin(replacement.resume(f.child.execution_id()))
-                .await
-                .is_err()
-        );
+        let replayed = Box::pin(replacement.resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        assert_eq!(replayed.task.status.state, TaskState::Canceled);
         assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
     }
 }

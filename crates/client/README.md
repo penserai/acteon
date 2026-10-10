@@ -285,6 +285,9 @@ while let Some(result) = stream.next().await { println!("{}", result?); }
 
 let mut updates = client.agent_service_subscribe_task(&receipt).await?;
 while let Some(result) = updates.next().await { println!("{}", result?); }
+
+let canceled = client.agent_service_cancel_task(&receipt).await?;
+println!("{}", canceled["metadata"]["acteonCancellation"]["state"]);
 ```
 
 The default client uses a separate no-total-timeout transport for streams. If
@@ -337,10 +340,13 @@ The helper sends that job's original identity and source context in one request:
 ```rust
 let stopped = client.agent_service_stop_task(&receipt).await?;
 println!("Future starts blocked: {}", stopped.future_starts_blocked);
+println!("Cancellation confirmed: {}", stopped.cancellation_confirmed);
 println!("Provider intervention: {:?}", stopped.provider_abort);
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellation_confirmed` is true only when the Task is `Canceled` because no
+attempt started or qualified reconciliation proved no effect.
 `provider_abort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

@@ -386,18 +386,37 @@ context when invoking this control.
 | Go | `AgentServiceStopTask(ctx, receipt)` | `AgentServiceStopReceipt` |
 | Java | `agentServiceStopTask(receipt)` | `AgentServiceStopReceipt` |
 
+The official exact-agent A2A endpoint is also available through receipt-aware
+cancel helpers:
+
+| SDK | Official `CancelTask` helper |
+| --- | --- |
+| Rust | `agent_service_cancel_task(&receipt)` |
+| Python sync/async | `agent_service_cancel_task(receipt)` |
+| TypeScript | `agentServiceCancelTask(receipt)` |
+| Go | `AgentServiceCancelTask(ctx, receipt)` |
+| Java | `agentServiceCancelTask(receipt)` |
+
 All helpers send one request, validate the original task identity and exact
 restriction acknowledgement, and reject redirects. The agent detail view provides
 **Stop future starts** for each locally retained job. A failed acknowledgement
 keeps that job available for an explicit retry; a successful acknowledgement
 keeps the restriction visible alongside later provider results.
 
-A successful response is `{"task": ..., "future_starts_blocked": true,
+A successful native response is `{"task": ..., "future_starts_blocked": true,
+"cancellation_confirmed": boolean,
 "provider_abort": ...}`. `provider_abort` is optional and has one typed state:
 `restricted_only`, `uncertain` with the stable provider attempt ID, or
 `reconciled` with the accepted finality-proof digest. Every SDK validates this
 shape, including the canonical lowercase UUIDv5 attempt ID and lowercase
 SHA-256 proof digest. The browser explains the same distinction beside the task.
+
+`cancellation_confirmed=true` requires a `canceled` Task. It means either no
+provider attempt existed before the fence or qualified provider evidence proved
+no effect. `false` means cancellation was requested and future starts are blocked,
+while an existing provider effect still has an unsupported, uncertain, or known
+non-canceled outcome. Official `CancelTask` exposes the same distinction under
+`metadata.acteonCancellation` without adding a nonstandard Task state.
 
 The restriction blocks future starts in the recipient execution subtree and survives
 restart. It leaves the task's status and artifacts tied to actual provider

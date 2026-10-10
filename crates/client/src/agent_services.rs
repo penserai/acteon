@@ -63,12 +63,13 @@ impl Stream for AgentServiceA2aStream {
         self.inner.as_mut().poll_next(cx)
     }
 }
-/// Restriction acknowledgement; task status continues to reflect provider evidence.
+/// Cancellation acknowledgement with provider finality kept separate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentServiceStopReceipt {
     pub task: Task,
     pub future_starts_blocked: bool,
+    pub cancellation_confirmed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_abort: Option<AgentServiceProviderAbort>,
 }
@@ -1200,6 +1201,70 @@ impl ActeonClient {
         agent_a2a_stream_response(response, request_id, false).await
     }
 
+    /// Request cancellation through the official exact-agent A2A method.
+    /// A returned nonterminal Task means the durable fence is active while
+    /// provider finality remains pending; inspect `metadata.acteonCancellation`.
+    pub async fn agent_service_cancel_task(
+        &self,
+        receipt: &AgentServiceReceipt,
+    ) -> Result<Value, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?
+        );
+        let request_id = serde_json::json!(format!("cancel:{}", receipt.task_id));
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"CancelTask", "params":{"id":receipt.task_id}
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|error| Error::Connection(error.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A response version missing or unsupported".into(),
+            ));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        let task = parse_agent_a2a_result(&body, &request_id)?;
+        if task.get("id").and_then(Value::as_str) != Some(receipt.task_id.as_str())
+            || !task.get("status").is_some_and(Value::is_object)
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A cancellation task identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
+
     async fn agent_service_send_message_inner(
         &self,
         namespace: &str,
@@ -1313,6 +1378,8 @@ impl ActeonClient {
             .await
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         if !stopped.future_starts_blocked
+            || (stopped.cancellation_confirmed
+                && stopped.task.status.state != acteon_core::TaskState::Canceled)
             || stopped
                 .provider_abort
                 .as_ref()
@@ -1501,6 +1568,18 @@ mod tests {
                     if path == "/a2a/prod/acme/agents/notifier" {
                         let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                         let method = body["method"].as_str().unwrap();
+                        if method == "CancelTask" {
+                            assert_eq!(source.as_deref(), wire["jobs"][0]["source_context"].as_str());
+                            assert_eq!(body["params"]["id"], "job-1");
+                            assert!(accept.is_none());
+                            let mut response = Json(serde_json::json!({
+                                "jsonrpc":"2.0", "id":body["id"],
+                                "result":{"id":"job-1","status":{"state":"TASK_STATE_CANCELED"},
+                                    "metadata":{"acteonCancellation":{"state":"confirmed","futureStartsBlocked":true}}}
+                            })).into_response();
+                            response.headers_mut().insert("a2a-version", "1.0".parse().unwrap());
+                            return response;
+                        }
                         assert_eq!(accept.as_deref(), Some("text/event-stream"));
                         assert!(matches!(method, "SendStreamingMessage" | "SubscribeToTask"));
                         if method == "SubscribeToTask" {
@@ -1687,6 +1766,26 @@ mod tests {
         assert_eq!(
             subscribed.next().await.unwrap().unwrap()["task"]["id"],
             "job-1"
+        );
+        let canceled = fixture
+            .client
+            .agent_service_cancel_task(&receipt)
+            .await
+            .unwrap();
+        assert_eq!(canceled["id"], "job-1");
+        assert_eq!(
+            canceled["metadata"]["acteonCancellation"]["state"],
+            "confirmed"
+        );
+        assert!(
+            fixture
+                .calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .ends_with("/agents/notifier")
         );
     }
 

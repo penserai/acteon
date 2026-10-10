@@ -116,6 +116,26 @@ public class ActeonClient implements AutoCloseable {
                 "params", Map.of("id", receipt.taskId())),
             AgentServiceReceipt.source(receipt.sourceContext()), null, false);
     }
+    /** Request official A2A cancellation while preserving pending finality metadata. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceCancelTask(AgentServiceReceipt receipt) throws ActeonException {
+        String requestId = "cancel:" + receipt.taskId();
+        var response = agentServiceRequest(
+            "POST", AgentServiceReceipt.rpcBase(receipt.namespace(), receipt.tenant(), receipt.agent()),
+            Map.of("jsonrpc", "2.0", "id", requestId, "method", "CancelTask",
+                "params", Map.of("id", receipt.taskId())),
+            AgentServiceReceipt.source(receipt.sourceContext()), null);
+        try {
+            var rpc = objectMapper.readTree(response.body());
+            if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
+                throw new ActeonException("agent service A2A response request identity mismatch");
+            if (rpc.path("error").isObject())
+                throw new ActeonException("A2A error " + rpc.path("error").path("code") + ": " + rpc.path("error").path("message").asText());
+            var task = rpc.path("result");
+            if (!task.isObject() || !receipt.taskId().equals(task.path("id").asText()) || !task.path("status").isObject())
+                throw new ActeonException("agent service A2A cancellation task identity mismatch");
+            return task;
+        } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
+    }
     /** List current source-authorized registry options. Descriptions are untrusted data. */
     public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");
@@ -223,10 +243,14 @@ public class ActeonClient implements AutoCloseable {
         var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
         try {
             var value = objectMapper.readTree(response.body());
-            if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue())
+            if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue()
+                    || !value.path("cancellation_confirmed").isBoolean())
                 throw new ActeonException("agent service stop acknowledgement missing or malformed");
             var task = AgentServiceReceipt.verifyTask(value.path("task"), receipt.namespace(), receipt.tenant(), receipt.taskId());
-            return new AgentServiceStopReceipt(task, true, AgentServiceProviderAbort.parse(value.path("provider_abort")));
+            boolean confirmed = value.path("cancellation_confirmed").booleanValue();
+            if (confirmed && !"canceled".equals(task.path("status").path("state").asText()))
+                throw new ActeonException("agent service stop acknowledgement missing or malformed");
+            return new AgentServiceStopReceipt(task, true, confirmed, AgentServiceProviderAbort.parse(value.path("provider_abort")));
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
 

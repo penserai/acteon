@@ -198,9 +198,10 @@ export function agentProviderAbort(value: unknown): AgentServiceProviderAbort | 
   throw new Error("agent service provider abort status malformed");
 }
 
-/** Acknowledges future-start restriction and preserves separate provider finality. */
+/** Acknowledges cancellation intent and preserves separate provider finality. */
 export interface AgentServiceStopReceipt {
   readonly task: Record<string, unknown>;
   readonly futureStartsBlocked: true;
+  readonly cancellationConfirmed: boolean;
   readonly providerAbort?: AgentServiceProviderAbort;
 }

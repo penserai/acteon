@@ -530,11 +530,18 @@ The helper sends that job's original identity and source context in one request:
 ```java
 var stopped = client.agentServiceStopTask(receipt);
 System.out.println(stopped.futureStartsBlocked());
+System.out.println(stopped.cancellationConfirmed());
 System.out.println(stopped.providerAbort());
 System.out.println(stopped.task().path("status"));
+
+var officialTask = client.agentServiceCancelTask(receipt);
+System.out.println(officialTask.path("metadata").path("acteonCancellation").path("state"));
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellationConfirmed()` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `providerAbort()` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

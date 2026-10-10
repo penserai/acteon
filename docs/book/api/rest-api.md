@@ -772,10 +772,14 @@ enters the governed execution runtime and `GetTask` revalidates the original
 authenticated source. Admission returns the opaque
 `X-Acteon-Agent-Source-Context` receipt; agent principals must return it for
 observation or continuation. The route also supports `GetExtendedAgentCard`,
-`SendStreamingMessage`, and `SubscribeToTask`. Both streaming methods use the
+`SendStreamingMessage`, `SubscribeToTask`, and governed `CancelTask`.
+Cancellation commits a future-start fence before returning. It reports a
+confirmed canceled Task only for a local non-start or qualified no-effect
+finality; otherwise the Task remains in its observed state with
+`metadata.acteonCancellation.state` set to `requested`. Both streaming methods use the
 exact card's capability, the shared tenant connection quota, and current
 source-provenance validation before every emitted status, artifact, or recovery
-snapshot. Methods whose governed lifecycle is not yet complete
+snapshot. `ListTasks` and push methods, whose governed lifecycle is not yet complete,
 return `UnsupportedOperation` instead of falling back to the tenant Task
 engine.
 

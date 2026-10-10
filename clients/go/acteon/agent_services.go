@@ -338,6 +338,43 @@ func (c *Client) AgentServiceSubscribeTask(ctx context.Context, receipt *AgentSe
 	}, map[string]string{AgentSourceContextHeader: receipt.SourceContext}, false)
 }
 
+// AgentServiceCancelTask requests official A2A cancellation. A nonterminal
+// result means the durable fence is active while provider finality is pending.
+func (c *Client) AgentServiceCancelTask(ctx context.Context, receipt *AgentServiceReceipt) (map[string]any, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	path, err := agentServiceRPCBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	requestID := "cancel:" + receipt.TaskID
+	rpc, _, err := c.agentServiceRequest(ctx, http.MethodPost, path, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "CancelTask",
+		"params": map[string]any{"id": receipt.TaskID},
+	}, receipt.SourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rpc["jsonrpc"] != "2.0" || rpc["id"] != requestID {
+		return nil, fmt.Errorf("agent service A2A response request identity mismatch")
+	}
+	if failure, ok := rpc["error"].(map[string]any); ok {
+		return nil, fmt.Errorf("A2A error %v: %v", failure["code"], failure["message"])
+	}
+	task, ok := rpc["result"].(map[string]any)
+	if !ok || task["id"] != receipt.TaskID {
+		return nil, fmt.Errorf("agent service A2A cancellation task identity mismatch")
+	}
+	if _, ok := task["status"].(map[string]any); !ok {
+		return nil, fmt.Errorf("agent service A2A cancellation task identity mismatch")
+	}
+	return task, nil
+}
+
 func (c *Client) openAgentServiceA2A(ctx context.Context, path, requestID string, envelope map[string]any, extraHeaders map[string]string, requireSource bool) (<-chan *AgentServiceA2AFrame, error) {
 	body, err := json.Marshal(envelope)
 	if err != nil {
@@ -998,9 +1035,10 @@ func agentProviderAbort(value any) (*AgentServiceProviderAbort, error) {
 // AgentServiceStopReceipt acknowledges a durable restriction on future starts.
 // Task remains actual provider evidence; ProviderAbort reports separate finality.
 type AgentServiceStopReceipt struct {
-	Task                map[string]any             `json:"task"`
-	FutureStartsBlocked bool                       `json:"future_starts_blocked"`
-	ProviderAbort       *AgentServiceProviderAbort `json:"provider_abort,omitempty"`
+	Task                  map[string]any             `json:"task"`
+	FutureStartsBlocked   bool                       `json:"future_starts_blocked"`
+	CancellationConfirmed bool                       `json:"cancellation_confirmed"`
+	ProviderAbort         *AgentServiceProviderAbort `json:"provider_abort,omitempty"`
 }
 
 // AgentServiceStopTask stops future starts for the original retained job.
@@ -1028,6 +1066,10 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if !ok || !blocked {
 		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
 	}
+	confirmed, ok := value["cancellation_confirmed"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
+	}
 	task, ok := value["task"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("agent service task identity mismatch")
@@ -1035,9 +1077,12 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if _, err := agentTask(task, receipt.Namespace, receipt.Tenant, receipt.TaskID); err != nil {
 		return nil, err
 	}
+	if status, _ := task["status"].(map[string]any); confirmed && status["state"] != "canceled" {
+		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
+	}
 	abort, err := agentProviderAbort(value["provider_abort"])
 	if err != nil {
 		return nil, err
 	}
-	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true, ProviderAbort: abort}, nil
+	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true, CancellationConfirmed: confirmed, ProviderAbort: abort}, nil
 }

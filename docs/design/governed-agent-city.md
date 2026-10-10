@@ -90,7 +90,7 @@ The baseline already has substantial reusable infrastructure:
 | Durability | CAS-backed dispatch receipts, worker tasks, recovery, result handoffs, execution history | Persisted authority lineage, intervention reconciliation, delegation receipts |
 | Governance substrate | Bounded CAS coordinator and exact typed resource references; not integrated into effects | Verified authority evaluation, atomic root reservations and common effect checkpoints |
 | Agent registry | Scoped agents, capability filters, heartbeats, administrative suspension/ban, individual cards | Governed candidate discovery and validated destination resolution |
-| A2A | Tenant Task service plus exact-agent JSON-RPC admission and streaming through the governed runtime; REST service receipts, peer invocation, federation and discovery | Governed list/cancel/push parity on the exact-agent interface and full external conformance |
+| A2A | Tenant Task service plus exact-agent governed admission, streaming and truthful cancellation; REST service receipts, peer invocation, federation and discovery | Governed list/push parity on the exact-agent interface and full external conformance |
 | Messaging | Agent inbox addressing, bus subscriptions, conversations and receipts | Governed publish/delivery and preserved sender/delegation authority |
 | Clients | Rust, Python, TypeScript, Go, Java clients; generated finite-operation catalog | First-class typed APIs for permits, closures, resources and delegation |
 
@@ -100,10 +100,12 @@ Important implementation details constrain the plan:
 - `CallerIdentity` is server-local. Its conversion to the core `Caller` is an audit identity, not a complete authorization context suitable for deferred execution.
 - Tenant-level A2A `SendMessage` remains a general Task-ledger operation. Exact-agent `SendMessage` is separately addressed at `/a2a/{namespace}/{tenant}/agents/{agent}` and enters the configured agent-service runtime under current source and destination authority.
 - The exact-agent adapter covers finite send, input continuation, observation,
-  extended-card retrieval and official SSE streaming. Stream admission and every
-  emitted update preserve authenticated source provenance. Governed list, push
-  and protocol cancellation remain explicit gaps; the adapter returns
-  `UnsupportedOperation` rather than crossing into the tenant Task engine.
+  extended-card retrieval, official SSE streaming and protocol cancellation.
+  Stream admission and every emitted update preserve authenticated source
+  provenance. Cancellation commits the coordinator fence first and distinguishes
+  requested from confirmed finality. Governed list and push remain explicit gaps;
+  the adapter returns `UnsupportedOperation` rather than crossing into the tenant
+  Task engine.
 - Agent callers must retain the opaque source-context receipt returned at admission. This distinguishes separate jobs sharing one principal and credential without exposing authority material to model-controlled payloads.
 - Existing suspension and ban are useful agent-specific controls. They are not generic resource closures with drain, pause and cancellation semantics.
 - Tenant-level discovery can aggregate multiple cards. Delegation must resolve an individual agent card so skills remain associated with their owning endpoint.

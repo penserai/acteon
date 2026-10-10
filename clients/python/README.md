@@ -600,10 +600,17 @@ The helper sends that job's original identity and source context in one request:
 
 ```python
 stopped = client.agent_service_stop_task(receipt)
-print(stopped.future_starts_blocked, stopped.provider_abort, stopped.task["status"]["state"])
+print(stopped.future_starts_blocked, stopped.cancellation_confirmed,
+      stopped.provider_abort, stopped.task["status"]["state"])
+
+official_task = client.agent_service_cancel_task(receipt)
+print(official_task["metadata"]["acteonCancellation"]["state"])
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellation_confirmed` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `provider_abort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

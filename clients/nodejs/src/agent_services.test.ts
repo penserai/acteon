@@ -53,6 +53,23 @@ it("rejects a mismatched A2A stream request identity", async () => {
   await expect(consume()).rejects.toThrow("request identity mismatch");
 });
 
+it("requests official exact-agent cancellation with retained source provenance", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(init.redirect).toBe("error");
+    expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ jsonrpc: "2.0", id: "cancel:job-1", method: "CancelTask", params: { id: "job-1" } });
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { id: "job-1", status: { state: "TASK_STATE_CANCELED" }, metadata: { acteonCancellation: { state: "confirmed" } } } }), { headers: { "a2a-version": "1.0" } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const task = await new ActeonClient("http://acteon").agentServiceCancelTask(source);
+  expect(task.id).toBe("job-1");
+  expect((task.metadata as { acteonCancellation: { state: string } }).acteonCancellation.state).toBe("confirmed");
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
 it("carries an opaque governed parent with explicit permits", async () => {
   const fetch = vi.fn(async (_input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

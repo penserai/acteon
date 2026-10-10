@@ -534,9 +534,16 @@ The helper sends that job's original identity and source context in one request:
 stopped, err := client.AgentServiceStopTask(ctx, receipt)
 if err != nil { return err }
 fmt.Println(stopped.FutureStartsBlocked, stopped.ProviderAbort, stopped.Task["status"])
+
+officialTask, err := client.AgentServiceCancelTask(ctx, receipt)
+if err != nil { return err }
+fmt.Println(officialTask["metadata"])
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.
+`CancellationConfirmed` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `ProviderAbort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

@@ -2242,9 +2242,23 @@ card. The same endpoint now implements official `SendStreamingMessage` and
 `SubscribeToTask`. It subscribes before admission or observation, shares the
 tenant connection quota, and revalidates current authentication plus original
 source provenance before every emitted update. Recovery snapshots also remove
-the private governed execution binding. Governed list, push and confirmed
-cancellation remain explicit follow-ups and return
-`UnsupportedOperation` on this interface.
+the private governed execution binding. Governed list and push remain explicit
+follow-ups and return `UnsupportedOperation` on this interface.
+
+Exact-agent `CancelTask` now commits the coordinator's execution-subtree fence
+before returning. A task with no registered attempt is projected `Canceled`, as
+is an in-flight attempt only after the installed reconciliation verifier accepts
+a provider proof of no effect. An unsupported or uncertain abort leaves the
+actual task nonterminal and publishes `metadata.acteonCancellation` as
+`requested`; a late known provider completion remains authoritative. Repeated
+cancellation of a confirmed canceled task is idempotent, while completed,
+failed and rejected tasks return canonical `TaskNotCancelable`. Native stop
+receipts add `cancellation_confirmed`, and Rust, Python, TypeScript, Go and Java
+provide receipt-aware official cancellation helpers. Runtime contracts cover
+restart, concurrent stops, local non-start, uncertain work and qualified
+no-effect finality. Real-server HTTP contracts compile, but this managed session
+cannot execute their loopback listeners; final-head CI remains the external
+network gate.
 
 ### Signed federation capability negotiation
 

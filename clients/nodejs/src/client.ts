@@ -432,6 +432,29 @@ export class ActeonClient {
       false,
     );
   }
+  /** Request official A2A cancellation; nonterminal results retain pending finality metadata. */
+  async agentServiceCancelTask(receipt: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    const requestId = `cancel:${receipt.taskId}`;
+    const response = await this.request("POST", agentServiceRpcBase(receipt.namespace, receipt.tenant, receipt.agent), {
+      body: { jsonrpc: "2.0", id: requestId, method: "CancelTask", params: { id: receipt.taskId } },
+      extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) },
+      redirect: "error",
+    });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid agent service A2A response");
+    const rpc = value as Record<string, unknown>;
+    if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("agent service A2A response request identity mismatch");
+    if (rpc.error && typeof rpc.error === "object") {
+      const error = rpc.error as Record<string, unknown>;
+      throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "cancellation failed")}`);
+    }
+    if (!rpc.result || typeof rpc.result !== "object" || Array.isArray(rpc.result)) throw new Error("agent service A2A response has no object result");
+    const task = rpc.result as Record<string, unknown>;
+    if (task.id !== receipt.taskId || !task.status || typeof task.status !== "object" || Array.isArray(task.status)) throw new Error("agent service A2A cancellation task identity mismatch");
+    return task;
+  }
   /** List current safe registry options. Descriptions are untrusted data. */
   async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {
     if (!/^[A-Za-z0-9._-]{1,120}$/.test(skill) || skill === "*") throw new Error("invalid exact peer skill");
@@ -526,10 +549,12 @@ export class ActeonClient {
     const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/stop", { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
-    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; provider_abort?: unknown } | null;
-    if (!value || value.future_starts_blocked !== true) throw new Error("agent service stop acknowledgement missing or malformed");
+    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; cancellation_confirmed?: unknown; provider_abort?: unknown } | null;
+    if (!value || value.future_starts_blocked !== true || typeof value.cancellation_confirmed !== "boolean") throw new Error("agent service stop acknowledgement missing or malformed");
     const providerAbort = agentProviderAbort(value.provider_abort);
-    return Object.freeze({ task: agentTask(value.task, receipt.namespace, receipt.tenant, taskId), futureStartsBlocked: true as const, ...(providerAbort ? { providerAbort } : {}) });
+    const task = agentTask(value.task, receipt.namespace, receipt.tenant, taskId);
+    if (value.cancellation_confirmed && (task.status as { state?: unknown } | undefined)?.state !== "canceled") throw new Error("agent service stop acknowledgement missing or malformed");
+    return Object.freeze({ task, futureStartsBlocked: true as const, cancellationConfirmed: value.cancellation_confirmed, ...(providerAbort ? { providerAbort } : {}) });
   }
 
   /** Observe one retained job; never starts work or changes global headers. */

@@ -485,10 +485,17 @@ The helper sends that job's original identity and source context in one request:
 
 ```typescript
 const stopped = await client.agentServiceStopTask(receipt);
-console.log(stopped.futureStartsBlocked, stopped.providerAbort, stopped.task.status);
+console.log(stopped.futureStartsBlocked, stopped.cancellationConfirmed,
+  stopped.providerAbort, stopped.task.status);
+
+const officialTask = await client.agentServiceCancelTask(receipt);
+console.log(officialTask.metadata.acteonCancellation.state);
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellationConfirmed` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `providerAbort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

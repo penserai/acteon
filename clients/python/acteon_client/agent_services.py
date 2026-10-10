@@ -86,10 +86,11 @@ def _parent_headers(parent: AgentServiceParent | None) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class AgentServiceStopReceipt:
-    """Future starts are blocked; provider finality is reported separately."""
+    """Cancellation intent with confirmed finality reported separately."""
 
     task: dict[str, Any]
     future_starts_blocked: bool
+    cancellation_confirmed: bool
     provider_abort: AgentServiceProviderAbort | None = None
 
 
@@ -503,11 +504,19 @@ def _response_value(response: httpx.Response) -> Any:
 
 def _stop(response: httpx.Response, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
     value = _response_value(response)
-    if not isinstance(value, dict) or value.get("future_starts_blocked") is not True:
+    if (
+        not isinstance(value, dict)
+        or value.get("future_starts_blocked") is not True
+        or not isinstance(value.get("cancellation_confirmed"), bool)
+    ):
+        raise ActeonError("agent service stop acknowledgement missing or malformed")
+    task = _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id)
+    if value["cancellation_confirmed"] and task.get("status", {}).get("state") != "canceled":
         raise ActeonError("agent service stop acknowledgement missing or malformed")
     return AgentServiceStopReceipt(
-        _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id),
+        task,
         True,
+        value["cancellation_confirmed"],
         _provider_abort(value.get("provider_abort")),
     )
 
@@ -713,6 +722,33 @@ class _AgentServicesMixin:
                 raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
             for data in _sse_data(response.iter_lines()):
                 yield _a2a_result(data, request_id, None)
+
+    def agent_service_cancel_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
+        """Request official A2A cancellation and preserve pending finality metadata."""
+        request_id = f"cancel:{receipt.task_id}"
+        response = self._client.post(
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "CancelTask",
+                "params": {"id": receipt.task_id},
+            },
+            headers={
+                **self._headers(),
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        task = _a2a_result(response.text, request_id, None).result
+        if task.get("id") != receipt.task_id or not isinstance(task.get("status"), dict):
+            raise ActeonError("agent service A2A cancellation task identity mismatch")
+        return task
 
     def agent_service_send_peer(
         self,
@@ -1084,6 +1120,33 @@ class _AsyncAgentServicesMixin:
                 raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
             async for data in _async_sse_data(response.aiter_lines()):
                 yield _a2a_result(data, request_id, None)
+
+    async def agent_service_cancel_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
+        """Request official A2A cancellation and preserve pending finality metadata."""
+        request_id = f"cancel:{receipt.task_id}"
+        response = await self._client.post(
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "CancelTask",
+                "params": {"id": receipt.task_id},
+            },
+            headers={
+                **self._headers(),
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        task = _a2a_result(response.text, request_id, None).result
+        if task.get("id") != receipt.task_id or not isinstance(task.get("status"), dict):
+            raise ActeonError("agent service A2A cancellation task identity mismatch")
+        return task
 
     async def agent_service_send_peer(
         self,

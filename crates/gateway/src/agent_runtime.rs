@@ -201,6 +201,10 @@ pub struct AgentTaskReceipt {
 pub struct AgentTaskStopReceipt {
     pub task: Task,
     pub future_starts_blocked: bool,
+    /// True only when durable evidence proves that this Task has no remaining
+    /// provider effect: either no attempt was registered before the fence or a
+    /// qualified reconciliation receipt proved no effect.
+    pub cancellation_confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_abort: Option<acteon_executor::governed::abort::ProviderAbortStatus>,
 }
@@ -1270,8 +1274,31 @@ impl AgentProviderRuntime {
             .abort_restricted(&accepted.reference, recipient.principal())
             .await?
             .map(|receipt| receipt.abort);
-        let observed = self.observe(task_id).await?;
+        let mut observed = self.observe(task_id).await?;
+        // Once the coordinator fence is durable, the absence of an execution
+        // record proves that this accepted operation cannot start. Project the
+        // protocol Task as Canceled. Existing or uncertain attempts remain in
+        // their observed state until qualified finality proves no effect.
+        if observed.execution.is_none() && !observed.task.status.state.is_terminal() {
+            let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+            if let Ok(task) = self
+                .tasks
+                .transition_task(&scope, &task_id.to_string(), TaskState::Canceled, None)
+                .await
+            {
+                observed.task = task;
+            } else {
+                // A competing identical stop may have won the Task CAS.
+                // Re-read through the governed invariant and accept only
+                // its confirmed canceled projection.
+                observed = self.observe(task_id).await?;
+                if observed.task.status.state != TaskState::Canceled {
+                    return Err(AgentRuntimeError::Conflict);
+                }
+            }
+        }
         Ok(AgentTaskStopReceipt {
+            cancellation_confirmed: observed.task.status.state == TaskState::Canceled,
             task: observed.task,
             future_starts_blocked: observed.future_starts_blocked,
             provider_abort,
@@ -1366,9 +1393,17 @@ impl AgentProviderRuntime {
             }
             None => None,
         };
+        let future_starts_blocked = self.future_starts_blocked(&accepted).await?;
         if task.status.state.is_terminal()
-            && !execution.as_ref().is_some_and(|receipt| matches!(&receipt.status,
-                GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))) {
+            && !(task.status.state == TaskState::Canceled
+                && execution.is_none()
+                && future_starts_blocked)
+            && !execution.as_ref().is_some_and(|receipt| {
+                matches!(&receipt.status,
+                GovernedProviderStatus::Completed { outcome }
+                    if task.status.state == terminal_state(outcome, future_starts_blocked))
+            })
+        {
             return Err(AgentRuntimeError::Conflict);
         }
         match execution {
@@ -1376,11 +1411,15 @@ impl AgentProviderRuntime {
                 self.project_execution(&scope, &accepted.initial_task, task, execution)
                     .await
             }
-            None if task.status.state.is_terminal() => Err(AgentRuntimeError::Conflict),
+            None if task.status.state.is_terminal()
+                && !(task.status.state == TaskState::Canceled && future_starts_blocked) =>
+            {
+                Err(AgentRuntimeError::Conflict)
+            }
             None => Ok(AgentTaskReceipt {
                 task,
                 execution: None,
-                future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+                future_starts_blocked,
                 continuation_pending,
             }),
         }
@@ -1514,11 +1553,15 @@ impl AgentProviderRuntime {
             .inspect(current.reference, self.binding.target())
             .await?;
         // Terminal/paused Task projections do not authorize additional work.
+        let future_starts_blocked = self.future_starts_blocked(&accepted).await?;
         if task.status.state != TaskState::Submitted && task.status.state != TaskState::Working {
             if task.status.state.is_terminal()
+                && !(task.status.state == TaskState::Canceled
+                    && previous.is_none()
+                    && future_starts_blocked)
                 && !previous.as_ref().is_some_and(|r| match &r.status {
                     GovernedProviderStatus::Completed { outcome } => {
-                        task.status.state == terminal_state(outcome)
+                        task.status.state == terminal_state(outcome, future_starts_blocked)
                     }
                     _ => false,
                 })
@@ -1549,13 +1592,25 @@ impl AgentProviderRuntime {
                 .executor
                 .inspect(current.reference, self.binding.target())
                 .await?;
-            if !latest.as_ref().is_some_and(|r| match &r.status {
+            let confirmed_local_cancel = task.status.state == TaskState::Canceled
+                && latest.is_none()
+                && future_starts_blocked;
+            let matching_completion = latest.as_ref().is_some_and(|r| match &r.status {
                 GovernedProviderStatus::Completed { outcome } => {
-                    task.status.state == terminal_state(outcome)
+                    task.status.state == terminal_state(outcome, future_starts_blocked)
                 }
                 _ => false,
-            }) {
+            });
+            if !confirmed_local_cancel && !matching_completion {
                 return Err(AgentRuntimeError::Conflict);
+            }
+            if latest.is_none() {
+                return Ok(AgentTaskReceipt {
+                    task,
+                    execution: None,
+                    future_starts_blocked,
+                    continuation_pending: false,
+                });
             }
             return self
                 .project_execution(
@@ -1626,7 +1681,8 @@ impl AgentProviderRuntime {
             } else {
                 serde_json::json!({"execution_id":expected.id,"result_in_governed_history":true})
             };
-            let next = terminal_state(outcome);
+            let future_starts_blocked = self.execution_future_starts_blocked(&expected.id).await?;
+            let next = terminal_state(outcome, future_starts_blocked);
             let artifact = Artifact::new("governed-result", vec![TaskPart::data(result)]);
             if task.status.state == next
                 && task.artifacts.len() == 1
@@ -1655,10 +1711,14 @@ impl AgentProviderRuntime {
     }
 }
 
-fn terminal_state(outcome: &ActionOutcome) -> TaskState {
-    if matches!(outcome, ActionOutcome::Executed(_)) {
-        TaskState::Completed
-    } else {
-        TaskState::Failed
+fn terminal_state(outcome: &ActionOutcome, cancellation_requested: bool) -> TaskState {
+    match outcome {
+        ActionOutcome::Executed(_) => TaskState::Completed,
+        ActionOutcome::Failed(error)
+            if cancellation_requested && error.code == "RECONCILED_NO_EFFECT" =>
+        {
+            TaskState::Canceled
+        }
+        _ => TaskState::Failed,
     }
 }

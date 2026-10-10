@@ -99,15 +99,22 @@ model-generated message. An Acteon host can attach its privately held
 the call a bounded descendant of existing work; both headers are required as a
 pair and message content cannot manufacture either one.
 
-The governed endpoint implements `SendMessage`, `GetTask`,
+The governed endpoint implements `SendMessage`, `GetTask`, `CancelTask`,
 `GetExtendedAgentCard`, `SendStreamingMessage`, and `SubscribeToTask`. A new message may set
 `configuration.returnImmediately=true` to receive durable acceptance. A
-continuation must target the same Task and active input challenge. `ListTasks`,
-push configuration, and protocol `CancelTask` return
-`UnsupportedOperation` on this interface while their governed implementations
-are completed. Acteon's native `stop` operation is already available, but it
-fences future provider starts and reports uncertain aborts honestly; it is not
-projected as successful A2A cancellation. This exact-agent endpoint accepts one
+continuation must target the same Task and active input challenge. `CancelTask`
+first commits the same durable execution-subtree fence as the native `stop`
+operation. If no provider attempt started, or a qualified reconciliation proof
+establishes no effect, the returned Task is `TASK_STATE_CANCELED` and
+`metadata.acteonCancellation.state` is `confirmed`. If an effect is already in
+flight, unsupported by the provider, or uncertain, the method returns the actual
+nonterminal Task with cancellation state `requested` and
+`futureStartsBlocked=true`; it does not invent provider finality. A later known
+provider result remains authoritative. Repeating cancellation of a canceled Task
+is idempotent; other terminal Tasks return `TaskNotCancelable`.
+
+`ListTasks` and push configuration still return `UnsupportedOperation` on this
+interface while their governed implementations are completed. This exact-agent endpoint accepts one
 JSON-RPC request or notification per HTTP call; it does not accept batch arrays.
 
 Admission returns `X-Acteon-Agent-Source-Context`, an opaque signed receipt.

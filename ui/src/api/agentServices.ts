@@ -64,15 +64,16 @@ export async function observeServiceTask(receipt: ServiceReceipt): Promise<Servi
   return task(response, receipt.namespace, receipt.tenant, receipt.taskId)
 }
 
-export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true; providerAbort?: ServiceProviderAbort }> {
+export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true; cancellationConfirmed: boolean; providerAbort?: ServiceProviderAbort }> {
   const response = await apiResponse(base(receipt.namespace, receipt.tenant, receipt.agent) + '/tasks/' + segment(receipt.taskId) + '/stop', {
     method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0', [SOURCE_HEADER]: source(receipt.sourceContext) },
   })
   if (response.headers.get('a2a-version') !== '1.0') throw new Error('Unsupported agent service response')
-  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown; provider_abort?: unknown } | null
-  if (!value || value.future_starts_blocked !== true) throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
+  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown; cancellation_confirmed?: unknown; provider_abort?: unknown } | null
+  if (!value || value.future_starts_blocked !== true || typeof value.cancellation_confirmed !== 'boolean') throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
   const stopped = value.task
   if (!stopped || stopped.id !== receipt.taskId || stopped.namespace !== receipt.namespace || stopped.tenant !== receipt.tenant) throw new Error('Agent service task identity mismatch')
+  if (value.cancellation_confirmed && stopped.status?.state !== 'canceled') throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
   const abort = providerAbort(value.provider_abort)
-  return { task: stopped, futureStartsBlocked: true, ...(abort ? { providerAbort: abort } : {}) }
+  return { task: stopped, futureStartsBlocked: true, cancellationConfirmed: value.cancellation_confirmed, ...(abort ? { providerAbort: abort } : {}) }
 }

@@ -99,6 +99,49 @@ async def test_async_official_agent_streams_use_the_same_contract():
         await client.close()
 
 
+def _cancel_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert body == {
+        "jsonrpc": "2.0",
+        "id": "cancel:job-1",
+        "method": "CancelTask",
+        "params": {"id": "job-1"},
+    }
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {
+                "id": "job-1",
+                "status": {"state": "TASK_STATE_CANCELED"},
+                "metadata": {"acteonCancellation": {"state": "confirmed"}},
+            },
+        },
+        headers={"a2a-version": "1.0"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_cancel_task_has_sync_and_async_parity():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    sync = ActeonClient("http://acteon")
+    sync._client = httpx.Client(transport=httpx.MockTransport(_cancel_response))
+    async_client = AsyncActeonClient("http://acteon")
+    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_cancel_response))
+    try:
+        assert sync.agent_service_cancel_task(receipt)["status"]["state"] == "TASK_STATE_CANCELED"
+        assert (await async_client.agent_service_cancel_task(receipt))["id"] == "job-1"
+    finally:
+        sync.close()
+        await async_client.close()
+
+
 def test_parent_context_and_permits_are_request_local():
     calls = []
 
@@ -570,6 +613,7 @@ def test_stop_rejects_malformed_provider_abort_with_one_request():
             json={
                 "task": FIXTURE["jobs"][0]["task"],
                 "future_starts_blocked": True,
+                "cancellation_confirmed": False,
                 "provider_abort": {"state": "reconciled", "proof_digest": "bad"},
             },
             headers={"a2a-version": "1.0"},
@@ -638,7 +682,13 @@ def test_stop_rejects_foreign_task_identity(field, value):
         calls.append(request)
         task = {**job["task"], field: value}
         return httpx.Response(
-            200, json={"task": task, "future_starts_blocked": True}, headers={"a2a-version": "1.0"}
+            200,
+            json={
+                "task": task,
+                "future_starts_blocked": True,
+                "cancellation_confirmed": False,
+            },
+            headers={"a2a-version": "1.0"},
         )
 
     client = ActeonClient("http://acteon")

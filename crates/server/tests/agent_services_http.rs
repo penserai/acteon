@@ -938,8 +938,174 @@ async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to
         .send()
         .await
         .unwrap();
-    let unsupported: Value = response.json().await.unwrap();
-    assert_eq!(unsupported["error"]["code"], -32004);
+    let terminal: Value = response.json().await.unwrap();
+    assert_eq!(terminal["error"]["code"], -32002);
+    assert_eq!(
+        terminal["error"]["data"][0]["reason"],
+        "TASK_NOT_CANCELABLE"
+    );
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_cancel_task_fences_future_starts_without_inventing_provider_finality() {
+    let (url, calls, entered, release, webhook_task) = pausing_webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-cancel", "method":"SendMessage",
+            "params":{
+                "message":message("official-cancel")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .header("x-acteon-agent-source-context", &source)
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"cancel-live", "method":"CancelTask",
+            "params":{"id":task_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let canceled: Value = response.json().await.unwrap();
+    assert_eq!(canceled["result"]["status"]["state"], "TASK_STATE_WORKING");
+    assert_eq!(
+        canceled["result"]["metadata"]["acteonCancellation"]["state"],
+        "requested"
+    );
+    assert_eq!(
+        canceled["result"]["metadata"]["acteonCancellation"]["futureStartsBlocked"],
+        true
+    );
+    assert_eq!(
+        canceled["result"]["metadata"]["acteonCancellation"]["providerAbort"]["state"],
+        "restricted_only"
+    );
+
+    release.add_permits(1);
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = client
+                .post(server.rpc_endpoint())
+                .bearer_auth("alice-secret")
+                .header("a2a-version", "1.0")
+                .header("x-acteon-agent-source-context", &source)
+                .json(&json!({
+                    "jsonrpc":"2.0", "id":"get-cancel", "method":"GetTask",
+                    "params":{"id":task_id}
+                }))
+                .send()
+                .await
+                .unwrap();
+            let body: Value = response.json().await.unwrap();
+            if body["result"]["status"]["state"] == "TASK_STATE_COMPLETED" {
+                break body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        completed["result"]["metadata"]["acteonCancellation"]["state"],
+        "requested"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_cancel_task_confirms_a_fenced_local_non_start_and_replays_it() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-before-start", "method":"SendMessage",
+            "params":{
+                "message":message("cancel-before-start")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+    for request_id in ["cancel-local", "cancel-local-replay"] {
+        let response = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-secret")
+            .header("a2a-version", "1.0")
+            .header("x-acteon-agent-source-context", &source)
+            .json(&json!({
+                "jsonrpc":"2.0", "id":request_id, "method":"CancelTask",
+                "params":{"id":task_id}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let canceled: Value = response.json().await.unwrap();
+        assert_eq!(canceled["result"]["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(
+            canceled["result"]["metadata"]["acteonCancellation"]["state"],
+            "confirmed"
+        );
+        assert_eq!(
+            canceled["result"]["metadata"]["acteonCancellation"]["futureStartsBlocked"],
+            true
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
 }
 

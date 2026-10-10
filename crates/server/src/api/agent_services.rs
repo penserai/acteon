@@ -91,6 +91,13 @@ impl AgentRpcFailure {
         }
     }
 
+    fn task_not_cancelable(id: &str) -> Self {
+        Self {
+            code: -32002,
+            message: format!("task '{id}' is terminal and cannot be canceled"),
+        }
+    }
+
     fn push_not_supported(message: impl Into<String>) -> Self {
         Self {
             code: -32003,
@@ -145,6 +152,7 @@ fn agent_rpc_success(id: Value, result: Value) -> AgentJsonRpcResponse {
 fn agent_rpc_error(id: Value, failure: AgentRpcFailure) -> AgentJsonRpcResponse {
     let reason = match failure.code {
         -32001 => Some("TASK_NOT_FOUND"),
+        -32002 => Some("TASK_NOT_CANCELABLE"),
         -32003 => Some("PUSH_NOTIFICATION_NOT_SUPPORTED"),
         -32004 => Some("UNSUPPORTED_OPERATION"),
         -32007 => Some("EXTENDED_AGENT_CARD_NOT_CONFIGURED"),
@@ -257,6 +265,41 @@ fn project_governed_v1_task(task: &Task) -> Result<Value, AgentRpcFailure> {
                 .remove("metadata");
         }
     }
+    Ok(projected)
+}
+
+fn project_governed_v1_task_with_cancellation(
+    task: &Task,
+    requested: bool,
+    confirmed: bool,
+    provider_abort: Option<&acteon_executor::governed::abort::ProviderAbortStatus>,
+) -> Result<Value, AgentRpcFailure> {
+    let mut projected = project_governed_v1_task(task)?;
+    if !requested {
+        return Ok(projected);
+    }
+    let object = projected
+        .as_object_mut()
+        .ok_or_else(AgentRpcFailure::internal)?;
+    let metadata = object
+        .entry("metadata")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(AgentRpcFailure::internal)?;
+    let mut cancellation = serde_json::json!({
+        "state": if confirmed { "confirmed" } else { "requested" },
+        "futureStartsBlocked": true,
+    });
+    if let Some(status) = provider_abort {
+        cancellation
+            .as_object_mut()
+            .expect("cancellation projection is an object")
+            .insert(
+                "providerAbort".into(),
+                serde_json::to_value(status).map_err(|_| AgentRpcFailure::internal())?,
+            );
+    }
+    metadata.insert("acteonCancellation".into(), cancellation);
     Ok(projected)
 }
 
@@ -741,11 +784,11 @@ async fn get_agent_rpc(
         .ok_or_else(|| AgentRpcFailure::invalid("params.id is required"))?;
     let task_id = uuid::Uuid::parse_str(id).map_err(|_| AgentRpcFailure::task_not_found(id))?;
     let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
-    let mut task = context
+    let observed = context
         .runtime()?
         .observe_agent_service(context.observation(task_id, source.as_ref()))
-        .await?
-        .task;
+        .await?;
+    let mut task = observed.task;
     if let Some(history_length) = params.get("historyLength") {
         let history_length = history_length.as_u64().ok_or_else(|| {
             AgentRpcFailure::invalid("params.historyLength must be a non-negative integer")
@@ -756,7 +799,51 @@ async fn get_agent_rpc(
             task.history.drain(0..task.history.len() - history_length);
         }
     }
-    Ok((project_governed_v1_task(&task)?, None))
+    Ok((
+        project_governed_v1_task_with_cancellation(
+            &task,
+            observed.future_starts_blocked,
+            task.status.state == TaskState::Canceled,
+            None,
+        )?,
+        None,
+    ))
+}
+
+async fn cancel_agent_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AgentRpcFailure::invalid("params.id is required"))?;
+    let task_id = uuid::Uuid::parse_str(id).map_err(|_| AgentRpcFailure::task_not_found(id))?;
+    let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
+    let runtime = context.runtime()?;
+    let before = runtime
+        .observe_agent_service(context.observation(task_id, source.as_ref()))
+        .await?;
+    if before.task.status.state.is_terminal() {
+        if before.task.status.state == TaskState::Canceled {
+            return Ok((
+                project_governed_v1_task_with_cancellation(&before.task, true, true, None)?,
+                None,
+            ));
+        }
+        return Err(AgentRpcFailure::task_not_cancelable(id));
+    }
+    let receipt =
+        Box::pin(runtime.stop_agent_service(context.observation(task_id, source.as_ref()))).await?;
+    Ok((
+        project_governed_v1_task_with_cancellation(
+            &receipt.task,
+            true,
+            receipt.cancellation_confirmed,
+            receipt.provider_abort.as_ref(),
+        )?,
+        None,
+    ))
 }
 
 fn extended_agent_card_rpc(
@@ -786,9 +873,7 @@ async fn dispatch_agent_rpc(
         "SendMessage" => send_agent_rpc(context, &params).await,
         "GetTask" => get_agent_rpc(context, &params).await,
         "GetExtendedAgentCard" => extended_agent_card_rpc(context),
-        "CancelTask" => Err(AgentRpcFailure::unsupported(
-            "A2A cancellation is unavailable until provider abort is reconciled; use the governed stop operation to fence future starts",
-        )),
+        "CancelTask" => Box::pin(cancel_agent_rpc(context, &params)).await,
         "ListTasks" => Err(AgentRpcFailure::unsupported(format!(
             "{method} is not supported by this governed agent interface",
         ))),
@@ -946,7 +1031,12 @@ pub async fn rpc(
     ) {
         return handle_agent_streaming_rpc(&context, request).await;
     }
-    let outcome = dispatch_agent_rpc(&context, &request.method, request.params).await;
+    let outcome = Box::pin(dispatch_agent_rpc(
+        &context,
+        &request.method,
+        request.params,
+    ))
+    .await;
     if request.is_notification {
         return StatusCode::NO_CONTENT.into_response();
     }
@@ -2077,12 +2167,13 @@ pub async fn task_authorization_resolve(
     }
 }
 
-/// Durable restriction acknowledgement. Task state remains provider evidence;
-/// stopping future starts does not certify cancellation of an existing effect.
+/// Durable cancellation acknowledgement. `cancellation_confirmed` is true only
+/// for a fenced local non-start or qualified provider no-effect finality.
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct AgentServiceStopResponse {
     pub task: acteon_core::Task,
     pub future_starts_blocked: bool,
+    pub cancellation_confirmed: bool,
     /// Provider-side outcome is distinct from the durable future-start fence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_abort: Option<AgentServiceProviderAbort>,
@@ -2140,16 +2231,15 @@ pub async fn task_stop(
             "agent_services_unavailable",
         );
     };
-    match runtime
-        .stop_agent_service(AgentServiceObservation {
-            namespace: &namespace,
-            tenant: &tenant,
-            agent_id: &agent,
-            task_id,
-            authentication: &proof,
-            source_context: source.as_ref(),
-        })
-        .await
+    match Box::pin(runtime.stop_agent_service(AgentServiceObservation {
+        namespace: &namespace,
+        tenant: &tenant,
+        agent_id: &agent,
+        task_id,
+        authentication: &proof,
+        source_context: source.as_ref(),
+    }))
+    .await
     {
         Ok(receipt) => (
             StatusCode::OK,
@@ -2160,6 +2250,7 @@ pub async fn task_stop(
             Json(AgentServiceStopResponse {
                 task: receipt.task,
                 future_starts_blocked: receipt.future_starts_blocked,
+                cancellation_confirmed: receipt.cancellation_confirmed,
                 provider_abort: receipt.provider_abort.map(Into::into),
             }),
         )
@@ -2389,5 +2480,39 @@ mod tests {
         assert_eq!(parse_peer_submission_action(id), None);
         assert_eq!(parse_peer_submission_action(&format!("{id}:unknown")), None);
         assert_eq!(parse_peer_submission_action("not-a-uuid:refresh"), None);
+    }
+
+    #[test]
+    fn cancellation_projection_distinguishes_request_from_confirmed_finality() {
+        let mut task = Task::new("job-1", "prod", "acme");
+        let pending = project_governed_v1_task_with_cancellation(
+            &task,
+            true,
+            false,
+            Some(&acteon_executor::governed::abort::ProviderAbortStatus::RestrictedOnly),
+        )
+        .unwrap();
+        assert_eq!(pending["status"]["state"], "TASK_STATE_SUBMITTED");
+        assert_eq!(
+            pending["metadata"]["acteonCancellation"],
+            serde_json::json!({
+                "state":"requested", "futureStartsBlocked":true,
+                "providerAbort":{"state":"restricted_only"}
+            })
+        );
+
+        task.transition_to(TaskState::Canceled, None).unwrap();
+        let confirmed =
+            project_governed_v1_task_with_cancellation(&task, true, true, None).unwrap();
+        assert_eq!(confirmed["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(
+            confirmed["metadata"]["acteonCancellation"]["state"],
+            "confirmed"
+        );
+        let error = agent_rpc_error(Value::Null, AgentRpcFailure::task_not_cancelable("job-1"));
+        assert_eq!(
+            error.error.unwrap().data.unwrap()[0]["reason"],
+            "TASK_NOT_CANCELABLE"
+        );
     }
 }

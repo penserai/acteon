@@ -78,12 +78,15 @@ message identity and inspect durable evidence rather than constructing new work.
   task and its descendant budget subtree. `POST
   /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the same
   private authentication and source-context requirements as observation. Its
-  response contains the original task and `future_starts_blocked: true`.
+  response contains the original task, `future_starts_blocked: true`, and a
+  separate `cancellation_confirmed` finality verdict.
   An optional typed `provider_abort` reports `restricted_only`, `uncertain`, or
   reconciliation-verified finality. The durable abort journal is written before
   one adapter call; crashes and lost responses are never resent automatically.
   This does not refund spent budget, release unresolved capacity, or replace a
-  known result with a `cancelled` task. Lost restriction acknowledgements are
+  known provider result with a canceled task. A local non-start or qualified
+  no-effect proof is projected as `canceled`; unsupported and uncertain aborts
+  remain nonterminal. Lost restriction acknowledgements are
   recovered by stopping the same original task again. Recovery scheduling skips
   durably stopped work.
 

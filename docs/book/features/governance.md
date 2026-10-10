@@ -631,6 +631,7 @@ The stop response keeps these facts separate:
 {
   "task": {"id": "...", "status": {"state": "working"}},
   "future_starts_blocked": true,
+  "cancellation_confirmed": false,
   "provider_abort": {
     "state": "uncertain",
     "attempt_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479"
@@ -644,6 +645,10 @@ display `restricted_only`, `uncertain`, and `reconciled`. Attempt IDs use the
 canonical lowercase UUIDv5 representation, and proof digests use lowercase
 SHA-256 hex. Concrete provider adapters still need to qualify their external
 attempt mapping and irrevocable finality source.
+
+`cancellation_confirmed` becomes true only when the returned task is `canceled`
+because no attempt started or qualified reconciliation proved no effect. A
+durable fence with an unsupported or uncertain abort keeps it false.
 
 #### Replacing a configured service binding
 
