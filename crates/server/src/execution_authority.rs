@@ -238,6 +238,18 @@ impl ExecutionProviderRegistry {
                             .iter()
                             .map(|target_id| ingresses[target_id].clone()),
                     );
+                    if let Some(federation) = &declaration.federation {
+                        for export in federation
+                            .exports
+                            .iter()
+                            .filter(|export| export.source_agent_id == *agent_id)
+                        {
+                            let effect =
+                                export.local_effect(&declaration.namespace, &declaration.tenant)?;
+                            intent.push(effect.clone());
+                            direct.push(effect);
+                        }
+                    }
                     intent.sort_by(|left, right| {
                         left.operation
                             .cmp(&right.operation)
@@ -315,6 +327,17 @@ impl ExecutionProviderRegistry {
                         .values()
                         .map(|agent| agent.binding.ingress_effect().clone()),
                 );
+                if let Some(federation) = &declaration.federation {
+                    effects.extend(
+                        federation
+                            .exports
+                            .iter()
+                            .map(|export| {
+                                export.local_effect(&declaration.namespace, &declaration.tenant)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
                 // Retain the previous footprint in the publisher ceiling so a
                 // new authentication revision can withdraw its old credential
                 // effects. Retained bindings are excluded from agent admission
@@ -1059,6 +1082,7 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
         permit.routes.sort();
         permit.chains.sort();
         permit.agents.sort();
+        permit.federation_exports.sort();
     }
     for effect in &mut declaration.historical_effects {
         effect.resources.sort();
@@ -1079,6 +1103,19 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
                     .cmp(b.authentication_principal.id()),
             )
         });
+        federation.exports.sort_by(|a, b| a.id.cmp(&b.id));
+        for export in &mut federation.exports {
+            export.internal_hosts.sort();
+            export.grant.ingress_effect.resources.sort();
+            for effect in &mut export.grant.effects {
+                effect.resources.sort();
+            }
+            export.grant.effects.sort_by(|left, right| {
+                left.operation
+                    .cmp(&right.operation)
+                    .then(left.resources.cmp(&right.resources))
+            });
+        }
         for peer in &mut federation.peers {
             peer.trust_ids.sort();
         }

@@ -299,6 +299,7 @@ fn federation_config(
             authentication_principal: source,
             trust_ids: vec!["remote-prod".into()],
         }],
+        exports: vec![],
     });
     scope.managers[0].can_manage_federation = true;
     scope.managers[0].federation_trust_ids = vec!["remote-prod".into()];
@@ -341,6 +342,109 @@ fn federation_configuration_is_canonical_and_policy_bound() {
             .unwrap()[0]
             .policy_fingerprint(),
         fingerprint
+    );
+}
+
+#[test]
+fn outbound_federation_profiles_are_source_bound_permitted_and_policy_bound() {
+    use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
+    use acteon_governance::{RootBudgetLimits, context::AcceptedEffect};
+
+    let registry = registry();
+    let (mut configuration, _) = federation_config(&registry);
+    let scope = &mut configuration.scopes[0];
+    let source = PrincipalIdentity::new("agent/notifier", PrincipalKind::Agent).unwrap();
+    let target = PrincipalIdentity::new("agent/remote-worker", PrincipalKind::Agent).unwrap();
+    let agent_resource =
+        ResourceRef::new(ResourceKind::Agent, "prod", "acme", "remote-worker").unwrap();
+    let endpoint = ResourceRef::new(ResourceKind::Endpoint, "prod", "acme", "remote-api").unwrap();
+    let signer = acteon_governance::federation::FederationEnvelopeSigner::from_secret([11; 32]);
+    scope.federation.as_mut().unwrap().exports =
+        vec![acteon_server::config::FederationExportConfig {
+            id: "remote-worker".into(),
+            source_agent_id: "notifier".into(),
+            remote_origin: "https://remote.example".into(),
+            remote_audience: "remote.example".into(),
+            trust_id: "local-prod".into(),
+            trust_revision: 1,
+            key_id: "local-key-v1".into(),
+            verifying_key: signer.verifying_key_hex(),
+            signer_key_env: "ACTEON_TEST_FEDERATION_SIGNER".into(),
+            issuer_epoch: 1,
+            credential_env: "ACTEON_TEST_FEDERATION_CREDENTIAL".into(),
+            grant: acteon_governance::federation::FederationGrantCeiling {
+                source: source.clone(),
+                target,
+                agent_resource: agent_resource.clone(),
+                binding_digest: "b".repeat(64),
+                skill: "triage".into(),
+                ingress_effect: AcceptedEffect {
+                    operation: "agent.invoke".into(),
+                    resources: vec![agent_resource, endpoint.clone()],
+                },
+                effects: vec![AcceptedEffect {
+                    operation: "provider.execute".into(),
+                    resources: vec![endpoint],
+                }],
+                limits: RootBudgetLimits {
+                    max_units: 3,
+                    max_concurrent: 1,
+                    deadline_ms: scope.credential_limits.deadline_ms,
+                },
+                max_depth: 2,
+            },
+            max_lifetime_ms: 60_000,
+            timeout_ms: 2_000,
+            internal_hosts: vec![],
+        }];
+    scope
+        .permits
+        .iter_mut()
+        .find(|permit| permit.id == "worker-provider")
+        .unwrap()
+        .federation_exports
+        .push("remote-worker".into());
+
+    let prepared = registry
+        .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert!(
+        prepared[0]
+            .agent_service_direct_effects("notifier")
+            .unwrap()
+            .iter()
+            .any(|effect| effect.operation == "federation.export")
+    );
+
+    let mut unpermitted = configuration.clone();
+    unpermitted.scopes[0].permits[1].federation_exports.clear();
+    assert!(
+        registry
+            .prepare(&unpermitted, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+
+    let mut outbound_only = configuration.clone();
+    let federation = outbound_only.scopes[0].federation.as_mut().unwrap();
+    federation.trusts.clear();
+    federation.peers.clear();
+    outbound_only.scopes[0].managers[0].can_manage_federation = false;
+    outbound_only.scopes[0].managers[0]
+        .federation_trust_ids
+        .clear();
+    registry
+        .prepare(&outbound_only, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+
+    let mut changed = configuration;
+    changed.scopes[0].federation.as_mut().unwrap().exports[0].remote_audience =
+        "other.example".into();
+    assert_ne!(
+        registry
+            .prepare(&changed, ("auth-control", "deployment"), &[8; 32])
+            .unwrap()[0]
+            .policy_fingerprint(),
+        prepared[0].policy_fingerprint()
     );
 }
 

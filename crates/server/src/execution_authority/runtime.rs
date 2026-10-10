@@ -528,6 +528,19 @@ impl ExecutionAuthorityRuntime {
                 }
                 effects.push(agent.binding.ingress_effect().clone());
             }
+            for id in &permit.federation_exports {
+                let export = declaration
+                    .federation
+                    .as_ref()
+                    .and_then(|federation| {
+                        federation.exports.iter().find(|export| export.id == *id)
+                    })
+                    .ok_or("permit federation export is not declared")?;
+                if export.grant.source != permit.subject {
+                    return Err("permit federation export source is not declared".into());
+                }
+                effects.push(export.local_effect(&declaration.namespace, &declaration.tenant)?);
+            }
             let change = format!(
                 "deployment-permit/{:x}",
                 Sha256::digest(
