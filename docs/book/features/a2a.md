@@ -156,10 +156,18 @@ transport binding qualified for exact idempotent replay. Credentials and
 network policy stay in the guarded host adapter and never enter durable delivery
 state.
 
-The current public surface is intended for reviewed host integration. Automatic
-export signing from live local permits, deployment-managed remote bindings,
-operator reconciliation, key and credential rotation, and external peer
-conformance remain release gates for turnkey cross-domain federation.
+The source authority building block constructs those signatures from an
+operator-qualified export profile and a matching host key. Before delivery it
+charges the complete delegated remote unit ceiling to a current local
+`federation.export` permit. Revocation before an unused network stage records a
+local rejection without contacting the peer; ambiguous replay also requires
+current source authority. The profile, endpoint, key, credential, permits and
+effect ceiling are host inputs and cannot come from an agent message.
+
+The current public surface is intended for reviewed host integration.
+Deployment-managed installation, source-task integration, operator
+reconciliation, key and credential rotation, and external peer conformance
+remain release gates for turnkey cross-domain federation.
 
 ### Discovery (unauthenticated)
 

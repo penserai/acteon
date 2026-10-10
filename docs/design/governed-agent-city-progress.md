@@ -2069,6 +2069,37 @@ compiles locally; its loopback execution requires a socket-enabled test
 environment.
 
 This is transport infrastructure rather than a public autonomous export path.
-Export policy/signing from current local authority, host configuration, runtime
-installation, operator reconciliation, capability and credential rotation, and
-two-server production-backend qualification remain open.
+Host configuration, runtime installation, operator reconciliation, capability
+and credential rotation, and two-server production-backend qualification remain
+open.
+
+### Governed federation export authority (in progress, unpublished)
+
+The source-side exporter now owns signature construction behind an immutable
+qualified profile. The profile pins the remote origin, audience, trust and key
+revision, expected signing public key, target principal, agent binding, exact
+remote effect ceiling, limits, depth, lifetime, and one local
+`federation.export` effect. It has no deserializer, and the exporter refuses a
+private signing key that does not match the pinned public key.
+
+For one stable export ID, invocation nonce, message and validity interval, the
+exporter persists deterministic signed bytes before registering a local
+permitted attempt. That attempt charges the entire delegated remote unit ceiling
+against the source root, so overlapping exports cannot promise the same units.
+Only then may the durable transport call the remote import and invocation
+routes. Known acceptance or rejection releases source concurrency; ambiguity
+remains uncertain and retains it.
+
+Authorization and delivery are separate. A current source credential, permit,
+representation/delegation lineage, closure state, local export effect and budget
+are checked at reservation. Any still-unused registered/imported stage is
+rechecked immediately before network delivery. Definitive revocation becomes a
+durable local rejection without an adapter call. Explicit exact replay also
+requires current authority, while observation can repair accounting without
+granting new work. Focused contracts prove exact replay spends once, revocation
+blocks both undelivered work and ambiguous replay, and uncertainty retains local
+capacity.
+
+Runtime configuration/installation, private source-task integration, operator
+reconciliation, signer rotation, capability exchange and two-server
+qualification remain required before the public autonomous export path ships.

@@ -4,6 +4,7 @@ pub mod config;
 pub mod delegation;
 pub mod dlq;
 pub mod executor;
+pub mod federation_export;
 pub mod federation_transport;
 pub mod gate;
 pub mod governed;

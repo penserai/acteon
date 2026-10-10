@@ -268,6 +268,41 @@ impl DurableFederationTransport {
         Err(FederationTransportError::Unavailable)
     }
 
+    /// Record a definitive host-side refusal while no call for the current
+    /// stage is in flight or ambiguous. This cannot overwrite uncertain or
+    /// accepted remote evidence.
+    pub async fn refuse_registered(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+        code: &str,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        if !valid_code(code) {
+            return Err(FederationTransportError::Invalid);
+        }
+        let expected = self.prepare(intent)?;
+        let key = Self::key(&expected);
+        let (current, version) = self
+            .load_versioned(&key)
+            .await?
+            .ok_or(FederationTransportError::Conflict)?;
+        self.same_intent(&current, &expected)?;
+        let stage = match &current.state {
+            DeliveryState::Registered => FederationDeliveryStage::Import,
+            DeliveryState::Imported { .. } => FederationDeliveryStage::Invoke,
+            DeliveryState::Accepted { .. } | DeliveryState::Rejected { .. } => {
+                return Ok(Self::receipt(&current));
+            }
+            DeliveryState::Importing { .. }
+            | DeliveryState::ImportUncertain
+            | DeliveryState::Invoking { .. }
+            | DeliveryState::InvokeUncertain { .. } => {
+                return Err(FederationTransportError::Conflict);
+            }
+        };
+        self.reject_without_delivery(&key, current, version, stage, code)
+            .await
+    }
+
     /// Inspect the exact durable intent without issuing network traffic.
     pub async fn observe(
         &self,

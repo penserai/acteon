@@ -96,14 +96,30 @@ response remains uncertain.
 
 ## Authority boundary
 
-The journal does not issue federation authority. Its caller must recover the
-accepted local execution and recheck current source credential, permit,
-delegation, closure, budget, destination binding, and export policy before every
-initial submission or explicit replay. The upcoming export-authority layer will
-construct and sign the bounded envelope from those current records and install
-the transport behind a trusted runtime method. Public or model-authored requests
-will carry only the intended target/skill/message selectors permitted by that
-runtime.
+The journal itself does not issue federation authority. The
+`GovernedFederationExporter` supplies that source boundary. Its immutable,
+non-deserializable profile pins the remote origin, audiences, trust/key
+revision, expected public key, target, qualified agent binding, effect ceiling,
+budget, depth, lifetime, and one local `federation.export` effect. It constructs
+both signatures from a host key and refuses a signer whose public key differs
+from the profile.
+
+For a stable export ID, invocation nonce, message, and timestamps, the exporter
+reconstructs identical signed bytes. It registers those bytes without network
+traffic, then registers a local permitted attempt whose unit reservation equals
+the entire delegated remote unit ceiling. The source therefore pays the full
+remote allowance up front and cannot promise the same local units to another
+domain. A known remote acceptance or rejection settles local concurrency;
+ambiguous delivery remains uncertain and retains it.
+
+Authorization and delivery are separately callable. Before a registered import
+or invocation stage crosses its still-unused network boundary, the exporter
+rechecks the current source credential, permit, representation/delegation
+lineage, closures, and local export effect. Definitive denial records a local
+rejection without networking and settles concurrency. Explicit idempotent replay
+also requires current authority; observation and accounting repair do not.
+Public or model-authored requests never supply a credential, endpoint, signer,
+effect ceiling, permit, or authority context.
 
 ## Verification
 
@@ -122,9 +138,9 @@ backend.
 This foundation intentionally leaves these authority and operational layers
 open:
 
-1. export policy and signer-key rotation that derive envelopes from current
-   local permits and delegated lineage;
-2. deployment configuration for remote origin, audience, credential reference,
+1. deployment installation and signer-key rotation for qualified export
+   profiles;
+2. configuration for remote origin, audience, credential reference,
    trust/key identifiers, replay capability, and TLS material;
 3. a trusted runtime API that rechecks source authority immediately before the
    journal and never accepts credentials or signed authority from model output;
