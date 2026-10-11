@@ -1,7 +1,7 @@
 # Durable A2A push outbox
 
-Status: implementation in progress, October 11, 2026. Phase 1 is complete on
-the feature branch; phases 2–5 remain release-gating work.
+Status: implementation in progress, October 11, 2026. Phases 1 and 2 are
+complete on the feature branch; phases 3–5 remain release-gating work.
 
 ## Problem
 
@@ -116,10 +116,13 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 
 ### Phase 2: atomic mutation log
 
-- Append status and artifact `StreamResponse` entries in the same Task CAS.
-- Add bounded capacity and pruning rules.
-- Preserve stable event IDs and sequences across CAS retries.
-- Add fault tests for conflict, restart, and capacity exhaustion.
+- [x] Append schema-checked status and artifact `StreamResponse` entries in the
+  same Task CAS and share their A2A 1.0 projection with live delivery.
+- [x] Add bounded capacity, acknowledgement-floor pruning, and fail-closed
+  mutation backpressure.
+- [x] Preserve stable event IDs and sequences across CAS retries.
+- [x] Add fault tests for conflict, engine replacement, pruning, and capacity
+  exhaustion.
 
 ### Phase 3: callback state in the envelope
 

@@ -254,6 +254,8 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::Audit(_)
             | TaskEngineError::Serde(_)
             | TaskEngineError::UnsupportedRecordVersion(_)
+            | TaskEngineError::InvalidDurableRecord(_)
+            | TaskEngineError::DeliveryLogFull
             | TaskEngineError::ApprovalConflict(_)
             | TaskEngineError::AuthorizationVerification(
                 acteon_gateway::TaskAuthorizationVerificationError::Unavailable
@@ -1861,25 +1863,8 @@ fn v1_status_update(
     state: TaskState,
     timestamp: DateTime<Utc>,
 ) -> Result<Value, A2aError> {
-    let mut status = task.status.clone();
-    if status.state != state {
-        // A later transition may already be durable by the time this queued
-        // event is consumed. Preserve the event's ordered state and timestamp;
-        // a message from the later status must never be attached retroactively.
-        status.state = state;
-        status.message = None;
-        status.timestamp = timestamp;
-    }
-    let mut status = to_value(&status)?;
-    project_v1_status(&mut status);
-    let mut update = serde_json::json!({
-        "taskId": task.id,
-        "status": status,
-    });
-    if let Some(context_id) = &task.context_id {
-        update["contextId"] = Value::String(context_id.clone());
-    }
-    Ok(serde_json::json!({"statusUpdate": update}))
+    acteon_gateway::task_engine::project_task_status_push_payload(task, state, timestamp)
+        .map_err(|_| A2aError::internal("internal error"))
 }
 
 pub(crate) fn project_v1_status_update(
@@ -1891,22 +1876,8 @@ pub(crate) fn project_v1_status_update(
 }
 
 fn v1_artifact_update(task: &Task, artifact_id: &str, last_chunk: bool) -> Option<Value> {
-    let artifact = task
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.artifact_id == artifact_id)?;
-    let mut update = serde_json::json!({
-        "taskId": task.id,
-        "artifact": artifact,
-        // The durable Task row contains the resolved artifact. Sending a full
-        // replacement makes recovery after a lag deterministic for clients.
-        "append": false,
-        "lastChunk": last_chunk,
-    });
-    if let Some(context_id) = &task.context_id {
-        update["contextId"] = Value::String(context_id.clone());
-    }
-    Some(serde_json::json!({"artifactUpdate": update}))
+    acteon_gateway::task_engine::project_task_artifact_push_payload(task, artifact_id, last_chunk)
+        .ok()
 }
 
 pub(crate) fn project_v1_artifact_update(

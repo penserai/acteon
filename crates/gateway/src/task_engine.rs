@@ -60,7 +60,7 @@
 //! - **Protocol codecs**: A2A JSON-RPC 2.0 + REST framing lives in
 //!   the server layer, not here. The engine speaks pure Rust types.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -128,6 +128,12 @@ const REFERENCE_GRAPH_FETCH_CONCURRENCY: usize = 32;
 /// Current private persistence format for an A2A task row.
 const DURABLE_TASK_RECORD_VERSION: u32 = 1;
 
+/// Maximum unacknowledged callback events retained in one task row. The task
+/// mutation fails closed at this boundary while any registered callback still
+/// needs the oldest event; tasks without callbacks continuously prune through
+/// their previous tail.
+pub const MAX_DURABLE_TASK_EVENTS: usize = 256;
+
 /// Backend-neutral task envelope. The public A2A [`Task`] remains the wire
 /// projection; this record is private storage state that can grow delivery
 /// cursors, leases, and an ordered mutation log without changing that API.
@@ -144,7 +150,275 @@ struct DurableTaskRecord {
 /// v1 envelope now proves that every task mutation preserves private state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DurableTaskDelivery {}
+struct DurableTaskDelivery {
+    #[serde(default)]
+    next_sequence: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    events: Vec<DurableTaskEvent>,
+    /// Phase 3 binds these cursors to governed callback configurations. Their
+    /// presence now gives phase 2 complete pruning and backpressure semantics.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    callback_cursors: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskEvent {
+    sequence: u64,
+    event_id: String,
+    occurred_at: DateTime<Utc>,
+    payload: serde_json::Value,
+}
+
+impl DurableTaskDelivery {
+    fn validate(&self, task: &Task) -> Result<(), TaskEngineError> {
+        if self.events.len() > MAX_DURABLE_TASK_EVENTS {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "delivery event capacity exceeded".into(),
+            ));
+        }
+        let mut previous = None;
+        let mut ids = HashSet::with_capacity(self.events.len());
+        for event in &self.events {
+            if event.sequence == 0
+                || event.sequence > self.next_sequence
+                || previous.is_some_and(|value| event.sequence != value + 1)
+                || !ids.insert(event.event_id.as_str())
+                || uuid::Uuid::parse_str(&event.event_id).is_err()
+                || event.occurred_at > task.updated_at
+                || !valid_push_payload(&event.payload, &task.id, task.context_id.as_deref())
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid ordered delivery event log".into(),
+                ));
+            }
+            previous = Some(event.sequence);
+        }
+        if self
+            .callback_cursors
+            .values()
+            .any(|cursor| *cursor > self.next_sequence)
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "callback cursor exceeds the delivery tail".into(),
+            ));
+        }
+        if let Some(first) = self.events.first()
+            && self
+                .callback_cursors
+                .values()
+                .any(|cursor| cursor.saturating_add(1) < first.sequence)
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "delivery log skipped an unacknowledged callback event".into(),
+            ));
+        }
+        if self.events.is_empty()
+            && self
+                .callback_cursors
+                .values()
+                .any(|cursor| *cursor != self.next_sequence)
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "delivery log omitted an unacknowledged callback event".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn append(
+        &mut self,
+        event_id: String,
+        occurred_at: DateTime<Utc>,
+        payload: serde_json::Value,
+    ) -> Result<(), TaskEngineError> {
+        let acknowledged = self
+            .callback_cursors
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.next_sequence);
+        self.events.retain(|event| event.sequence > acknowledged);
+        if self.events.len() >= MAX_DURABLE_TASK_EVENTS {
+            return Err(TaskEngineError::DeliveryLogFull);
+        }
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| TaskEngineError::InvalidDurableRecord("sequence exhausted".into()))?;
+        self.events.push(DurableTaskEvent {
+            sequence: self.next_sequence,
+            event_id,
+            occurred_at,
+            payload,
+        });
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PersistedPushPayload {
+    Status {
+        #[serde(rename = "statusUpdate")]
+        update: PersistedStatusUpdate,
+    },
+    Artifact {
+        #[serde(rename = "artifactUpdate")]
+        update: PersistedArtifactUpdate,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedStatusUpdate {
+    task_id: String,
+    #[serde(default)]
+    context_id: Option<String>,
+    status: PersistedProtocolStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedProtocolStatus {
+    state: PersistedProtocolTaskState,
+    #[serde(default)]
+    message: Option<serde_json::Value>,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+enum PersistedProtocolTaskState {
+    #[serde(rename = "TASK_STATE_SUBMITTED")]
+    Submitted,
+    #[serde(rename = "TASK_STATE_WORKING")]
+    Working,
+    #[serde(rename = "TASK_STATE_COMPLETED")]
+    Completed,
+    #[serde(rename = "TASK_STATE_FAILED")]
+    Failed,
+    #[serde(rename = "TASK_STATE_CANCELED")]
+    Canceled,
+    #[serde(rename = "TASK_STATE_INPUT_REQUIRED")]
+    InputRequired,
+    #[serde(rename = "TASK_STATE_AUTH_REQUIRED")]
+    AuthRequired,
+    #[serde(rename = "TASK_STATE_REJECTED")]
+    Rejected,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedArtifactUpdate {
+    task_id: String,
+    #[serde(default)]
+    context_id: Option<String>,
+    artifact: Artifact,
+    append: bool,
+    last_chunk: bool,
+}
+
+fn valid_push_payload(
+    payload: &serde_json::Value,
+    expected_task_id: &str,
+    expected_context_id: Option<&str>,
+) -> bool {
+    match serde_json::from_value::<PersistedPushPayload>(payload.clone()) {
+        Ok(PersistedPushPayload::Status { update }) => {
+            update.task_id == expected_task_id
+                && update.context_id.as_deref() == expected_context_id
+                && update
+                    .status
+                    .message
+                    .as_ref()
+                    .is_none_or(serde_json::Value::is_object)
+                && {
+                    let _ = (&update.status.state, update.status.timestamp);
+                    true
+                }
+        }
+        Ok(PersistedPushPayload::Artifact { update }) => {
+            update.task_id == expected_task_id
+                && update.context_id.as_deref() == expected_context_id
+                && update.artifact.validate().is_ok()
+                && !update.append
+                && {
+                    let _ = update.last_chunk;
+                    true
+                }
+        }
+        Err(_) => false,
+    }
+}
+
+/// Project one exact A2A 1.0 status-update callback payload. Both the durable
+/// mutation log and the live compatibility worker use this function, keeping
+/// delayed delivery and replay on the same wire representation.
+pub fn project_task_status_push_payload(
+    task: &Task,
+    state: TaskState,
+    timestamp: DateTime<Utc>,
+) -> Result<serde_json::Value, TaskEngineError> {
+    let mut status = task.status.clone();
+    if status.state != state {
+        status.state = state;
+        status.message = None;
+        status.timestamp = timestamp;
+    }
+    let mut status = serde_json::to_value(&status)?;
+    let object = status.as_object_mut().ok_or_else(|| {
+        TaskEngineError::InvalidDurableRecord("task status is not an object".into())
+    })?;
+    if let Some(state) = object.get_mut("state")
+        && let Some(name) = state.as_str()
+    {
+        *state = serde_json::Value::String(format!("TASK_STATE_{}", name.to_ascii_uppercase()));
+    }
+    if let Some(message) = object
+        .get_mut("message")
+        .and_then(serde_json::Value::as_object_mut)
+        && let Some(role) = message.get_mut("role")
+        && let Some(name) = role.as_str()
+    {
+        *role = serde_json::Value::String(format!("ROLE_{}", name.to_ascii_uppercase()));
+    }
+    let mut update = serde_json::json!({
+        "taskId": task.id,
+        "status": status,
+    });
+    if let Some(context_id) = &task.context_id {
+        update["contextId"] = serde_json::Value::String(context_id.clone());
+    }
+    Ok(serde_json::json!({"statusUpdate": update}))
+}
+
+/// Project one exact A2A 1.0 artifact-update callback payload from the durable
+/// resolved artifact snapshot.
+pub fn project_task_artifact_push_payload(
+    task: &Task,
+    artifact_id: &str,
+    last_chunk: bool,
+) -> Result<serde_json::Value, TaskEngineError> {
+    let artifact = task
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_id == artifact_id)
+        .ok_or_else(|| {
+            TaskEngineError::InvalidDurableRecord(format!(
+                "mutated artifact '{artifact_id}' is absent"
+            ))
+        })?;
+    let mut update = serde_json::json!({
+        "taskId": task.id,
+        "artifact": artifact,
+        "append": false,
+        "lastChunk": last_chunk,
+    });
+    if let Some(context_id) = &task.context_id {
+        update["contextId"] = serde_json::Value::String(context_id.clone());
+    }
+    Ok(serde_json::json!({"artifactUpdate": update}))
+}
 
 impl DurableTaskRecord {
     fn new(task: Task) -> Self {
@@ -169,6 +443,7 @@ impl DurableTaskRecord {
                 record.record_version,
             ));
         }
+        record.delivery.validate(&record.task)?;
         Ok(record)
     }
 
@@ -588,10 +863,16 @@ impl TaskEngine {
             None
         };
         let task = self
-            .cas_mutate(&key, task_id, "transition", move |task: &mut Task, now| {
-                task.transition_to_at(next, message.clone(), now)?;
-                Ok(())
-            })
+            .cas_mutate(
+                &key,
+                task_id,
+                "transition",
+                None,
+                move |task: &mut Task, now| {
+                    task.transition_to_at(next, message.clone(), now)?;
+                    Ok(())
+                },
+            )
             .await?;
         if let Some(from) = from_state {
             self.emit_stream(
@@ -638,6 +919,7 @@ impl TaskEngine {
             TaskRole::Agent,
             "Task failed by the stale-task reaper: no recorded progress within its working TTL.",
         );
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 // Task was deleted between the reaper's scan and now.
@@ -671,6 +953,11 @@ impl TaskEngine {
             let from_state = task.status.state;
             task.transition_to_at(TaskState::Failed, Some(reason.clone()), now)?;
             let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Failed, now)?,
+            )?;
             let payload = record.encode()?;
             match self
                 .state
@@ -767,6 +1054,7 @@ impl TaskEngine {
                 &key,
                 task_id,
                 "append_history",
+                None,
                 move |task: &mut Task, now| {
                     task.append_history_at(message.clone(), now)?;
                     Ok(())
@@ -816,6 +1104,7 @@ impl TaskEngine {
                 &key,
                 &task_id,
                 "artifact_update",
+                Some((artifact_id_for_emit.clone(), last_chunk_for_emit)),
                 move |task: &mut Task, now| {
                     task.apply_artifact_event_at(&event, now)?;
                     Ok(())
@@ -844,7 +1133,7 @@ impl TaskEngine {
         task_id: &str,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "progress", |task: &mut Task, now| {
+        self.cas_mutate(&key, task_id, "progress", None, |task: &mut Task, now| {
             task.record_progress_at(now);
             Ok(())
         })
@@ -866,6 +1155,7 @@ impl TaskEngine {
             &key,
             task_id,
             "pending_approval",
+            None,
             move |task: &mut Task, _now| {
                 task.set_pending_approval(approval_id.clone());
                 Ok(())
@@ -1022,7 +1312,7 @@ impl TaskEngine {
         let stamp_id = approval_id.clone();
         let prompt_id = format!("{approval_id}.challenge");
         let mutated = self
-            .cas_mutate(&key, task_id, "pause", move |task: &mut Task, now| {
+            .cas_mutate(&key, task_id, "pause", None, move |task: &mut Task, now| {
                 let prompt = challenge_reason.as_ref().map(|reason| {
                     let mut message =
                         TaskMessage::text(prompt_id.clone(), TaskRole::Agent, reason.clone());
@@ -1503,6 +1793,7 @@ impl TaskEngine {
         resolution: &TaskAuthorizationResolution,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
@@ -1527,6 +1818,11 @@ impl TaskEngine {
             task.transition_to_at(TaskState::Working, None, now)?;
             task.updated_at = now;
             let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Working, now)?,
+            )?;
             let payload = record.encode()?;
             if matches!(
                 self.state
@@ -1674,6 +1970,7 @@ impl TaskEngine {
         approval_id: &str,
     ) -> Result<(), TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Ok(());
@@ -1692,8 +1989,14 @@ impl TaskEngine {
             );
             message.task_id = Some(task_id.to_string());
             message.context_id.clone_from(&task.context_id);
-            task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
+            let now = self.clock.now();
+            task.transition_to_at(TaskState::Failed, Some(message), now)?;
             let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Failed, now)?,
+            )?;
             let payload = record.encode()?;
             if matches!(
                 self.state
@@ -1931,6 +2234,7 @@ impl TaskEngine {
         message: TaskMessage,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
@@ -1980,6 +2284,11 @@ impl TaskEngine {
             task.transition_to_at(TaskState::Working, None, now)?;
             task.updated_at = now;
             let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Working, now)?,
+            )?;
             let payload = record.encode()?;
             if matches!(
                 self.state
@@ -2129,6 +2438,7 @@ impl TaskEngine {
         approval_id: &str,
     ) -> Result<(), TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Ok(());
@@ -2147,8 +2457,14 @@ impl TaskEngine {
             );
             message.task_id = Some(task_id.to_string());
             message.context_id.clone_from(&task.context_id);
-            task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
+            let now = self.clock.now();
+            task.transition_to_at(TaskState::Failed, Some(message), now)?;
             let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Failed, now)?,
+            )?;
             let payload = record.encode()?;
             if matches!(
                 self.state
@@ -2190,10 +2506,16 @@ impl TaskEngine {
         chain_id: Option<String>,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "link_chain", move |task: &mut Task, _now| {
-            task.chain_id.clone_from(&chain_id);
-            Ok(())
-        })
+        self.cas_mutate(
+            &key,
+            task_id,
+            "link_chain",
+            None,
+            move |task: &mut Task, _now| {
+                task.chain_id.clone_from(&chain_id);
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -2219,6 +2541,7 @@ impl TaskEngine {
                 &key,
                 task_id,
                 "artifact_upsert",
+                Some((artifact_id_for_emit.clone(), false)),
                 move |task: &mut Task, now| {
                     task.upsert_artifact_at(artifact.clone(), append, now)?;
                     Ok(())
@@ -2287,7 +2610,7 @@ impl TaskEngine {
         let key = scope.task_key(task_id);
         let mut transitioned = false;
         let task = self
-            .cas_mutate(&key, task_id, "governed_working", |task, now| {
+            .cas_mutate(&key, task_id, "governed_working", None, |task, now| {
                 Self::validate_governed_projection(task, expected)?;
                 if task.status.state.is_terminal() {
                     transitioned = false;
@@ -2336,21 +2659,27 @@ impl TaskEngine {
         let mut transitioned = false;
         let artifact_id = artifact.artifact_id.clone();
         let task = self
-            .cas_mutate(&key, task_id, "governed_result", |task, now| {
-                Self::validate_governed_projection(task, expected)?;
-                transitioned = task.status.state != next;
-                if transitioned {
-                    // A missing projection is rebuilt as Submitted. A durable,
-                    // qualified completion receipt authorizes repairing both
-                    // transitions in this CAS without starting another effect.
-                    if task.status.state == TaskState::Submitted {
-                        task.transition_to_at(TaskState::Working, None, now)?;
+            .cas_mutate(
+                &key,
+                task_id,
+                "governed_result",
+                Some((artifact_id.clone(), true)),
+                |task, now| {
+                    Self::validate_governed_projection(task, expected)?;
+                    transitioned = task.status.state != next;
+                    if transitioned {
+                        // A missing projection is rebuilt as Submitted. A durable,
+                        // qualified completion receipt authorizes repairing both
+                        // transitions in this CAS without starting another effect.
+                        if task.status.state == TaskState::Submitted {
+                            task.transition_to_at(TaskState::Working, None, now)?;
+                        }
+                        task.transition_to_at(next, None, now)?;
                     }
-                    task.transition_to_at(next, None, now)?;
-                }
-                task.upsert_artifact_at(artifact.clone(), false, now)?;
-                Ok(())
-            })
+                    task.upsert_artifact_at(artifact.clone(), false, now)?;
+                    Ok(())
+                },
+            )
             .await?;
         self.emit_stream(
             &scope.namespace,
@@ -2388,11 +2717,14 @@ impl TaskEngine {
         key: &StateKey,
         task_id: &str,
         operation: &str,
+        artifact_event: Option<(String, bool)>,
         mut mutate: F,
     ) -> Result<Task, TaskEngineError>
     where
         F: FnMut(&mut Task, DateTime<Utc>) -> Result<(), TaskValidationError>,
     {
+        let status_event_id = uuid::Uuid::now_v7().to_string();
+        let artifact_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             if self
                 .hidden_governed_task(
@@ -2409,10 +2741,41 @@ impl TaskEngine {
             let mut record = DurableTaskRecord::decode(&raw)?;
             let task = &mut record.task;
             let from_state = task.status.state;
+            let artifact_before = artifact_event
+                .as_ref()
+                .and_then(|(artifact_id, _)| {
+                    task.artifacts
+                        .iter()
+                        .find(|artifact| artifact.artifact_id == *artifact_id)
+                })
+                .map(serde_json::to_value)
+                .transpose()?;
             let now = self.clock.now();
             mutate(task, now)?;
             task.updated_at = now;
             let task = record.task.clone();
+            if let Some((artifact_id, last_chunk)) = &artifact_event {
+                let artifact_after = task
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.artifact_id == *artifact_id)
+                    .map(serde_json::to_value)
+                    .transpose()?;
+                if artifact_before != artifact_after {
+                    let payload =
+                        project_task_artifact_push_payload(&task, artifact_id, *last_chunk)?;
+                    record
+                        .delivery
+                        .append(artifact_event_id.clone(), now, payload)?;
+                }
+            }
+            if from_state != task.status.state {
+                record.delivery.append(
+                    status_event_id.clone(),
+                    now,
+                    project_task_status_push_payload(&task, task.status.state, now)?,
+                )?;
+            }
             let payload = record.encode()?;
             match self
                 .state
@@ -2605,6 +2968,10 @@ pub enum TaskEngineError {
     Serde(#[from] serde_json::Error),
     #[error("unsupported durable task record version {0}")]
     UnsupportedRecordVersion(u32),
+    #[error("invalid durable task record: {0}")]
+    InvalidDurableRecord(String),
+    #[error("durable task delivery log is full; callback acknowledgement is required")]
+    DeliveryLogFull,
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
     CasExhausted(String),
     #[error("reference graph for task '{task_id}' contains a cycle back to itself")]
@@ -2830,7 +3197,7 @@ mod tests {
 
     use super::*;
     use acteon_core::{Artifact, TaskPart as Part, TaskRole as Role};
-    use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
+    use acteon_state::testing::faults::{FaultStore, FaultTiming, ReadOperation, WriteOperation};
     use acteon_state_memory::MemoryStateStore;
 
     fn engine() -> TaskEngine {
@@ -2864,7 +3231,7 @@ mod tests {
         let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(stored["recordVersion"], 1);
         assert_eq!(stored["task"]["id"], "t1");
-        assert_eq!(stored["delivery"], serde_json::json!({}));
+        assert_eq!(stored["delivery"], serde_json::json!({"nextSequence": 0}));
         assert!(stored.get("id").is_none(), "Task must remain a projection");
     }
 
@@ -2947,6 +3314,207 @@ mod tests {
             e.get_task(&scope(), "t1").await,
             Err(TaskEngineError::UnsupportedRecordVersion(2))
         ));
+    }
+
+    #[tokio::test]
+    async fn transition_commits_the_protocol_event_in_the_same_task_record() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+        let message = TaskMessage::text("working", TaskRole::Agent, "accepted");
+        e.transition_task(&scope(), "t1", TaskState::Working, Some(message))
+            .await
+            .unwrap();
+
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let record = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(record.task.status.state, TaskState::Working);
+        assert_eq!(record.delivery.next_sequence, 1);
+        assert_eq!(record.delivery.events.len(), 1);
+        let event = &record.delivery.events[0];
+        assert_eq!(event.sequence, 1);
+        assert_eq!(event.payload["statusUpdate"]["taskId"], "t1");
+        assert_eq!(
+            event.payload["statusUpdate"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        assert_eq!(
+            event.payload["statusUpdate"]["status"]["message"]["role"],
+            "ROLE_AGENT"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_log_backpressure_keeps_the_task_mutation_atomic() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        let mut record = DurableTaskRecord::new(task.clone());
+        record
+            .delivery
+            .callback_cursors
+            .insert("callback".into(), 0);
+        for _ in 0..MAX_DURABLE_TASK_EVENTS {
+            record
+                .delivery
+                .append(
+                    uuid::Uuid::now_v7().to_string(),
+                    task.status.timestamp,
+                    project_task_status_push_payload(
+                        &task,
+                        task.status.state,
+                        task.status.timestamp,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        state
+            .set(&scope().task_key("t1"), &record.encode().unwrap(), None)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            e.transition_task(&scope(), "t1", TaskState::Working, None)
+                .await,
+            Err(TaskEngineError::DeliveryLogFull)
+        ));
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let retained = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(retained.task.status.state, TaskState::Submitted);
+        assert_eq!(retained.delivery.events.len(), MAX_DURABLE_TASK_EVENTS);
+        assert_eq!(
+            retained.delivery.next_sequence,
+            MAX_DURABLE_TASK_EVENTS as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledged_delivery_prefix_prunes_before_the_next_atomic_append() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        let mut record = DurableTaskRecord::new(task.clone());
+        record
+            .delivery
+            .callback_cursors
+            .insert("callback".into(), 0);
+        for _ in 0..MAX_DURABLE_TASK_EVENTS {
+            record
+                .delivery
+                .append(
+                    uuid::Uuid::now_v7().to_string(),
+                    task.status.timestamp,
+                    project_task_status_push_payload(
+                        &task,
+                        task.status.state,
+                        task.status.timestamp,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        record
+            .delivery
+            .callback_cursors
+            .insert("callback".into(), 128);
+        state
+            .set(&scope().task_key("t1"), &record.encode().unwrap(), None)
+            .await
+            .unwrap();
+
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let retained = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(retained.delivery.next_sequence, 257);
+        assert_eq!(retained.delivery.events.first().unwrap().sequence, 129);
+        assert_eq!(retained.delivery.events.last().unwrap().sequence, 257);
+    }
+
+    #[tokio::test]
+    async fn cas_conflict_retries_without_duplicating_the_delivery_event() {
+        let inner = Arc::new(MemoryStateStore::new());
+        let inner_store: Arc<dyn StateStore> = inner.clone();
+        let faults = Arc::new(FaultStore::new(inner_store));
+        let e = TaskEngine::new(faults.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+        let (read_reached, resume_read) = faults
+            .pause_next_read(
+                KeyKind::A2aTask,
+                ReadOperation::GetVersioned,
+                FaultTiming::After,
+            )
+            .unwrap();
+        let transition = tokio::spawn({
+            let e = e.clone();
+            async move {
+                e.transition_task(&scope(), "t1", TaskState::Working, None)
+                    .await
+            }
+        });
+        read_reached.await.unwrap();
+        TaskEngine::new(inner.clone())
+            .record_progress(&scope(), "t1")
+            .await
+            .unwrap();
+        resume_read.send(()).unwrap();
+        transition.await.unwrap().unwrap();
+
+        let raw = inner.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let record = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(record.delivery.next_sequence, 1);
+        assert_eq!(record.delivery.events.len(), 1);
+        assert_eq!(record.delivery.events[0].sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn ordered_delivery_log_survives_engine_replacement() {
+        let state = Arc::new(MemoryStateStore::new());
+        let key = scope().task_key("t1");
+        TaskEngine::new(state.clone())
+            .create_task(sample_task("t1"))
+            .await
+            .unwrap();
+        TaskEngine::new(state.clone())
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let mut record =
+            DurableTaskRecord::decode(&state.get(&key).await.unwrap().unwrap()).unwrap();
+        record
+            .delivery
+            .callback_cursors
+            .insert("callback".into(), 0);
+        state
+            .set(&key, &record.encode().unwrap(), None)
+            .await
+            .unwrap();
+
+        TaskEngine::new(state.clone())
+            .transition_task(&scope(), "t1", TaskState::Completed, None)
+            .await
+            .unwrap();
+        let record = DurableTaskRecord::decode(&state.get(&key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(record.delivery.next_sequence, 2);
+        assert_eq!(
+            record
+                .delivery
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_ne!(
+            record.delivery.events[0].event_id,
+            record.delivery.events[1].event_id
+        );
+        assert_eq!(
+            record.delivery.events[1].payload["statusUpdate"]["status"]["state"],
+            "TASK_STATE_COMPLETED"
+        );
     }
 
     #[tokio::test]
