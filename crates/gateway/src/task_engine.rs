@@ -66,6 +66,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
@@ -123,6 +124,62 @@ pub const MAX_REFERENCE_GRAPH_NODES: usize = 256;
 /// narrower than this — they complete in a single batch, so the walk
 /// costs O(depth) round-trips rather than O(nodes).
 const REFERENCE_GRAPH_FETCH_CONCURRENCY: usize = 32;
+
+/// Current private persistence format for an A2A task row.
+const DURABLE_TASK_RECORD_VERSION: u32 = 1;
+
+/// Backend-neutral task envelope. The public A2A [`Task`] remains the wire
+/// projection; this record is private storage state that can grow delivery
+/// cursors, leases, and an ordered mutation log without changing that API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskRecord {
+    record_version: u32,
+    task: Task,
+    #[serde(default)]
+    delivery: DurableTaskDelivery,
+}
+
+/// Reserved delivery state for the ordered outbox phases. Keeping it in the
+/// v1 envelope now proves that every task mutation preserves private state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskDelivery {}
+
+impl DurableTaskRecord {
+    fn new(task: Task) -> Self {
+        Self {
+            record_version: DURABLE_TASK_RECORD_VERSION,
+            task,
+            delivery: DurableTaskDelivery::default(),
+        }
+    }
+
+    fn decode(raw: &str) -> Result<Self, TaskEngineError> {
+        let value: serde_json::Value = serde_json::from_str(raw)?;
+        if value.get("recordVersion").is_none() {
+            // Rows written before the envelope rollout remain readable and
+            // migrate atomically on their next successful task mutation.
+            return Ok(Self::new(serde_json::from_value(value)?));
+        }
+
+        let record: Self = serde_json::from_value(value)?;
+        if record.record_version != DURABLE_TASK_RECORD_VERSION {
+            return Err(TaskEngineError::UnsupportedRecordVersion(
+                record.record_version,
+            ));
+        }
+        Ok(record)
+    }
+
+    fn encode(&self) -> Result<String, TaskEngineError> {
+        Ok(serde_json::to_string(self)?)
+    }
+}
+
+pub(crate) fn decode_persisted_task(raw: &str) -> Result<Task, TaskEngineError> {
+    Ok(DurableTaskRecord::decode(raw)?.task)
+}
 
 fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
@@ -381,7 +438,7 @@ impl TaskEngine {
         let mut replayed = 0;
         let mut first_error = None;
         for (_, raw) in entries {
-            let task: Task = match serde_json::from_str(&raw) {
+            let task = match decode_persisted_task(&raw) {
                 Ok(task) => task,
                 Err(error) => {
                     warn!(%error, "skipping malformed task row during terminal audit recovery");
@@ -439,7 +496,7 @@ impl TaskEngine {
             .collect();
         self.check_reference_graph(&scope, &task.id, &seed).await?;
         let key = scope.task_key(&task.id);
-        let payload = serde_json::to_string(&task)?;
+        let payload = DurableTaskRecord::new(task.clone()).encode()?;
         let inserted = self.state.check_and_set(&key, &payload, None).await?;
         if !inserted {
             return Err(TaskEngineError::AlreadyExists(task.id));
@@ -478,7 +535,7 @@ impl TaskEngine {
         let Some((raw, version)) = self.state.get_versioned(&key).await? else {
             return Ok(None);
         };
-        let task: Task = serde_json::from_str(&raw)?;
+        let task = decode_persisted_task(&raw)?;
         Ok(Some((task, version)))
     }
 
@@ -497,7 +554,7 @@ impl TaskEngine {
                 warn!("skipping task row outside its canonical scope");
                 continue;
             };
-            match serde_json::from_str::<Task>(&raw) {
+            match decode_persisted_task(&raw) {
                 Ok(t) => {
                     if !self.hidden_governed_task(scope, id).await? {
                         out.push(t);
@@ -586,7 +643,8 @@ impl TaskEngine {
                 // Task was deleted between the reaper's scan and now.
                 return Ok(None);
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             // Governed work may have an unresolved external attempt. Its
             // runtime projects qualified execution evidence; elapsed time alone
             // cannot prove failure or release its retained capacity.
@@ -612,7 +670,8 @@ impl TaskEngine {
             }
             let from_state = task.status.state;
             task.transition_to_at(TaskState::Failed, Some(reason.clone()), now)?;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            let payload = record.encode()?;
             match self
                 .state
                 .compare_and_swap(&key, version, &payload, None)
@@ -631,7 +690,7 @@ impl TaskEngine {
                             to: TaskState::Failed,
                         },
                     );
-                    return Ok(Some(task));
+                    return Ok(Some(task.clone()));
                 }
                 CasResult::Conflict { .. } => {
                     // Lost the race; re-read and re-evaluate staleness.
@@ -1448,9 +1507,10 @@ impl TaskEngine {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.status.state == TaskState::Working && task.pending_approval_id.is_none() {
-                return Ok(task);
+                return Ok(task.clone());
             }
             if task.status.state != TaskState::AuthRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
@@ -1466,7 +1526,8 @@ impl TaskEngine {
             }
             task.transition_to_at(TaskState::Working, None, now)?;
             task.updated_at = now;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
@@ -1489,7 +1550,7 @@ impl TaskEngine {
                         to: TaskState::Working,
                     },
                 );
-                return Ok(task);
+                return Ok(task.clone());
             }
         }
         Err(TaskEngineError::CasExhausted(task_id.to_string()))
@@ -1617,7 +1678,8 @@ impl TaskEngine {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Ok(());
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.status.state != TaskState::AuthRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
             {
@@ -1631,7 +1693,8 @@ impl TaskEngine {
             message.task_id = Some(task_id.to_string());
             message.context_id.clone_from(&task.context_id);
             task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
@@ -1872,7 +1935,8 @@ impl TaskEngine {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.context_id != message.context_id {
                 return Err(TaskEngineError::ChallengeResponseContextMismatch);
             }
@@ -1892,7 +1956,7 @@ impl TaskEngine {
                         approval_id.to_string(),
                     ));
                 }
-                return Ok(task);
+                return Ok(task.clone());
             }
             if task.status.state != TaskState::InputRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
@@ -1915,7 +1979,8 @@ impl TaskEngine {
             let now = self.clock.now();
             task.transition_to_at(TaskState::Working, None, now)?;
             task.updated_at = now;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
@@ -1943,7 +2008,7 @@ impl TaskEngine {
                         to: TaskState::Working,
                     },
                 );
-                return Ok(task);
+                return Ok(task.clone());
             }
         }
         Err(TaskEngineError::CasExhausted(task_id.to_string()))
@@ -2068,7 +2133,8 @@ impl TaskEngine {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Ok(());
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.status.state != TaskState::InputRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
             {
@@ -2082,7 +2148,8 @@ impl TaskEngine {
             message.task_id = Some(task_id.to_string());
             message.context_id.clone_from(&task.context_id);
             task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
@@ -2339,12 +2406,14 @@ impl TaskEngine {
             let Some((raw, version)) = self.state.get_versioned(key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             let from_state = task.status.state;
             let now = self.clock.now();
-            mutate(&mut task, now)?;
+            mutate(task, now)?;
             task.updated_at = now;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            let payload = record.encode()?;
             match self
                 .state
                 .compare_and_swap(key, version, &payload, None)
@@ -2353,7 +2422,7 @@ impl TaskEngine {
                 CasResult::Ok => {
                     debug!(task_id = %task_id, state = ?task.status.state, "task mutated");
                     self.emit_audit(&task, operation, Some(from_state)).await;
-                    return Ok(task);
+                    return Ok(task.clone());
                 }
                 CasResult::Conflict { .. } => {
                     // Lost the race; re-read and re-apply.
@@ -2534,6 +2603,8 @@ pub enum TaskEngineError {
     Validation(#[from] TaskValidationError),
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("unsupported durable task record version {0}")]
+    UnsupportedRecordVersion(u32),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
     CasExhausted(String),
     #[error("reference graph for task '{task_id}' contains a cycle back to itself")]
@@ -2781,6 +2852,101 @@ mod tests {
         let got = e.get_task(&scope(), "t1").await.unwrap().unwrap();
         assert_eq!(got.id, "t1");
         assert_eq!(got.status.state, TaskState::Submitted);
+    }
+
+    #[tokio::test]
+    async fn create_persists_private_versioned_envelope() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored["recordVersion"], 1);
+        assert_eq!(stored["task"]["id"], "t1");
+        assert_eq!(stored["delivery"], serde_json::json!({}));
+        assert!(stored.get("id").is_none(), "Task must remain a projection");
+    }
+
+    #[tokio::test]
+    async fn legacy_raw_task_migrates_on_first_successful_mutation() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("legacy");
+        state
+            .set(
+                &scope().task_key("legacy"),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            e.get_task(&scope(), "legacy")
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .state,
+            TaskState::Submitted
+        );
+        e.transition_task(&scope(), "legacy", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        let raw = state
+            .get(&scope().task_key("legacy"))
+            .await
+            .unwrap()
+            .unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored["recordVersion"], 1);
+        assert_eq!(stored["task"]["status"]["state"], "working");
+    }
+
+    #[tokio::test]
+    async fn durable_envelope_rejects_unknown_fields_and_versions() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let key = scope().task_key("t1");
+        let task = sample_task("t1");
+        state
+            .set(
+                &key,
+                &serde_json::json!({
+                    "recordVersion": 1,
+                    "task": task,
+                    "delivery": {},
+                    "unrecognized": true
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            e.get_task(&scope(), "t1").await,
+            Err(TaskEngineError::Serde(_))
+        ));
+
+        state
+            .set(
+                &key,
+                &serde_json::json!({
+                    "recordVersion": 2,
+                    "task": sample_task("t1"),
+                    "delivery": {}
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            e.get_task(&scope(), "t1").await,
+            Err(TaskEngineError::UnsupportedRecordVersion(2))
+        ));
     }
 
     #[tokio::test]

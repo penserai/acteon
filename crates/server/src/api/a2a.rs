@@ -253,6 +253,7 @@ impl From<TaskEngineError> for A2aError {
             other @ (TaskEngineError::State(_)
             | TaskEngineError::Audit(_)
             | TaskEngineError::Serde(_)
+            | TaskEngineError::UnsupportedRecordVersion(_)
             | TaskEngineError::ApprovalConflict(_)
             | TaskEngineError::AuthorizationVerification(
                 acteon_gateway::TaskAuthorizationVerificationError::Unavailable

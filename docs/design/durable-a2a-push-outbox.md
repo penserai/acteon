@@ -1,6 +1,7 @@
 # Durable A2A push outbox
 
-Status: implementation plan, October 11, 2026.
+Status: implementation in progress, October 11, 2026. Phase 1 is complete on
+the feature branch; phases 2–5 remain release-gating work.
 
 ## Problem
 
@@ -106,11 +107,12 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 
 ### Phase 1: private Task envelope
 
-- Add `DurableTaskRecord` with strict schema validation and backward-compatible
+- [x] Add `DurableTaskRecord` with strict schema validation and backward-compatible
   reads of legacy raw `Task` rows.
-- Centralize Task serialization/deserialization in `TaskEngine`; remove direct
+- [x] Centralize Task serialization/deserialization in `TaskEngine`; remove direct
   raw `Task` decoding from mutation paths.
-- Prove all existing Task behavior and state-backend contracts remain stable.
+- [x] Prove existing Task behavior remains stable with the full gateway suite;
+  configured Redis and PostgreSQL conformance remains part of the phase 5 gate.
 
 ### Phase 2: atomic mutation log
 

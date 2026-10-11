@@ -1327,12 +1327,11 @@ async fn a_forged_terminal_task_projection_cannot_certify_a_provider_outcome() {
         f.child.execution_id().to_string(),
     );
     let original = f.state.get(&key).await.unwrap().unwrap();
-    let mut task: acteon_core::Task = serde_json::from_str(&original).unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&original).unwrap();
+    let mut task: acteon_core::Task = serde_json::from_value(stored["task"].clone()).unwrap();
     task.status.state = TaskState::Completed;
-    f.state
-        .set(&key, &serde_json::to_string(&task).unwrap(), None)
-        .await
-        .unwrap();
+    stored["task"] = serde_json::to_value(&task).unwrap();
+    f.state.set(&key, &stored.to_string(), None).await.unwrap();
     assert!(
         Box::pin(runtime.resume(f.child.execution_id()))
             .await
@@ -1343,13 +1342,12 @@ async fn a_forged_terminal_task_projection_cannot_certify_a_provider_outcome() {
     Box::pin(runtime.resume(f.child.execution_id()))
         .await
         .unwrap();
-    let mut task: acteon_core::Task =
+    let mut stored: serde_json::Value =
         serde_json::from_str(&f.state.get(&key).await.unwrap().unwrap()).unwrap();
+    let mut task: acteon_core::Task = serde_json::from_value(stored["task"].clone()).unwrap();
     task.status.state = TaskState::Failed;
-    f.state
-        .set(&key, &serde_json::to_string(&task).unwrap(), None)
-        .await
-        .unwrap();
+    stored["task"] = serde_json::to_value(&task).unwrap();
+    f.state.set(&key, &stored.to_string(), None).await.unwrap();
     assert!(
         Box::pin(runtime.resume(f.child.execution_id()))
             .await

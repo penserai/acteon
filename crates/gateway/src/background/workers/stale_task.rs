@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use acteon_core::Task;
 use acteon_state::KeyKind;
 
 use super::super::BackgroundProcessor;
-use crate::task_engine::{TaskEngine, TaskScope};
+use crate::task_engine::{TaskEngine, TaskScope, decode_persisted_task};
 
 impl BackgroundProcessor {
     /// Replay terminal A2A task audits that were missed while the audit store
@@ -56,9 +55,8 @@ impl BackgroundProcessor {
         let mut errors = 0u64;
 
         for (key, raw_value) in entries {
-            // Task rows are stored as plain JSON — the TaskEngine does
-            // not encrypt them — so no decryption step is needed.
-            let task: Task = match serde_json::from_str(&raw_value) {
+            // Rows may be legacy raw Tasks or private durable envelopes.
+            let task = match decode_persisted_task(&raw_value) {
                 Ok(t) => t,
                 Err(e) => {
                     warn!(key = %key, error = %e, "stale-task reaper: skipping malformed task row");

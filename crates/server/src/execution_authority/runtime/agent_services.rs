@@ -17,6 +17,7 @@ use acteon_executor::governed::governed_provider_input_digest;
 use acteon_gateway::agent_runtime::{
     ACCEPTANCE_KIND, AgentProviderRuntime, AgentTaskStopReceipt, accepted_agent_binding_digest,
 };
+use acteon_gateway::task_engine::{TaskEngine, TaskScope};
 use acteon_governance::{
     AuthorityCoordinator, RootBudgetLimits,
     context::{
@@ -1186,14 +1187,12 @@ impl ExecutionAuthorityRuntime {
         observed: &Task,
         future_starts_blocked: bool,
     ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
-        let key = StateKey::new(namespace, tenant, KeyKind::A2aTask, task_id.to_string());
-        let (raw, task_version) = self
-            .state
-            .get_versioned(&key)
+        let scope = TaskScope::new(namespace, tenant);
+        let (task, task_version) = TaskEngine::new(self.state.clone())
+            .get_task_versioned(&scope, &task_id.to_string())
             .await
             .map_err(|_| AgentServiceError::Unavailable)?
             .ok_or(AgentServiceError::NotFound)?;
-        let task: Task = serde_json::from_str(&raw).map_err(|_| AgentServiceError::Unavailable)?;
         if task.validate().is_err()
             || task.id != task_id.to_string()
             || task.namespace != namespace
