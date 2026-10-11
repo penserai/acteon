@@ -11,11 +11,13 @@ use crate::{
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
 use acteon_core::{
-    ExecutionContextReference, StreamEvent, StreamEventType, Task, TaskMessage, TaskState,
+    ExecutionContextReference, PushAuthentication, StreamEvent, StreamEventType, Task, TaskMessage,
+    TaskPushNotificationConfig, TaskState,
 };
 use acteon_executor::delegation::{
     PeerAuthorizationStatus, PeerCancelStatus, PeerContinuationStatus, PeerSendStatus,
 };
+use acteon_gateway::TaskScope;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -245,6 +247,76 @@ struct GovernedListTasksCursor {
     include_artifacts: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedPushAuthentication {
+    scheme: String,
+    #[serde(default)]
+    credentials: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedPushConfigInput {
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    task_id: String,
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    authentication: Option<GovernedPushAuthentication>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedInlinePushConfig {
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    authentication: Option<GovernedPushAuthentication>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedPushConfigIdParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    task_id: String,
+    id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedPushConfigListParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    task_id: String,
+    #[serde(default)]
+    page_size: Option<usize>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedPushConfigCursor {
+    schema: u32,
+    task_id: String,
+    page_size: usize,
+    last_id: String,
+    visibility_binding: String,
+}
+
 fn parse_governed_task_state(value: &str) -> Result<Option<TaskState>, AgentRpcFailure> {
     match value {
         "TASK_STATE_UNSPECIFIED" => Ok(None),
@@ -306,6 +378,107 @@ fn governed_list_visibility_binding(
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn ensure_governed_push_supported(context: &AgentRpcContext<'_>) -> Result<(), AgentRpcFailure> {
+    let card =
+        context
+            .runtime()?
+            .agent_service_card(context.namespace, context.tenant, context.agent)?;
+    if !card.capabilities.push_notifications {
+        return Err(AgentRpcFailure::push_not_supported(
+            "the selected agent does not publish push notification support",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_governed_push_tenant(
+    tenant: Option<&str>,
+    context: &AgentRpcContext<'_>,
+) -> Result<(), AgentRpcFailure> {
+    if tenant.is_some_and(|tenant| !tenant.is_empty() && tenant != context.tenant) {
+        return Err(AgentRpcFailure::invalid(
+            "tenant does not match the selected agent interface",
+        ));
+    }
+    Ok(())
+}
+
+fn governed_push_input(
+    id: Option<String>,
+    url: String,
+    token: Option<String>,
+    authentication: Option<GovernedPushAuthentication>,
+) -> Result<super::a2a_push::SetPushConfigInput, AgentRpcFailure> {
+    if authentication
+        .as_ref()
+        .is_some_and(|authentication| authentication.scheme.trim().is_empty())
+    {
+        return Err(AgentRpcFailure::invalid(
+            "authentication.scheme must not be empty",
+        ));
+    }
+    Ok(super::a2a_push::SetPushConfigInput {
+        id: id.filter(|id| !id.is_empty()),
+        url,
+        token,
+        authentication: authentication.map(|authentication| PushAuthentication {
+            schemes: vec![authentication.scheme],
+            credentials: authentication.credentials,
+        }),
+    })
+}
+
+fn project_governed_push_config(
+    config: &TaskPushNotificationConfig,
+) -> Result<Value, AgentRpcFailure> {
+    let mut value = serde_json::json!({
+        "id": config.id,
+        "taskId": config.task_id,
+        "url": config.url,
+    });
+    if let Some(token) = &config.token {
+        value["token"] = Value::String(token.clone());
+    }
+    if let Some(authentication) = &config.authentication {
+        let [scheme] = authentication.schemes.as_slice() else {
+            return Err(AgentRpcFailure::internal());
+        };
+        let mut authentication_value = serde_json::json!({"scheme": scheme});
+        if let Some(credentials) = &authentication.credentials {
+            authentication_value["credentials"] = Value::String(credentials.clone());
+        }
+        value["authentication"] = authentication_value;
+    }
+    Ok(value)
+}
+
+fn governed_push_error(error: super::a2a_push::PushConfigError) -> AgentRpcFailure {
+    match error {
+        super::a2a_push::PushConfigError::TaskNotFound(task_id) => {
+            AgentRpcFailure::task_not_found(&task_id)
+        }
+        super::a2a_push::PushConfigError::ConfigNotFound { config_id, .. } => {
+            AgentRpcFailure::task_not_found(&config_id)
+        }
+        super::a2a_push::PushConfigError::Invalid(message) => AgentRpcFailure::invalid(message),
+        super::a2a_push::PushConfigError::Internal => AgentRpcFailure::internal(),
+    }
+}
+
+async fn authorize_governed_push_task(
+    context: &AgentRpcContext<'_>,
+    task_id: &str,
+) -> Result<Option<ExecutionContextReference>, AgentRpcFailure> {
+    let parsed =
+        uuid::Uuid::parse_str(task_id).map_err(|_| AgentRpcFailure::task_not_found(task_id))?;
+    let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
+    context
+        .runtime()?
+        .observe_agent_service(context.observation(parsed, source.as_ref()))
+        .await?;
+    Ok(source)
+}
+
 fn agent_rpc_return_immediately(params: &Value) -> Result<bool, AgentRpcFailure> {
     let Some(configuration) = params.get("configuration") else {
         return Ok(false);
@@ -316,11 +489,6 @@ fn agent_rpc_return_immediately(params: &Value) -> Result<bool, AgentRpcFailure>
     let Some(configuration) = configuration.as_object() else {
         return Err(AgentRpcFailure::invalid("configuration must be an object"));
     };
-    if configuration.contains_key("taskPushNotificationConfig") {
-        return Err(AgentRpcFailure::push_not_supported(
-            "inline push notification configuration is not supported by this governed interface",
-        ));
-    }
     match configuration.get("returnImmediately") {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(value)) => Ok(*value),
@@ -328,6 +496,61 @@ fn agent_rpc_return_immediately(params: &Value) -> Result<bool, AgentRpcFailure>
             "configuration.returnImmediately must be a boolean",
         )),
     }
+}
+
+fn governed_rpc_requires_management(method: &str, params: &Value) -> bool {
+    matches!(
+        method,
+        "CreateTaskPushNotificationConfig"
+            | "GetTaskPushNotificationConfig"
+            | "ListTaskPushNotificationConfigs"
+            | "DeleteTaskPushNotificationConfig"
+    ) || matches!(method, "SendMessage" | "SendStreamingMessage")
+        && params
+            .pointer("/configuration/taskPushNotificationConfig")
+            .is_some()
+}
+
+fn governed_inline_push_input(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<Option<super::a2a_push::SetPushConfigInput>, AgentRpcFailure> {
+    let Some(value) = params.pointer("/configuration/taskPushNotificationConfig") else {
+        return Ok(None);
+    };
+    ensure_governed_push_supported(context)?;
+    let input: GovernedInlinePushConfig =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            AgentRpcFailure::invalid(format!("invalid inline push configuration: {error}"))
+        })?;
+    validate_governed_push_tenant(input.tenant.as_deref(), context)?;
+    if input
+        .task_id
+        .as_deref()
+        .is_some_and(|task_id| !task_id.is_empty())
+    {
+        return Err(AgentRpcFailure::invalid(
+            "an inline push configuration taskId must be empty",
+        ));
+    }
+    let converted = governed_push_input(input.id, input.url, input.token, input.authentication)?;
+    let mut candidate = TaskPushNotificationConfig::new(
+        converted.id.as_deref().unwrap_or("pending-config"),
+        "pending-task",
+        context.namespace,
+        context.tenant,
+        &converted.url,
+    );
+    candidate.token.clone_from(&converted.token);
+    candidate
+        .authentication
+        .clone_from(&converted.authentication);
+    candidate
+        .validate()
+        .map_err(|error| AgentRpcFailure::invalid(error.to_string()))?;
+    super::a2a_ssrf::check_url_literal(&candidate.url)
+        .map_err(|error| AgentRpcFailure::invalid(format!("push url rejected: {error}")))?;
+    Ok(Some(converted))
 }
 
 fn decode_agent_rpc_message(params: &Value) -> Result<TaskMessage, AgentRpcFailure> {
@@ -478,9 +701,10 @@ async fn submit_agent_rpc(
     params: &Value,
 ) -> Result<(Task, Option<ExecutionContextReference>), AgentRpcFailure> {
     let runtime = context.runtime()?;
+    let inline_push = governed_inline_push_input(context, params)?;
     let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
     let mut message = decode_agent_rpc_message(params)?;
-    if let Some(task_id) = message.task_id.clone() {
+    let outcome = if let Some(task_id) = message.task_id.clone() {
         let task_id = uuid::Uuid::parse_str(&task_id)
             .map_err(|_| AgentRpcFailure::invalid("message.taskId is invalid"))?;
         let observed = runtime
@@ -514,7 +738,7 @@ async fn submit_agent_rpc(
                 response: &message,
             })
             .await?;
-        Ok((observed.task, source))
+        (observed.task, source)
     } else {
         let authentication = context
             .state
@@ -535,8 +759,20 @@ async fn submit_agent_rpc(
             parent,
         }))
         .await?;
-        Ok((accepted.task, Some(accepted.source_context)))
+        (accepted.task, Some(accepted.source_context))
+    };
+    if let Some(mut input) = inline_push {
+        let task_id =
+            uuid::Uuid::parse_str(&outcome.0.id).map_err(|_| AgentRpcFailure::internal())?;
+        if input.id.is_none() {
+            input.id = Some(uuid::Uuid::new_v5(&task_id, b"acteon:a2a:inline-push").to_string());
+        }
+        let scope = TaskScope::new(context.namespace, context.tenant);
+        super::a2a_push::save_authorized_config(context.state, &scope, &outcome.0.id, input)
+            .await
+            .map_err(governed_push_error)?;
     }
+    Ok(outcome)
 }
 
 async fn send_agent_rpc(
@@ -545,7 +781,7 @@ async fn send_agent_rpc(
 ) -> Result<(Value, Option<String>), AgentRpcFailure> {
     let runtime = context.runtime()?;
     let return_immediately = agent_rpc_return_immediately(params)?;
-    let (task, source_context) = submit_agent_rpc(context, params).await?;
+    let (task, source_context) = Box::pin(submit_agent_rpc(context, params)).await?;
     let task_id = uuid::Uuid::parse_str(&task.id).map_err(|_| AgentRpcFailure::internal())?;
     let task = if return_immediately {
         task
@@ -755,7 +991,7 @@ async fn prepare_agent_stream(
     match method {
         "SendStreamingMessage" => {
             agent_rpc_return_immediately(params)?;
-            submit_agent_rpc(context, params)
+            Box::pin(submit_agent_rpc(context, params))
                 .await
                 .map(|(task, source)| (task, source, true))
         }
@@ -819,8 +1055,13 @@ async fn handle_agent_streaming_rpc(
     };
 
     let returns_source = request.method == "SendStreamingMessage";
-    let outcome =
-        prepare_agent_stream(context, runtime.as_ref(), &request.method, &request.params).await;
+    let outcome = Box::pin(prepare_agent_stream(
+        context,
+        runtime.as_ref(),
+        &request.method,
+        &request.params,
+    ))
+    .await;
     let (task, source, close_on_interrupt) = match outcome {
         Ok(outcome) => outcome,
         Err(failure) => return agent_rpc_response(agent_rpc_error(request.id, failure), None),
@@ -1036,6 +1277,157 @@ async fn list_agent_rpc(
     ))
 }
 
+async fn create_governed_push_config_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    ensure_governed_push_supported(context)?;
+    let params: GovernedPushConfigInput = serde_json::from_value(params.clone())
+        .map_err(|error| AgentRpcFailure::invalid(format!("invalid push config: {error}")))?;
+    validate_governed_push_tenant(params.tenant.as_deref(), context)?;
+    if params.task_id.is_empty() {
+        return Err(AgentRpcFailure::invalid("taskId must not be empty"));
+    }
+    authorize_governed_push_task(context, &params.task_id).await?;
+    let input = governed_push_input(params.id, params.url, params.token, params.authentication)?;
+    let scope = TaskScope::new(context.namespace, context.tenant);
+    let config =
+        super::a2a_push::save_authorized_config(context.state, &scope, &params.task_id, input)
+            .await
+            .map_err(governed_push_error)?;
+    Ok((project_governed_push_config(&config)?, None))
+}
+
+async fn get_governed_push_config_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    ensure_governed_push_supported(context)?;
+    let params: GovernedPushConfigIdParams = serde_json::from_value(params.clone())
+        .map_err(|error| AgentRpcFailure::invalid(format!("invalid push config query: {error}")))?;
+    validate_governed_push_tenant(params.tenant.as_deref(), context)?;
+    if params.task_id.is_empty() || params.id.is_empty() {
+        return Err(AgentRpcFailure::invalid("taskId and id must not be empty"));
+    }
+    authorize_governed_push_task(context, &params.task_id).await?;
+    let scope = TaskScope::new(context.namespace, context.tenant);
+    let config =
+        super::a2a_push::load_authorized_config(context.state, &scope, &params.task_id, &params.id)
+            .await
+            .map_err(governed_push_error)?;
+    Ok((project_governed_push_config(&config)?, None))
+}
+
+async fn list_governed_push_configs_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    ensure_governed_push_supported(context)?;
+    let params: GovernedPushConfigListParams = serde_json::from_value(params.clone())
+        .map_err(|error| AgentRpcFailure::invalid(format!("invalid push config query: {error}")))?;
+    validate_governed_push_tenant(params.tenant.as_deref(), context)?;
+    if params.task_id.is_empty() {
+        return Err(AgentRpcFailure::invalid("taskId must not be empty"));
+    }
+    let page_size = params.page_size.unwrap_or(50);
+    if !(1..=100).contains(&page_size) {
+        return Err(AgentRpcFailure::invalid(
+            "pageSize must be between 1 and 100",
+        ));
+    }
+    let source = authorize_governed_push_task(context, &params.task_id).await?;
+    let visibility_binding = governed_list_visibility_binding(context, source.as_ref())?;
+    let cursor = params
+        .page_token
+        .as_deref()
+        .map(|token| {
+            if token.len() > 8192 {
+                return Err(AgentRpcFailure::invalid("invalid pageToken"));
+            }
+            URL_SAFE_NO_PAD
+                .decode(token)
+                .map_err(|_| AgentRpcFailure::invalid("invalid pageToken"))
+                .and_then(|bytes| {
+                    serde_json::from_slice::<GovernedPushConfigCursor>(&bytes)
+                        .map_err(|_| AgentRpcFailure::invalid("invalid pageToken"))
+                })
+        })
+        .transpose()?;
+    if cursor.as_ref().is_some_and(|cursor| {
+        cursor.schema != 1
+            || cursor.task_id != params.task_id
+            || cursor.page_size != page_size
+            || cursor.visibility_binding != visibility_binding
+    }) {
+        return Err(AgentRpcFailure::invalid(
+            "pageToken does not match the current caller, task, or page size",
+        ));
+    }
+    let scope = TaskScope::new(context.namespace, context.tenant);
+    let mut configs =
+        super::a2a_push::list_authorized_configs(context.state, &scope, &params.task_id)
+            .await
+            .map_err(governed_push_error)?;
+    configs.sort_by(|left, right| left.id.cmp(&right.id));
+    if let Some(cursor) = &cursor {
+        configs.retain(|config| config.id > cursor.last_id);
+    }
+    let has_more = configs.len() > page_size;
+    configs.truncate(page_size);
+    let projected = configs
+        .iter()
+        .map(project_governed_push_config)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_page_token = if has_more {
+        let cursor = GovernedPushConfigCursor {
+            schema: 1,
+            task_id: params.task_id,
+            page_size,
+            last_id: configs
+                .last()
+                .ok_or_else(AgentRpcFailure::internal)?
+                .id
+                .clone(),
+            visibility_binding,
+        };
+        URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&cursor).map_err(|_| AgentRpcFailure::internal())?)
+    } else {
+        String::new()
+    };
+    Ok((
+        serde_json::json!({"configs": projected, "nextPageToken": next_page_token}),
+        None,
+    ))
+}
+
+async fn delete_governed_push_config_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    ensure_governed_push_supported(context)?;
+    let params: GovernedPushConfigIdParams = serde_json::from_value(params.clone())
+        .map_err(|error| AgentRpcFailure::invalid(format!("invalid push config query: {error}")))?;
+    validate_governed_push_tenant(params.tenant.as_deref(), context)?;
+    if params.task_id.is_empty() || params.id.is_empty() {
+        return Err(AgentRpcFailure::invalid("taskId and id must not be empty"));
+    }
+    authorize_governed_push_task(context, &params.task_id).await?;
+    let scope = TaskScope::new(context.namespace, context.tenant);
+    match super::a2a_push::delete_authorized_config(
+        context.state,
+        &scope,
+        &params.task_id,
+        &params.id,
+    )
+    .await
+    {
+        Ok(()) | Err(super::a2a_push::PushConfigError::ConfigNotFound { .. }) => {}
+        Err(error) => return Err(governed_push_error(error)),
+    }
+    Ok((serde_json::json!({}), None))
+}
+
 async fn cancel_agent_rpc(
     context: &AgentRpcContext<'_>,
     params: &Value,
@@ -1096,17 +1488,19 @@ async fn dispatch_agent_rpc(
 ) -> Result<(Value, Option<String>), AgentRpcFailure> {
     validate_agent_rpc_tenant(&params, context.tenant)?;
     match method {
-        "SendMessage" => send_agent_rpc(context, &params).await,
+        "SendMessage" => Box::pin(send_agent_rpc(context, &params)).await,
         "GetTask" => get_agent_rpc(context, &params).await,
         "GetExtendedAgentCard" => extended_agent_card_rpc(context),
         "CancelTask" => Box::pin(cancel_agent_rpc(context, &params)).await,
         "ListTasks" => Box::pin(list_agent_rpc(context, &params)).await,
-        "CreateTaskPushNotificationConfig"
-        | "GetTaskPushNotificationConfig"
-        | "ListTaskPushNotificationConfigs"
-        | "DeleteTaskPushNotificationConfig" => Err(AgentRpcFailure::push_not_supported(format!(
-            "{method} is not supported by this governed agent interface",
-        ))),
+        "CreateTaskPushNotificationConfig" => {
+            create_governed_push_config_rpc(context, &params).await
+        }
+        "GetTaskPushNotificationConfig" => get_governed_push_config_rpc(context, &params).await,
+        "ListTaskPushNotificationConfigs" => list_governed_push_configs_rpc(context, &params).await,
+        "DeleteTaskPushNotificationConfig" => {
+            delete_governed_push_config_rpc(context, &params).await
+        }
         _ => Err(AgentRpcFailure {
             code: -32601,
             message: format!("method '{method}' is not supported"),
@@ -1224,6 +1618,14 @@ pub async fn rpc(
         Ok(request) => request,
         Err(response) => return *response,
     };
+    if governed_rpc_requires_management(&request.method, &request.params)
+        && !identity.role.has_permission(Permission::OperationsManage)
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "agent_service_push_requires_operations_manage",
+        );
+    }
     // Observation remains available to the authenticated original source after
     // role offboarding. Every other method must retain current invocation
     // authority; method-level runtime checks remain authoritative as well.
@@ -1253,7 +1655,7 @@ pub async fn rpc(
         request.method.as_str(),
         "SendStreamingMessage" | "SubscribeToTask"
     ) {
-        return handle_agent_streaming_rpc(&context, request).await;
+        return Box::pin(handle_agent_streaming_rpc(&context, request)).await;
     }
     let outcome = Box::pin(dispatch_agent_rpc(
         &context,
@@ -2569,15 +2971,15 @@ mod rpc_tests {
     }
 
     #[test]
-    fn governed_rpc_rejects_unimplemented_inline_push_before_admission() {
-        let failure = agent_rpc_return_immediately(&json!({
+    fn governed_rpc_marks_inline_push_as_management_and_preserves_send_options() {
+        let params = json!({
             "configuration": {
                 "returnImmediately": true,
                 "taskPushNotificationConfig": {"url":"https://example.test/push"}
             }
-        }))
-        .unwrap_err();
-        assert_eq!(failure.code, -32003);
+        });
+        assert!(agent_rpc_return_immediately(&params).unwrap());
+        assert!(governed_rpc_requires_management("SendMessage", &params));
     }
 
     #[test]

@@ -100,7 +100,8 @@ the call a bounded descendant of existing work; both headers are required as a
 pair and message content cannot manufacture either one.
 
 The governed endpoint implements `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`,
-`GetExtendedAgentCard`, `SendStreamingMessage`, and `SubscribeToTask`. A new message may set
+the four Task push configuration methods, `GetExtendedAgentCard`,
+`SendStreamingMessage`, and `SubscribeToTask`. A new message may set
 `configuration.returnImmediately=true` to receive durable acceptance. A
 continuation must target the same Task and active input challenge. `CancelTask`
 first commits the same durable execution-subtree fence as the native `stop`
@@ -122,8 +123,12 @@ pages on the configured state backend and rechecks authentication after the
 scan. Agent principals must send one exact job receipt, so their result contains
 at most that job; this prevents a shared agent credential from enumerating other
 jobs. Human, service, and system principals can list all of their own Tasks for
-the selected agent. Push configuration still returns
-`PushNotificationNotSupported` while its governed delivery contract is completed.
+the selected agent. Push configuration uses the same original-task observation
+check and additionally requires operations-management permission. This applies
+to create, secret-bearing get/list, delete, and inline registration. Agent
+principals must present the exact source receipt; a human or service manager may
+use another credential for the same original principal and credential authority.
+The selected card must advertise `pushNotifications`.
 This exact-agent endpoint accepts one
 JSON-RPC request or notification per HTTP call; it does not accept batch arrays.
 
@@ -638,32 +643,40 @@ receiving new updates.
 
 ## Push notifications
 
-For consumers that prefer push over pull, register a webhook with
-`tasks/pushNotificationConfig/set`:
+For consumers that prefer push over pull, register a webhook with the official
+method on either the tenant Task service or an exact governed agent:
 
 ```bash
-curl -X POST .../a2a/agents/demo \
+curl -X POST .../a2a/prod/acme/agents/notifier \
+  -H 'A2A-Version: 1.0' \
   -d '{
     "jsonrpc": "2.0", "id": 1,
-    "method": "tasks/pushNotificationConfig/set",
+    "method": "CreateTaskPushNotificationConfig",
     "params": {
       "taskId": "task-alpha",
-      "pushNotificationConfig": {
-        "url": "https://my-service.example.com/a2a-hook",
-        "token": "shared-secret"
-      }
+      "id": "incident-hook",
+      "url": "https://my-service.example.com/a2a-hook",
+      "token": "callback-token",
+      "authentication": {"scheme": "Bearer", "credentials": "secret"}
     }
   }'
 ```
 
-The token (if set) is sent as `Authorization: Bearer <token>` on every
-POST. The delivery worker:
+The callback receives `Content-Type: application/a2a+json` and
+`A2A-Version: 1.0`. Its body is an official status or artifact
+`StreamResponse`. Acteon sends `token` in `X-A2A-Notification-Token`; it sends
+the separately configured authentication scheme and credentials in
+`Authorization`. Secret-bearing create, get, and list results require
+operations-management authority. Treat returned token and credential fields as
+secrets and keep them out of logs and model context.
+
+The current delivery worker:
 
 - Subscribes to the same stream broadcast as the SSE endpoint.
 - Looks up registered configs by task id (short-TTL cache folds
   bursts).
-- POSTs the event envelope verbatim to every registered URL,
-  concurrently across configs and across events.
+- Reloads the durable Task and projects the event into the official A2A v1
+  callback body before POSTing to each URL.
 - Retries with capped exponential backoff (1s, 2s, …, capped at 30s)
   for transient failures: HTTP 5xx, network/timeout errors, and **HTTP
   408 / 425 / 429** (the codes a well-behaved server uses to ask for
@@ -673,14 +686,21 @@ POST. The delivery worker:
 - Bounds total in-flight HTTP deliveries at 64, so a misbehaving
   destination cannot starve the rest of the fleet.
 
+Delivery is currently driven by the live event broadcast. Retries and the DLQ
+cover an individual observed event, but a process crash, broadcast lag, or
+concurrent dispatch can still lose or reorder callbacks. Use `GetTask` after a
+callback or reconnect to recover the authoritative snapshot. Durable ordered
+at-least-once callback delivery remains a planned state-backend outbox feature;
+the card should advertise push only when this delivery profile is acceptable.
+
 **Persistent DLQ.** Terminal failures (`4xx` other than `408/425/429`)
 and exhausted-retry failures land in a per-tenant dead-letter queue
 keyed by task. List, inspect, and purge entries via:
 
 ```text
-GET    /v1/tasks/{task_id}/pushNotificationDLQ
-GET    /v1/tasks/{task_id}/pushNotificationDLQ/{entry_id}
-DELETE /v1/tasks/{task_id}/pushNotificationDLQ/{entry_id}
+GET    /v1/a2a/{namespace}/{tenant}/push-dlq
+GET    /v1/a2a/{namespace}/{tenant}/push-dlq/{entry_id}
+DELETE /v1/a2a/{namespace}/{tenant}/push-dlq/{entry_id}
 ```
 
 Counters for both delivery outcomes are also exported via

@@ -39,6 +39,27 @@ export interface AgentServiceTaskPage {
   readonly pageSize: number;
   readonly totalSize: number;
 }
+export interface AgentServicePushAuthentication {
+  readonly scheme: string;
+  readonly credentials?: string;
+}
+export interface AgentServicePushConfigInput {
+  readonly url: string;
+  readonly id?: string;
+  readonly token?: string;
+  readonly authentication?: AgentServicePushAuthentication;
+}
+export interface AgentServicePushConfig {
+  readonly id: string;
+  readonly taskId: string;
+  readonly url: string;
+  readonly token?: string;
+  readonly authentication?: AgentServicePushAuthentication;
+}
+export interface AgentServicePushConfigPage {
+  readonly configs: readonly AgentServicePushConfig[];
+  readonly nextPageToken: string;
+}
 /** One official A2A StreamResponse plus host-owned admission provenance. */
 export interface AgentServiceA2aFrame {
   readonly result: Record<string, unknown>;
@@ -215,6 +236,31 @@ export function agentServiceTaskPage(value: unknown): AgentServiceTaskPage {
     return Object.freeze(task);
   });
   return Object.freeze({ tasks: Object.freeze(tasks), nextPageToken: page.nextPageToken, pageSize: page.pageSize, totalSize: page.totalSize });
+}
+export function agentServicePushConfig(value: unknown, taskId: string, id?: string): AgentServicePushConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A push configuration is invalid");
+  const config = value as Record<string, unknown>;
+  if (Object.keys(config).some(key => !["id", "taskId", "url", "token", "authentication"].includes(key))
+    || typeof config.id !== "string" || !config.id || (id !== undefined && config.id !== id)
+    || config.taskId !== taskId || typeof config.url !== "string" || !config.url
+    || (config.token !== undefined && (typeof config.token !== "string" || config.token.length > 4096))) throw new Error("agent service A2A push configuration is invalid");
+  let authentication: AgentServicePushAuthentication | undefined;
+  if (config.authentication !== undefined) {
+    if (!config.authentication || typeof config.authentication !== "object" || Array.isArray(config.authentication)) throw new Error("agent service A2A push authentication is invalid");
+    const auth = config.authentication as Record<string, unknown>;
+    if (Object.keys(auth).some(key => !["scheme", "credentials"].includes(key))
+      || typeof auth.scheme !== "string" || !auth.scheme.trim() || auth.scheme.length > 256
+      || (auth.credentials !== undefined && (typeof auth.credentials !== "string" || auth.credentials.length > 4096))) throw new Error("agent service A2A push authentication is invalid");
+    authentication = Object.freeze({ scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}) });
+  }
+  return Object.freeze({ id: config.id, taskId, url: config.url, ...(config.token !== undefined ? { token: config.token } : {}), ...(authentication ? { authentication } : {}) });
+}
+export function agentServicePushConfigPage(value: unknown, taskId: string): AgentServicePushConfigPage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A push page is invalid");
+  const page = value as Record<string, unknown>;
+  if (Object.keys(page).sort().join(",") !== "configs,nextPageToken" || !Array.isArray(page.configs)
+    || typeof page.nextPageToken !== "string" || page.nextPageToken.length > 8192) throw new Error("agent service A2A push page is invalid");
+  return Object.freeze({ configs: Object.freeze(page.configs.map(config => agentServicePushConfig(config, taskId))), nextPageToken: page.nextPageToken });
 }
 export function agentServiceBase(namespace: string, tenant: string, agent: string): string {
   return agentServiceRpcBase(namespace, tenant, agent) + "/v1";

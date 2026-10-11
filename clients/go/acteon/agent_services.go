@@ -55,6 +55,37 @@ type AgentServiceTaskPage struct {
 	TotalSize     int
 }
 
+type AgentServicePushAuthentication struct {
+	Scheme      string
+	Credentials *string
+}
+
+type AgentServicePushConfigInput struct {
+	ID             string
+	URL            string
+	Token          *string
+	Authentication *AgentServicePushAuthentication
+}
+
+type AgentServicePushConfig struct {
+	ID             string
+	TaskID         string
+	URL            string
+	Token          *string
+	Authentication *AgentServicePushAuthentication
+}
+
+type AgentServicePushConfigListOptions struct {
+	PageSize  int
+	PageToken string
+	Source    *AgentServiceReceipt
+}
+
+type AgentServicePushConfigPage struct {
+	Configs       []AgentServicePushConfig
+	NextPageToken string
+}
+
 // AgentServiceA2AFrame is one official StreamResponse. SourceContext is
 // host-owned admission provenance and never comes from Result.
 type AgentServiceA2AFrame struct {
@@ -496,6 +527,185 @@ func (c *Client) AgentServiceListTasks(ctx context.Context, namespace, tenant, a
 		tasks = append(tasks, task)
 	}
 	return &AgentServiceTaskPage{Tasks: tasks, NextPageToken: token, PageSize: pageSize, TotalSize: totalSize}, nil
+}
+
+func pushConfigInput(taskID string, input AgentServicePushConfigInput) (map[string]any, error) {
+	if taskID == "" || input.URL == "" {
+		return nil, fmt.Errorf("task ID and push URL must not be empty")
+	}
+	if input.Token != nil && len(*input.Token) > 4096 {
+		return nil, fmt.Errorf("push token is too large")
+	}
+	params := map[string]any{"taskId": taskID, "url": input.URL}
+	if input.ID != "" {
+		params["id"] = input.ID
+	}
+	if input.Token != nil {
+		params["token"] = *input.Token
+	}
+	if input.Authentication != nil {
+		auth := input.Authentication
+		if strings.TrimSpace(auth.Scheme) == "" || len(auth.Scheme) > 256 || auth.Credentials != nil && len(*auth.Credentials) > 4096 {
+			return nil, fmt.Errorf("push authentication is invalid")
+		}
+		value := map[string]any{"scheme": auth.Scheme}
+		if auth.Credentials != nil {
+			value["credentials"] = *auth.Credentials
+		}
+		params["authentication"] = value
+	}
+	return params, nil
+}
+
+func parsePushConfig(value map[string]any, taskID, expectedID string) (*AgentServicePushConfig, error) {
+	if len(value) < 3 || len(value) > 5 {
+		return nil, fmt.Errorf("agent service A2A push configuration is invalid")
+	}
+	for key := range value {
+		if key != "id" && key != "taskId" && key != "url" && key != "token" && key != "authentication" {
+			return nil, fmt.Errorf("agent service A2A push configuration fields are invalid")
+		}
+	}
+	id, idOK := value["id"].(string)
+	pushURL, urlOK := value["url"].(string)
+	if !idOK || id == "" || expectedID != "" && id != expectedID || value["taskId"] != taskID || !urlOK || pushURL == "" {
+		return nil, fmt.Errorf("agent service A2A push configuration is invalid")
+	}
+	config := &AgentServicePushConfig{ID: id, TaskID: taskID, URL: pushURL}
+	if token, present := value["token"]; present {
+		text, ok := token.(string)
+		if !ok || len(text) > 4096 {
+			return nil, fmt.Errorf("agent service A2A push configuration is invalid")
+		}
+		config.Token = &text
+	}
+	if raw, present := value["authentication"]; present {
+		auth, ok := raw.(map[string]any)
+		if !ok || len(auth) < 1 || len(auth) > 2 {
+			return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+		}
+		for key := range auth {
+			if key != "scheme" && key != "credentials" {
+				return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+			}
+		}
+		scheme, ok := auth["scheme"].(string)
+		if !ok || strings.TrimSpace(scheme) == "" || len(scheme) > 256 {
+			return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+		}
+		parsed := &AgentServicePushAuthentication{Scheme: scheme}
+		if credentials, present := auth["credentials"]; present {
+			text, ok := credentials.(string)
+			if !ok || len(text) > 4096 {
+				return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+			}
+			parsed.Credentials = &text
+		}
+		config.Authentication = parsed
+	}
+	return config, nil
+}
+
+func (c *Client) agentServicePushRPC(ctx context.Context, namespace, tenant, agent, taskID, method string, params map[string]any, source *AgentServiceReceipt) (map[string]any, error) {
+	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	sourceContext := ""
+	if source != nil {
+		if source.Namespace != namespace || source.Tenant != tenant || source.Agent != agent || source.TaskID != taskID {
+			return nil, fmt.Errorf("agent service push receipt does not match the route or task")
+		}
+		if err := agentSource(source.SourceContext); err != nil {
+			return nil, err
+		}
+		sourceContext = source.SourceContext
+	}
+	requestID := "push:" + method + ":" + taskID
+	rpc, _, err := c.agentServiceRequest(ctx, http.MethodPost, path, map[string]any{"jsonrpc": "2.0", "id": requestID, "method": method, "params": params}, sourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rpc["jsonrpc"] != "2.0" || rpc["id"] != requestID {
+		return nil, fmt.Errorf("agent service A2A response request identity mismatch")
+	}
+	if failure, ok := rpc["error"].(map[string]any); ok {
+		return nil, fmt.Errorf("A2A error %v: %v", failure["code"], failure["message"])
+	}
+	result, ok := rpc["result"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent service A2A response has no object result")
+	}
+	return result, nil
+}
+
+func (c *Client) AgentServiceCreatePushConfig(ctx context.Context, namespace, tenant, agent, taskID string, input AgentServicePushConfigInput, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
+	params, err := pushConfigInput(taskID, input)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "CreateTaskPushNotificationConfig", params, source)
+	if err != nil {
+		return nil, err
+	}
+	return parsePushConfig(value, taskID, input.ID)
+}
+
+func (c *Client) AgentServiceGetPushConfig(ctx context.Context, namespace, tenant, agent, taskID, configID string, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "GetTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
+	if err != nil {
+		return nil, err
+	}
+	return parsePushConfig(value, taskID, configID)
+}
+
+func (c *Client) AgentServiceListPushConfigs(ctx context.Context, namespace, tenant, agent, taskID string, options AgentServicePushConfigListOptions) (*AgentServicePushConfigPage, error) {
+	if options.PageSize < 0 || options.PageSize > 100 || len(options.PageToken) > 8192 {
+		return nil, fmt.Errorf("invalid push configuration pagination")
+	}
+	params := map[string]any{"taskId": taskID}
+	if options.PageSize != 0 {
+		params["pageSize"] = options.PageSize
+	}
+	if options.PageToken != "" {
+		params["pageToken"] = options.PageToken
+	}
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "ListTaskPushNotificationConfigs", params, options.Source)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 2 {
+		return nil, fmt.Errorf("agent service A2A push page is invalid")
+	}
+	token, tokenOK := value["nextPageToken"].(string)
+	raw, configsOK := value["configs"].([]any)
+	if !tokenOK || len(token) > 8192 || !configsOK {
+		return nil, fmt.Errorf("agent service A2A push page is invalid")
+	}
+	configs := make([]AgentServicePushConfig, 0, len(raw))
+	for _, item := range raw {
+		config, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("agent service A2A push page is invalid")
+		}
+		parsed, err := parsePushConfig(config, taskID, "")
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, *parsed)
+	}
+	return &AgentServicePushConfigPage{Configs: configs, NextPageToken: token}, nil
+}
+
+func (c *Client) AgentServiceDeletePushConfig(ctx context.Context, namespace, tenant, agent, taskID, configID string, source *AgentServiceReceipt) error {
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "DeleteTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
+	if err != nil {
+		return err
+	}
+	if len(value) != 0 {
+		return fmt.Errorf("agent service A2A delete result is invalid")
+	}
+	return nil
 }
 
 func exactJSONInt(value any) (int, bool) {

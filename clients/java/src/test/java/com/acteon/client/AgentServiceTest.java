@@ -112,6 +112,49 @@ class AgentServiceTest {
         } finally { server.stop(0); }
     }
 
+    @Test void officialPushConfigCrudIsTypedAndTaskBound() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var failure = new AtomicReference<Throwable>(); var calls = new AtomicInteger();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                calls.incrementAndGet();
+                assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                var request = mapper.readTree(exchange.getRequestBody());
+                assertEquals("job-1", request.path("params").path("taskId").asText());
+                var stored = mapper.readTree("{\"id\":\"push-1\",\"taskId\":\"job-1\",\"url\":\"https://hooks.example/a2a\",\"token\":\"callback-token\",\"authentication\":{\"scheme\":\"Bearer\",\"credentials\":\"secret\"}}");
+                com.fasterxml.jackson.databind.JsonNode result;
+                if (request.path("method").asText().equals("ListTaskPushNotificationConfigs")) {
+                    result = mapper.createObjectNode().set("configs", mapper.createArrayNode().add(stored));
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) result).put("nextPageToken", "next");
+                } else if (request.path("method").asText().equals("DeleteTaskPushNotificationConfig")) {
+                    result = mapper.createObjectNode();
+                } else {
+                    result = stored;
+                }
+                var envelope = mapper.createObjectNode(); envelope.put("jsonrpc","2.0");
+                envelope.set("id", request.path("id")); envelope.set("result", result);
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                var body = mapper.writeValueAsBytes(envelope);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var input = new AgentServicePushConfigInput("push-1", "https://hooks.example/a2a", "callback-token", new AgentServicePushAuthentication("Bearer", "secret"));
+            var created = client.agentServiceCreatePushConfig("prod","acme","notifier","job-1",input,receipt);
+            assertEquals("secret", created.authentication().credentials());
+            assertEquals("push-1", client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",receipt).id());
+            assertEquals("next", client.agentServiceListPushConfigs("prod","acme","notifier","job-1",1,null,receipt).nextPageToken());
+            client.agentServiceDeletePushConfig("prod","acme","notifier","job-1","push-1",receipt);
+            assertEquals(4,calls.get());
+            var foreign = new AgentServiceReceipt("prod","acme","notifier","job-2","host-only",task);
+            assertThrows(IllegalArgumentException.class, () -> client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",foreign));
+            assertEquals(4,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
     @Test void peerToolSendsNoAuthorityFieldsAndValidatesReceipt() throws Exception {
         var mapper = JsonMapper.build();
         var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");

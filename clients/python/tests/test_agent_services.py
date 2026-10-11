@@ -12,6 +12,8 @@ from acteon_client import (
     AgentPeerSendReceipt,
     AgentServiceA2aFrame,
     AgentServiceParent,
+    AgentServicePushAuthentication,
+    AgentServicePushConfigInput,
     AgentServiceReceipt,
     AsyncActeonClient,
     PermitReference,
@@ -198,6 +200,78 @@ async def test_official_list_tasks_has_typed_sync_and_async_parity():
         assert page.tasks[0]["id"] == "job-1"
         assert page.total_size == async_page.total_size == 2
         assert page.next_page_token == "next-1"
+    finally:
+        sync.close()
+        await async_client.close()
+
+
+def _push_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0][
+        "source_context"
+    ]
+    method = body["method"]
+    params = body["params"]
+    assert params["taskId"] == "job-1"
+    config = {
+        "id": "cfg-1",
+        "taskId": "job-1",
+        "url": "https://hooks.example/a2a",
+        "token": "notification-token",
+        "authentication": {"scheme": "Bearer", "credentials": "webhook-secret"},
+    }
+    if method == "CreateTaskPushNotificationConfig":
+        assert params == config
+        result = config
+    elif method == "GetTaskPushNotificationConfig":
+        assert params["id"] == "cfg-1"
+        result = config
+    elif method == "ListTaskPushNotificationConfigs":
+        assert params["pageSize"] == 1
+        result = {"configs": [config], "nextPageToken": ""}
+    else:
+        assert method == "DeleteTaskPushNotificationConfig"
+        assert params["id"] == "cfg-1"
+        result = {}
+    return httpx.Response(
+        200,
+        json={"jsonrpc": "2.0", "id": body["id"], "result": result},
+        headers={"a2a-version": "1.0"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_push_configs_have_typed_sync_and_async_parity():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    config = AgentServicePushConfigInput(
+        "https://hooks.example/a2a",
+        "cfg-1",
+        "notification-token",
+        AgentServicePushAuthentication("Bearer", "webhook-secret"),
+    )
+    sync = ActeonClient("http://acteon")
+    sync._client = httpx.Client(transport=httpx.MockTransport(_push_response))
+    async_client = AsyncActeonClient("http://acteon")
+    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_push_response))
+    try:
+        created = sync.agent_service_create_push_config(
+            "prod", "acme", "notifier", "job-1", config, source=receipt
+        )
+        fetched = await async_client.agent_service_get_push_config(
+            "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
+        )
+        listed = sync.agent_service_list_push_configs(
+            "prod", "acme", "notifier", "job-1", page_size=1, source=receipt
+        )
+        await async_client.agent_service_delete_push_config(
+            "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
+        )
+        assert created == fetched == listed.configs[0]
+        assert "webhook-secret" not in repr(created)
     finally:
         sync.close()
         await async_client.close()

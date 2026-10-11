@@ -1,8 +1,8 @@
-# Authenticated agent services implementation checkpoint
+# Authenticated governed agent services checkpoint
 
-October 6, 2026. This branch preserves work in progress on configured agent
-services following the durable agent task runtime released in PR #432.
-It is not ready to merge or advertise as a complete A2A service.
+Updated October 11, 2026. This checkpoint records the implemented configured
+agent-service surface and the remaining release gates following the durable
+agent task runtime released in PR #432.
 
 Implemented so far:
 
@@ -21,6 +21,13 @@ Implemented so far:
 - Legacy tenant A2A read, append, cancel, events, and push configuration cannot
   access governed service tasks. The boundary reads durable acceptance rather
   than trusting display metadata.
+- The exact-agent JSON-RPC boundary supports schema-closed A2A 1.0 push
+  configuration create/get/list/delete and inline registration. Every operation
+  reuses original-task authorization and requires operations-management
+  permission; agent principals also need the exact host receipt. Stored rows
+  are revalidated on read and delivery. All five SDKs expose typed task-bound
+  helpers. Delivery callbacks now carry official `StreamResponse` bodies and
+  the specified token and authentication headers.
 - Requester-isolated observation authenticates the original source credential.
   Agent callers must also present the exact source context returned by admission.
   Observation repairs known completion receipts without starting provider work.

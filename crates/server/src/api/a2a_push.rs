@@ -71,6 +71,28 @@ fn config_key(scope: &TaskScope, task_id: &str, config_id: &str) -> StateKey {
     )
 }
 
+fn validate_stored_config(
+    config: TaskPushNotificationConfig,
+    scope: &TaskScope,
+    task_id: &str,
+    config_id: Option<&str>,
+) -> Result<TaskPushNotificationConfig, PushConfigError> {
+    if config.namespace != scope.namespace
+        || config.tenant != scope.tenant
+        || config.task_id != task_id
+        || config_id.is_some_and(|id| config.id != id)
+        || config.validate().is_err()
+        || super::a2a_ssrf::check_url_literal(&config.url).is_err()
+    {
+        tracing::warn!(
+            task_id,
+            "push-config: stored row failed identity or validation"
+        );
+        return Err(PushConfigError::Internal);
+    }
+    Ok(config)
+}
+
 /// Confirm the task exists under this scope before any config
 /// CRUD. Without this every endpoint would happily mint config rows
 /// for a non-existent task — the existence check makes config IDs
@@ -129,6 +151,18 @@ pub(crate) async fn save_config(
     input: SetPushConfigInput,
 ) -> Result<TaskPushNotificationConfig, PushConfigError> {
     ensure_task_exists(state, scope, task_id).await?;
+    save_authorized_config(state, scope, task_id, input).await
+}
+
+/// Persist a push configuration after the caller has independently proved
+/// access to the exact task. Governed agent services use this entry point
+/// because the tenant task adapter deliberately hides governed tasks.
+pub(crate) async fn save_authorized_config(
+    state: &AppState,
+    scope: &TaskScope,
+    task_id: &str,
+    input: SetPushConfigInput,
+) -> Result<TaskPushNotificationConfig, PushConfigError> {
     let id = input.id.unwrap_or_else(fresh_config_id);
     let key = config_key(scope, task_id, &id);
 
@@ -194,16 +228,29 @@ pub(crate) async fn load_config(
     config_id: &str,
 ) -> Result<TaskPushNotificationConfig, PushConfigError> {
     ensure_task_exists(state, scope, task_id).await?;
+    load_authorized_config(state, scope, task_id, config_id).await
+}
+
+/// Load a push configuration after exact-task authorization.
+pub(crate) async fn load_authorized_config(
+    state: &AppState,
+    scope: &TaskScope,
+    task_id: &str,
+    config_id: &str,
+) -> Result<TaskPushNotificationConfig, PushConfigError> {
     let key = config_key(scope, task_id, config_id);
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;
         gw.state_store().clone()
     };
     match store.get(&key).await {
-        Ok(Some(raw)) => serde_json::from_str::<TaskPushNotificationConfig>(&raw).map_err(|e| {
-            tracing::warn!(error = %e, "push-config: deserialize failed");
-            PushConfigError::Internal
-        }),
+        Ok(Some(raw)) => {
+            let config = serde_json::from_str::<TaskPushNotificationConfig>(&raw).map_err(|e| {
+                tracing::warn!(error = %e, "push-config: deserialize failed");
+                PushConfigError::Internal
+            })?;
+            validate_stored_config(config, scope, task_id, Some(config_id))
+        }
         Ok(None) => Err(PushConfigError::ConfigNotFound {
             task_id: task_id.to_string(),
             config_id: config_id.to_string(),
@@ -224,6 +271,15 @@ pub(crate) async fn list_configs(
     task_id: &str,
 ) -> Result<Vec<TaskPushNotificationConfig>, PushConfigError> {
     ensure_task_exists(state, scope, task_id).await?;
+    list_authorized_configs(state, scope, task_id).await
+}
+
+/// List push configurations after exact-task authorization.
+pub(crate) async fn list_authorized_configs(
+    state: &AppState,
+    scope: &TaskScope,
+    task_id: &str,
+) -> Result<Vec<TaskPushNotificationConfig>, PushConfigError> {
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;
         gw.state_store().clone()
@@ -243,9 +299,11 @@ pub(crate) async fn list_configs(
         })?;
     let mut out = Vec::with_capacity(entries.len());
     for (_, raw) in entries {
-        if let Ok(c) = serde_json::from_str::<TaskPushNotificationConfig>(&raw) {
-            out.push(c);
-        }
+        let config = serde_json::from_str::<TaskPushNotificationConfig>(&raw).map_err(|error| {
+            tracing::warn!(error = %error, "push-config: malformed stored row");
+            PushConfigError::Internal
+        })?;
+        out.push(validate_stored_config(config, scope, task_id, None)?);
     }
     Ok(out)
 }
@@ -259,6 +317,16 @@ pub(crate) async fn delete_config(
     config_id: &str,
 ) -> Result<(), PushConfigError> {
     ensure_task_exists(state, scope, task_id).await?;
+    delete_authorized_config(state, scope, task_id, config_id).await
+}
+
+/// Delete a push configuration after exact-task authorization.
+pub(crate) async fn delete_authorized_config(
+    state: &AppState,
+    scope: &TaskScope,
+    task_id: &str,
+    config_id: &str,
+) -> Result<(), PushConfigError> {
     let key = config_key(scope, task_id, config_id);
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;

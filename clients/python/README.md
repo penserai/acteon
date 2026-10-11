@@ -613,6 +613,29 @@ print(len(page.tasks), page.total_size, page.next_page_token)
 # Agent principals pass source=receipt to retain exact job isolation.
 ```
 
+Manage an official callback with an operations-management credential:
+
+```python
+from acteon_client import AgentServicePushAuthentication, AgentServicePushConfigInput
+
+push = client.agent_service_create_push_config(
+    "prod", "acme", "notifier", receipt.task_id,
+    AgentServicePushConfigInput(
+        "https://hooks.example/a2a", id="incident-hook", token=callback_token,
+        authentication=AgentServicePushAuthentication("Bearer", webhook_secret),
+    ), source=receipt,
+)
+configs = client.agent_service_list_push_configs(
+    "prod", "acme", "notifier", receipt.task_id, page_size=25, source=receipt)
+client.agent_service_delete_push_config(
+    "prod", "acme", "notifier", receipt.task_id, push.id, source=receipt)
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context. The async client exposes the
+same methods with `await`.
+
 The acknowledgement always confirms a durable restriction on future starts.
 `cancellation_confirmed` is true only for a fenced local non-start or qualified
 provider proof of no effect. The official helper returns the A2A Task directly;

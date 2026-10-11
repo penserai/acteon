@@ -71,6 +71,45 @@ class AgentServiceTaskPage:
 
 
 @dataclass(frozen=True)
+class AgentServicePushAuthentication:
+    """HTTP authentication included on official A2A webhook deliveries."""
+
+    scheme: str
+    credentials: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class AgentServicePushConfigInput:
+    """Bounded input for one exact-agent push configuration."""
+
+    url: str
+    id: str | None = None
+    token: str | None = field(default=None, repr=False)
+    authentication: AgentServicePushAuthentication | None = field(
+        default=None, repr=False
+    )
+
+
+@dataclass(frozen=True)
+class AgentServicePushConfig:
+    """Schema-validated exact-agent push configuration."""
+
+    id: str
+    task_id: str
+    url: str
+    token: str | None = field(default=None, repr=False)
+    authentication: AgentServicePushAuthentication | None = field(
+        default=None, repr=False
+    )
+
+
+@dataclass(frozen=True)
+class AgentServicePushConfigPage:
+    configs: tuple[AgentServicePushConfig, ...]
+    next_page_token: str
+
+
+@dataclass(frozen=True)
 class AgentServiceA2aFrame:
     """One official StreamResponse plus out-of-band admission provenance."""
 
@@ -706,6 +745,110 @@ def _list_source_headers(
     return headers
 
 
+def _push_source_headers(
+    namespace: str,
+    tenant: str,
+    agent: str,
+    task_id: str,
+    source: AgentServiceReceipt | None,
+) -> dict[str, str]:
+    headers = dict(_A2A_HEADERS)
+    if source is None:
+        return headers
+    if (source.namespace, source.tenant, source.agent, source.task_id) != (
+        namespace,
+        tenant,
+        agent,
+        task_id,
+    ):
+        raise ValueError("agent service push receipt does not match the route or task")
+    headers[AGENT_SOURCE_CONTEXT_HEADER] = _source(source.source_context)
+    return headers
+
+
+def _push_input(value: AgentServicePushConfigInput, task_id: str) -> dict[str, Any]:
+    if not task_id or not value.url:
+        raise ValueError("task_id and push URL must not be empty")
+    if value.token is not None and len(value.token) > 4096:
+        raise ValueError("push token is too large")
+    result: dict[str, Any] = {"taskId": task_id, "url": value.url}
+    if value.id is not None:
+        result["id"] = value.id
+    if value.token is not None:
+        result["token"] = value.token
+    if value.authentication is not None:
+        authentication = value.authentication
+        if (
+            not authentication.scheme.strip()
+            or len(authentication.scheme) > 256
+            or (
+                authentication.credentials is not None
+                and len(authentication.credentials) > 4096
+            )
+        ):
+            raise ValueError("push authentication is invalid")
+        result["authentication"] = {"scheme": authentication.scheme}
+        if authentication.credentials is not None:
+            result["authentication"]["credentials"] = authentication.credentials
+    return result
+
+
+def _push_config(value: dict[str, Any], task_id: str) -> AgentServicePushConfig:
+    allowed = {"id", "taskId", "url", "token", "authentication"}
+    if set(value) - allowed:
+        raise ActeonError("agent service A2A push configuration fields are invalid")
+    config_id = value.get("id")
+    url = value.get("url")
+    token = value.get("token")
+    auth = value.get("authentication")
+    if (
+        not isinstance(config_id, str)
+        or not config_id
+        or value.get("taskId") != task_id
+        or not isinstance(url, str)
+        or not url
+        or (token is not None and (not isinstance(token, str) or len(token) > 4096))
+        or (auth is not None and not isinstance(auth, dict))
+    ):
+        raise ActeonError("agent service A2A push configuration is invalid")
+    authentication = None
+    if isinstance(auth, dict):
+        if set(auth) - {"scheme", "credentials"}:
+            raise ActeonError("agent service A2A push authentication is invalid")
+        scheme = auth.get("scheme")
+        credentials = auth.get("credentials")
+        if (
+            not isinstance(scheme, str)
+            or not scheme.strip()
+            or len(scheme) > 256
+            or (
+                credentials is not None
+                and (not isinstance(credentials, str) or len(credentials) > 4096)
+            )
+        ):
+            raise ActeonError("agent service A2A push authentication is invalid")
+        authentication = AgentServicePushAuthentication(scheme, credentials)
+    return AgentServicePushConfig(config_id, task_id, url, token, authentication)
+
+
+def _push_page(value: dict[str, Any], task_id: str) -> AgentServicePushConfigPage:
+    if set(value) != {"configs", "nextPageToken"}:
+        raise ActeonError("agent service A2A push page fields are invalid")
+    configs = value.get("configs")
+    token = value.get("nextPageToken")
+    if (
+        not isinstance(configs, list)
+        or not isinstance(token, str)
+        or len(token) > 8192
+        or any(not isinstance(config, dict) for config in configs)
+    ):
+        raise ActeonError("agent service A2A push page is invalid")
+    return AgentServicePushConfigPage(
+        tuple(_push_config(cast(dict[str, Any], config), task_id) for config in configs),
+        token,
+    )
+
+
 def _sse_data(lines: Iterator[str]) -> Iterator[str]:
     data: list[str] = []
     size = 0
@@ -930,6 +1073,141 @@ class _AgentServicesMixin:
         if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
             raise ActeonError("agent service A2A response version missing or unsupported")
         return _task_page(_a2a_result(response.text, request_id, None).result)
+
+    def _agent_service_push_rpc(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        method: str,
+        params: dict[str, Any],
+        source: AgentServiceReceipt | None,
+    ) -> dict[str, Any]:
+        request_id = f"push:{method}:{task_id}"
+        response = self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_push_source_headers(namespace, tenant, agent, task_id, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _a2a_result(response.text, request_id, None).result
+
+    def agent_service_create_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config: AgentServicePushConfigInput,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        """Create/update a config using an operations-management credential."""
+        result = self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "CreateTaskPushNotificationConfig",
+            _push_input(config, task_id),
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if config.id is not None and parsed.id != config.id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    def agent_service_get_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        result = self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "GetTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if parsed.id != config_id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    def agent_service_list_push_configs(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        *,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfigPage:
+        if page_size is not None and not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        if page_token is not None and len(page_token) > 8192:
+            raise ValueError("page_token is too large")
+        params: dict[str, Any] = {"taskId": task_id}
+        if page_size is not None:
+            params["pageSize"] = page_size
+        if page_token is not None:
+            params["pageToken"] = page_token
+        return _push_page(
+            self._agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "ListTaskPushNotificationConfigs",
+                params,
+                source,
+            ),
+            task_id,
+        )
+
+    def agent_service_delete_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> None:
+        result = self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "DeleteTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        if result:
+            raise ActeonError("agent service A2A delete result is invalid")
 
     def agent_service_send_peer(
         self,
@@ -1374,6 +1652,140 @@ class _AsyncAgentServicesMixin:
         if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
             raise ActeonError("agent service A2A response version missing or unsupported")
         return _task_page(_a2a_result(response.text, request_id, None).result)
+
+    async def _agent_service_push_rpc(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        method: str,
+        params: dict[str, Any],
+        source: AgentServiceReceipt | None,
+    ) -> dict[str, Any]:
+        request_id = f"push:{method}:{task_id}"
+        response = await self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_push_source_headers(namespace, tenant, agent, task_id, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _a2a_result(response.text, request_id, None).result
+
+    async def agent_service_create_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config: AgentServicePushConfigInput,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        result = await self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "CreateTaskPushNotificationConfig",
+            _push_input(config, task_id),
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if config.id is not None and parsed.id != config.id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    async def agent_service_get_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        result = await self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "GetTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if parsed.id != config_id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    async def agent_service_list_push_configs(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        *,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfigPage:
+        if page_size is not None and not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        if page_token is not None and len(page_token) > 8192:
+            raise ValueError("page_token is too large")
+        params: dict[str, Any] = {"taskId": task_id}
+        if page_size is not None:
+            params["pageSize"] = page_size
+        if page_token is not None:
+            params["pageToken"] = page_token
+        return _push_page(
+            await self._agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "ListTaskPushNotificationConfigs",
+                params,
+                source,
+            ),
+            task_id,
+        )
+
+    async def agent_service_delete_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> None:
+        result = await self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "DeleteTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        if result:
+            raise ActeonError("agent service A2A delete result is invalid")
 
     async def agent_service_send_peer(
         self,

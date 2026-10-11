@@ -543,6 +543,24 @@ System.out.println(page.tasks().size() + " of " + page.totalSize());
 // Pass receipt as the first option for an agent principal or exact-job query.
 ```
 
+Manage an official callback with an operations-management credential:
+
+```java
+var push = client.agentServiceCreatePushConfig("prod", "acme", "notifier",
+    receipt.taskId(), new AgentServicePushConfigInput(
+        "incident-hook", "https://hooks.example/a2a", callbackToken,
+        new AgentServicePushAuthentication("Bearer", webhookSecret)), receipt);
+var configs = client.agentServiceListPushConfigs(
+    "prod", "acme", "notifier", receipt.taskId(), 25, null, receipt);
+client.agentServiceDeletePushConfig(
+    "prod", "acme", "notifier", receipt.taskId(), push.id(), receipt);
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context. Java push value types redact
+secret fields from their `toString()` output.
+
 The acknowledgement always confirms a durable restriction on future starts.
 `cancellationConfirmed()` is true only for a fenced local non-start or qualified
 provider proof of no effect. The official helper returns the A2A Task directly;

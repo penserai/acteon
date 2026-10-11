@@ -104,9 +104,10 @@ Important implementation details constrain the plan:
   Stream admission and every emitted update preserve authenticated source
   provenance. Cancellation commits the coordinator fence first and distinguishes
   requested from confirmed finality. Exact-agent listing is source-scoped,
-  filter- and identity-bound, and state-backend paginated. Governed push remains
-  an explicit gap; the adapter refuses it rather than crossing into the tenant
-  Task engine.
+  filter- and identity-bound, and state-backend paginated. Governed push
+  configuration uses the same original-task boundary plus management authority;
+  its remaining gap is a durable ordered delivery outbox on the configured state
+  backend.
 - Agent callers must retain the opaque source-context receipt returned at admission. This distinguishes separate jobs sharing one principal and credential without exposing authority material to model-controlled payloads.
 - Existing suspension and ban are useful agent-specific controls. They are not generic resource closures with drain, pause and cancellation semantics.
 - Tenant-level discovery can aggregate multiple cards. Delegation must resolve an individual agent card so skills remain associated with their owning endpoint.

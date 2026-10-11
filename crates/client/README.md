@@ -298,6 +298,34 @@ let page = client.agent_service_list_tasks(
 println!("{} of {}", page.tasks.len(), page.total_size);
 ```
 
+An operations manager can bind an official callback to that exact Task. The
+typed result is checked against the route and task; pass the source receipt for
+an agent principal or an exact-job management call:
+
+```rust
+use acteon_client::{AgentServicePushAuthentication, AgentServicePushConfigInput};
+
+let push = client.agent_service_create_push_config(
+    "prod", "acme", "notifier", &receipt.task_id,
+    &AgentServicePushConfigInput {
+        id: Some("incident-hook".into()),
+        url: "https://hooks.example/a2a".into(),
+        token: Some(callback_token),
+        authentication: Some(AgentServicePushAuthentication {
+            scheme: "Bearer".into(), credentials: Some(webhook_secret),
+        }),
+    }, Some(&receipt),
+).await?;
+let configs = client.agent_service_list_push_configs(
+    "prod", "acme", "notifier", &receipt.task_id, Some(25), None, Some(&receipt)).await?;
+client.agent_service_delete_push_config(
+    "prod", "acme", "notifier", &receipt.task_id, &push.id, Some(&receipt)).await?;
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context.
+
 The default client uses a separate no-total-timeout transport for streams. If
 you supply a custom finite client, also set `ActeonClientBuilder::stream_client`
 to a client with redirects and retries disabled and no total request timeout.

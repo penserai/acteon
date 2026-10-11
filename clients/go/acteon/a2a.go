@@ -103,8 +103,8 @@ type MakePushConfigOptions struct {
 	// ID is the optional pre-allocated config id (UUIDv7 by
 	// convention). Empty string lets the server mint one.
 	ID string
-	// Token is the optional bearer token sent in
-	// `Authorization: Bearer <token>` on every push POST.
+	// Token is the optional callback token sent in
+	// `X-A2A-Notification-Token` on every push POST.
 	Token string
 	// Authentication is optional richer authentication metadata.
 	Authentication map[string]any

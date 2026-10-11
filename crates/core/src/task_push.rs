@@ -1,7 +1,7 @@
 //! A2A Task push-notification configurations (Phase 4 of the A2A
 //! protocol). A push config binds a webhook URL to a single A2A Task;
-//! when the task emits a streaming event (transition, history append,
-//! artifact update) the delivery worker POSTs the event envelope to
+//! when the task emits a status or artifact update, the delivery worker
+//! projects the durable task into an A2A `StreamResponse` and POSTs it to
 //! every config registered for that task.
 //!
 //! The config row is the durable, addressable record — CRUD over
@@ -195,9 +195,12 @@ fn truncate(mut s: String, cap: usize) -> String {
 /// the wild are almost always misconfiguration.
 pub const MAX_PUSH_URL_BYTES: usize = 2_048;
 
-/// Maximum length of the optional bearer token. Bound at 4 KiB so a
+/// Maximum length of the optional notification token. Bound at 4 KiB so a
 /// caller cannot smuggle a multi-MB blob through this field.
 pub const MAX_PUSH_TOKEN_BYTES: usize = 4_096;
+
+/// Maximum length of protocol authentication credentials stored with a config.
+pub const MAX_PUSH_AUTH_CREDENTIAL_BYTES: usize = 4_096;
 
 /// Maximum length of a free-form security-scheme alias the caller can
 /// pin onto a config. The schemes themselves are referenced by name —
@@ -230,6 +233,10 @@ pub enum TaskPushConfigValidationError {
     /// One of the authentication scheme aliases exceeded
     /// [`MAX_PUSH_SCHEME_ALIAS_BYTES`].
     SchemeAliasTooLong(usize),
+    /// An authentication scheme was empty.
+    EmptyScheme,
+    /// Authentication credentials exceeded [`MAX_PUSH_AUTH_CREDENTIAL_BYTES`].
+    CredentialsTooLong(usize),
 }
 
 impl fmt::Display for TaskPushConfigValidationError {
@@ -258,6 +265,11 @@ impl fmt::Display for TaskPushConfigValidationError {
             Self::SchemeAliasTooLong(n) => write!(
                 f,
                 "scheme alias must be at most {MAX_PUSH_SCHEME_ALIAS_BYTES} bytes (got {n})"
+            ),
+            Self::EmptyScheme => write!(f, "authentication scheme must not be empty"),
+            Self::CredentialsTooLong(n) => write!(
+                f,
+                "authentication credentials must be at most {MAX_PUSH_AUTH_CREDENTIAL_BYTES} bytes (got {n})"
             ),
         }
     }
@@ -321,8 +333,8 @@ pub struct TaskPushNotificationConfig {
     /// Destination URL the delivery worker POSTs streamed events to.
     /// Must be `http://` or `https://`.
     pub url: String,
-    /// Optional bearer token sent in an `Authorization: Bearer …`
-    /// header on every POST. Treated as a secret — never logged.
+    /// Optional correlation/authenticity token sent in the
+    /// `X-A2A-Notification-Token` header. Treated as a secret — never logged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Optional richer authentication metadata pointing at one or
@@ -429,9 +441,19 @@ impl TaskPushNotificationConfig {
                 ));
             }
             for s in &auth.schemes {
+                if s.trim().is_empty() {
+                    return Err(TaskPushConfigValidationError::EmptyScheme);
+                }
                 if s.len() > MAX_PUSH_SCHEME_ALIAS_BYTES {
                     return Err(TaskPushConfigValidationError::SchemeAliasTooLong(s.len()));
                 }
+            }
+            if let Some(credentials) = &auth.credentials
+                && credentials.len() > MAX_PUSH_AUTH_CREDENTIAL_BYTES
+            {
+                return Err(TaskPushConfigValidationError::CredentialsTooLong(
+                    credentials.len(),
+                ));
             }
         }
         Ok(())
@@ -519,6 +541,29 @@ mod tests {
         assert!(matches!(
             c.validate(),
             Err(TaskPushConfigValidationError::TooManySchemes(_))
+        ));
+    }
+
+    #[test]
+    fn validate_bounds_authentication_header_material() {
+        let mut empty = fresh("c1", "t1", "https://example.org/h");
+        empty.authentication = Some(PushAuthentication {
+            schemes: vec![" ".into()],
+            credentials: None,
+        });
+        assert_eq!(
+            empty.validate(),
+            Err(TaskPushConfigValidationError::EmptyScheme)
+        );
+
+        let mut oversized = fresh("c1", "t1", "https://example.org/h");
+        oversized.authentication = Some(PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("x".repeat(MAX_PUSH_AUTH_CREDENTIAL_BYTES + 1)),
+        });
+        assert!(matches!(
+            oversized.validate(),
+            Err(TaskPushConfigValidationError::CredentialsTooLong(_))
         ));
     }
 

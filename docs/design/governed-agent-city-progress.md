@@ -2250,7 +2250,24 @@ opaque cursor binds the caller, optional source receipt and complete filters.
 Agent principals see no task without an exact job receipt, preventing shared
 credentials from enumerating sibling jobs. Human, service and system sources
 can page all of their own Tasks. All five SDKs and the browser expose the same
-schema-validated page. Governed push remains the explicit protocol follow-up.
+schema-validated page.
+
+Exact-agent push configuration now uses that same task authority and adds an
+operations-management check for create, secret-bearing get/list, delete, and
+inline registration. Inline replay derives a stable configuration identity.
+Stored rows are schema, identity, and URL validated again when read or delivered.
+Callbacks reload durable Task state and carry official A2A `StreamResponse`
+bodies, `application/a2a+json`, protocol version, notification token, and the
+configured authentication scheme. Rust, Python, TypeScript, Go, and Java expose
+typed, task-bound CRUD helpers. The remaining protocol gap is delivery itself:
+the worker consumes a live broadcast and fans events out concurrently, so lag,
+restart, and scheduling can lose or reorder callbacks. The next platform slice
+is a state-backend outbox with a per-configuration sequence, leases, retry state,
+and acknowledged cursor before push can claim ordered at-least-once delivery.
+Two control-plane follow-ups remain: sanitized audit receipts for configuration
+mutation, and secret-provider references or encrypted state values for callback
+credentials. Neither should place credentials in audit payloads, model context,
+or ordinary operator projections.
 
 Exact-agent `CancelTask` now commits the coordinator's execution-subtree fence
 before returning. A task with no registered attempt is projected `Canceled`, as

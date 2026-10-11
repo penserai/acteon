@@ -1,6 +1,7 @@
 package acteon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -131,6 +132,61 @@ func TestOfficialAgentServiceListReturnsTypedPage(t *testing.T) {
 	}
 	if page.TotalSize != 2 || page.NextPageToken != "next-1" || page.Tasks[0]["id"] != "job-1" {
 		t.Fatalf("unexpected page: %#v", page)
+	}
+}
+
+func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	methods := []string{}
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unexpected push request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		method := request["method"].(string)
+		methods = append(methods, method)
+		params := request["params"].(map[string]any)
+		if params["taskId"] != "job-1" {
+			t.Fatalf("task authority missing: %#v", params)
+		}
+		result := any(map[string]any{"id": "push-1", "taskId": "job-1", "url": "https://hooks.example/a2a", "token": "callback-token", "authentication": map[string]any{"scheme": "Bearer", "credentials": "secret"}})
+		if method == "ListTaskPushNotificationConfigs" {
+			result = map[string]any{"configs": []any{result}, "nextPageToken": "next"}
+		} else if method == "DeleteTaskPushNotificationConfig" {
+			result = map[string]any{}
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request["id"], "result": result})
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
+	token, credentials := "callback-token", "secret"
+	created, err := client.AgentServiceCreatePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigInput{ID: "push-1", URL: "https://hooks.example/a2a", Token: &token, Authentication: &AgentServicePushAuthentication{Scheme: "Bearer", Credentials: &credentials}}, receipt)
+	if err != nil || created.Authentication == nil || *created.Authentication.Credentials != "secret" {
+		t.Fatalf("unexpected created config: %#v %v", created, err)
+	}
+	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.AgentServiceListPushConfigs(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigListOptions{PageSize: 1, Source: receipt})
+	if err != nil || page.NextPageToken != "next" || len(page.Configs) != 1 {
+		t.Fatalf("unexpected page: %#v %v", page, err)
+	}
+	if err := client.AgentServiceDeletePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig", "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig"}
+	if fmt.Sprint(methods) != fmt.Sprint(want) {
+		t.Fatalf("methods = %v", methods)
+	}
+	foreign := *receipt
+	foreign.TaskID = "job-2"
+	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", &foreign); err == nil {
+		t.Fatal("expected source/task mismatch")
 	}
 }
 

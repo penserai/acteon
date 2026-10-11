@@ -63,8 +63,9 @@ pub use agent_services::{
     AgentPeerAuthorizationReceipt, AgentPeerAuthorizationStatus, AgentPeerCancelReceipt,
     AgentPeerCancelStatus, AgentPeerContinuationReceipt, AgentPeerContinuationStatus,
     AgentPeerSelectionOption, AgentPeerSendReceipt, AgentPeerSendStatus, AgentServiceA2aStream,
-    AgentServiceListOptions, AgentServiceParent, AgentServiceProviderAbort, AgentServiceReceipt,
-    AgentServiceStopReceipt, AgentServiceTaskPage,
+    AgentServiceListOptions, AgentServiceParent, AgentServiceProviderAbort,
+    AgentServicePushAuthentication, AgentServicePushConfig, AgentServicePushConfigInput,
+    AgentServicePushConfigPage, AgentServiceReceipt, AgentServiceStopReceipt, AgentServiceTaskPage,
 };
 pub mod aws;
 pub mod azure;

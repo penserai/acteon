@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, agentServiceRpcBase, agentServiceTaskPage, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceA2aFrame, type AgentServiceListOptions, type AgentServiceReceipt, type AgentServiceStopReceipt, type AgentServiceTaskPage } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, agentServiceRpcBase, agentServicePushConfig, agentServicePushConfigPage, agentServiceTaskPage, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceA2aFrame, type AgentServiceListOptions, type AgentServicePushConfig, type AgentServicePushConfigInput, type AgentServicePushConfigPage, type AgentServiceReceipt, type AgentServiceStopReceipt, type AgentServiceTaskPage } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -487,6 +487,59 @@ export class ActeonClient {
       throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "list failed")}`);
     }
     return agentServiceTaskPage(rpc.result);
+  }
+  /** Create or update one official A2A push configuration under task authority. */
+  async agentServiceCreatePushConfig(namespace: string, tenant: string, agent: string, taskId: string, config: AgentServicePushConfigInput, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
+    const params = this.agentServicePushInput(taskId, config);
+    return agentServicePushConfig(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "CreateTaskPushNotificationConfig", params, source), taskId, config.id);
+  }
+  /** Read one exact-agent push configuration, including management-only secrets. */
+  async agentServiceGetPushConfig(namespace: string, tenant: string, agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
+    return agentServicePushConfig(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "GetTaskPushNotificationConfig", { taskId, id: configId }, source), taskId, configId);
+  }
+  /** List exact-agent push configurations under the original task authority. */
+  async agentServiceListPushConfigs(namespace: string, tenant: string, agent: string, taskId: string, options: { readonly pageSize?: number; readonly pageToken?: string; readonly source?: AgentServiceReceipt } = {}): Promise<AgentServicePushConfigPage> {
+    if (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)) throw new Error("pageSize must be between 1 and 100");
+    if (options.pageToken !== undefined && options.pageToken.length > 8192) throw new Error("pageToken is too large");
+    const params: Record<string, unknown> = { taskId };
+    if (options.pageSize !== undefined) params.pageSize = options.pageSize;
+    if (options.pageToken !== undefined) params.pageToken = options.pageToken;
+    return agentServicePushConfigPage(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "ListTaskPushNotificationConfigs", params, options.source), taskId);
+  }
+  /** Delete one exact-agent push configuration. Repeating deletion is safe. */
+  async agentServiceDeletePushConfig(namespace: string, tenant: string, agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<void> {
+    const result = await this.agentServicePushRpc(namespace, tenant, agent, taskId, "DeleteTaskPushNotificationConfig", { taskId, id: configId }, source);
+    if (Object.keys(result).length !== 0) throw new Error("agent service A2A delete result is invalid");
+  }
+  private agentServicePushInput(taskId: string, config: AgentServicePushConfigInput): Record<string, unknown> {
+    if (!taskId || !config.url) throw new Error("taskId and push URL must not be empty");
+    if (config.token !== undefined && config.token.length > 4096) throw new Error("push token is too large");
+    const params: Record<string, unknown> = { taskId, url: config.url };
+    if (config.id !== undefined) params.id = config.id;
+    if (config.token !== undefined) params.token = config.token;
+    if (config.authentication !== undefined) {
+      const auth = config.authentication;
+      if (!auth.scheme.trim() || auth.scheme.length > 256 || (auth.credentials !== undefined && auth.credentials.length > 4096)) throw new Error("push authentication is invalid");
+      params.authentication = { scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}) };
+    }
+    return params;
+  }
+  private async agentServicePushRpc(namespace: string, tenant: string, agent: string, taskId: string, method: string, params: Record<string, unknown>, source?: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    if (source !== undefined && (source.namespace !== namespace || source.tenant !== tenant || source.agent !== agent || source.taskId !== taskId)) throw new Error("agent service push receipt does not match the route or task");
+    const requestId = `push:${method}:${taskId}`;
+    const response = await this.request("POST", agentServiceRpcBase(namespace, tenant, agent), { body: { jsonrpc: "2.0", id: requestId, method, params }, extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid agent service A2A response");
+    const rpc = value as Record<string, unknown>;
+    if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("agent service A2A response request identity mismatch");
+    if (rpc.error && typeof rpc.error === "object") {
+      const error = rpc.error as Record<string, unknown>;
+      throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "push operation failed")}`);
+    }
+    if (!rpc.result || typeof rpc.result !== "object" || Array.isArray(rpc.result)) throw new Error("agent service A2A response has no object result");
+    return rpc.result as Record<string, unknown>;
   }
   /** List current safe registry options. Descriptions are untrusted data. */
   async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {

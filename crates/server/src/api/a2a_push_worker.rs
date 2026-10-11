@@ -1,9 +1,9 @@
 //! A2A push-notification delivery worker (Phase 4.2).
 //!
 //! Consumes the gateway-wide `StreamEvent` broadcast and, for every
-//! event tagged `action_type = "a2a.task"`, fans the envelope out to
-//! the `TaskPushNotificationConfig` rows registered for that
-//! `action_id` (= `task_id`).
+//! event tagged `action_type = "a2a.task"`, reloads the durable Task,
+//! projects a protocol `StreamResponse`, and fans it out to the
+//! `TaskPushNotificationConfig` rows registered for that `action_id`.
 //!
 //! Architecture (post-#178 rebuild — concurrency + cache + retry
 //! refinement):
@@ -46,6 +46,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use acteon_core::{DlqFailureKind, PushDeliveryDlqEntry, StreamEvent, TaskPushNotificationConfig};
+use acteon_gateway::{TaskEngine, TaskScope};
 use acteon_state::{KeyKind, StateKey, StateStore};
 use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracing::{debug, error, warn};
@@ -84,6 +85,23 @@ const MAX_INFLIGHT_DELIVERIES: usize = 64;
 /// fold a burst of events for the same task into a single state-store
 /// scan.
 const CONFIG_CACHE_TTL: Duration = Duration::from_millis(500);
+
+fn project_push_payload(
+    task: &acteon_core::Task,
+    event: &StreamEvent,
+) -> Option<serde_json::Value> {
+    match &event.event_type {
+        acteon_core::StreamEventType::TaskTransitioned { to, .. } => {
+            super::a2a::project_v1_status_update(task, *to, event.timestamp)
+        }
+        acteon_core::StreamEventType::TaskArtifactUpdated {
+            artifact_id,
+            last_chunk,
+            ..
+        } => super::a2a::project_v1_artifact_update(task, artifact_id, *last_chunk),
+        _ => None,
+    }
+}
 
 /// HTTP status codes that the spec or convention designates as "ask
 /// for retry, do not give up." Everything else in 4xx is treated as
@@ -348,7 +366,27 @@ impl Shared {
         if configs.is_empty() {
             return;
         }
+        let scope = TaskScope::new(&event.namespace, &event.tenant);
+        let task = match TaskEngine::new(Arc::clone(&self.state))
+            .get_task(&scope, task_id)
+            .await
+        {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                warn!(task_id, "A2A push worker: task disappeared before delivery");
+                return;
+            }
+            Err(error) => {
+                warn!(error = %error, task_id, "A2A push worker: task read failed");
+                return;
+            }
+        };
+        let payload = project_push_payload(&task, &event);
+        let Some(payload) = payload else {
+            return;
+        };
         let event = Arc::new(event);
+        let payload = Arc::new(payload);
         // Fan out: each delivery runs in its own task, bounded by
         // the global semaphore. A slow URL holds a permit but does
         // not stall the other deliveries for the same event (or
@@ -356,6 +394,7 @@ impl Shared {
         for config in configs.iter() {
             let shared = Arc::clone(&self);
             let event = Arc::clone(&event);
+            let payload = Arc::clone(&payload);
             let config = config.clone();
             tokio::spawn(async move {
                 // Acquire a permit *inside* the spawned task so the
@@ -365,7 +404,7 @@ impl Shared {
                     // The semaphore was closed — shutdown.
                     return;
                 };
-                shared.deliver_with_retry(config, event).await;
+                shared.deliver_with_retry(config, event, payload).await;
             });
         }
     }
@@ -432,9 +471,18 @@ impl Shared {
             .map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(entries.len());
         for (_, raw) in entries {
-            if let Ok(c) = serde_json::from_str::<TaskPushNotificationConfig>(&raw) {
-                out.push(c);
+            let config = serde_json::from_str::<TaskPushNotificationConfig>(&raw)
+                .map_err(|_| "malformed stored push configuration".to_string())?;
+            if config.namespace != namespace
+                || config.tenant != tenant
+                || config.task_id != task_id
+                || config.validate().is_err()
+                || self.enforce_ssrf.load(Ordering::Relaxed)
+                    && super::a2a_ssrf::check_url_literal(&config.url).is_err()
+            {
+                return Err("stored push configuration failed identity or validation".into());
             }
+            out.push(config);
         }
         Ok(out)
     }
@@ -447,12 +495,13 @@ impl Shared {
         &self,
         config: TaskPushNotificationConfig,
         event: Arc<StreamEvent>,
+        payload: Arc<serde_json::Value>,
     ) {
         for attempt in 0..MAX_DELIVERY_ATTEMPTS {
             self.metrics
                 .deliveries_attempted
                 .fetch_add(1, Ordering::Relaxed);
-            match self.post_once(&config, &event).await {
+            match self.post_once(&config, &payload).await {
                 Ok(()) => {
                     self.metrics
                         .deliveries_succeeded
@@ -640,7 +689,7 @@ impl Shared {
     async fn post_once(
         &self,
         config: &TaskPushNotificationConfig,
-        event: &StreamEvent,
+        payload: &serde_json::Value,
     ) -> Result<(), DeliveryError> {
         if self.enforce_ssrf.load(Ordering::Relaxed)
             && let Err(reason) = super::a2a_ssrf::check_url_resolved(&config.url).await
@@ -657,9 +706,21 @@ impl Shared {
             .post(&config.url)
             .map_err(|e| DeliveryError::Terminal(e.to_string()))?
             .timeout(REQUEST_TIMEOUT)
-            .json(event);
+            .header(reqwest::header::CONTENT_TYPE, "application/a2a+json")
+            .header("a2a-version", super::a2a::A2A_PROTOCOL_VERSION)
+            .json(payload);
         if let Some(token) = &config.token {
-            req = req.bearer_auth(token);
+            req = req.header("x-a2a-notification-token", token);
+        }
+        if let Some(authentication) = &config.authentication
+            && let ([scheme], Some(credentials)) = (
+                authentication.schemes.as_slice(),
+                &authentication.credentials,
+            )
+        {
+            let value = reqwest::header::HeaderValue::from_str(&format!("{scheme} {credentials}"))
+                .map_err(|_| DeliveryError::Terminal("invalid push authentication".into()))?;
+            req = req.header(reqwest::header::AUTHORIZATION, value);
         }
         let resp = req.send().await.map_err(|e| {
             // Network / timeout / serialization — treat as transient.
@@ -703,7 +764,7 @@ fn backoff(attempt: usize) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acteon_core::{StreamEventType, TaskState};
+    use acteon_core::{StreamEventType, Task, TaskState};
     use acteon_state::{StateKey, StateStore};
     use acteon_state_memory::MemoryStateStore;
     use acteon_time::ManualClock;
@@ -731,6 +792,14 @@ mod tests {
     }
 
     async fn save_config(store: &Arc<dyn StateStore>, c: &TaskPushNotificationConfig) {
+        let engine = TaskEngine::new(Arc::clone(store));
+        let scope = TaskScope::new(&c.namespace, &c.tenant);
+        if engine.get_task(&scope, &c.task_id).await.unwrap().is_none() {
+            engine
+                .create_task(Task::new(&c.task_id, &c.namespace, &c.tenant))
+                .await
+                .unwrap();
+        }
         let key = StateKey::new(
             c.namespace.clone(),
             c.tenant.clone(),
@@ -853,6 +922,20 @@ mod tests {
         assert!(!is_transient_client_error(reqwest::StatusCode::NOT_FOUND));
         assert!(!is_transient_client_error(reqwest::StatusCode::CONFLICT));
         assert!(!is_transient_client_error(reqwest::StatusCode::GONE));
+    }
+
+    #[test]
+    fn callback_payload_is_an_official_stream_response() {
+        let task = Task::new("task-1", "agents", "demo");
+        let payload = project_push_payload(&task, &mk_event("task-1")).unwrap();
+        assert_eq!(payload["statusUpdate"]["taskId"], "task-1");
+        assert_eq!(
+            payload["statusUpdate"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        assert!(payload.get("namespace").is_none());
+        assert!(payload.get("tenant").is_none());
+        assert!(payload.get("event_type").is_none());
     }
 
     #[tokio::test]

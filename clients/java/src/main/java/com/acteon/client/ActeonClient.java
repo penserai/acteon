@@ -180,6 +180,85 @@ public class ActeonClient implements AutoCloseable {
         } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
         catch (IllegalArgumentException e) { throw new ActeonException(e.getMessage(), e); }
     }
+    /** Create or update one official A2A push configuration under task authority. */
+    public AgentServicePushConfig agentServiceCreatePushConfig(
+        String namespace, String tenant, String agent, String taskId,
+        AgentServicePushConfigInput input, AgentServiceReceipt source
+    ) throws ActeonException {
+        var params = pushConfigInput(taskId, input);
+        return AgentServicePushConfig.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
+            "CreateTaskPushNotificationConfig", params, source), taskId, input.id());
+    }
+    /** Read one management-only push configuration, including secret material. */
+    public AgentServicePushConfig agentServiceGetPushConfig(
+        String namespace, String tenant, String agent, String taskId, String configId,
+        AgentServiceReceipt source
+    ) throws ActeonException {
+        return AgentServicePushConfig.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
+            "GetTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source), taskId, configId);
+    }
+    /** List exact-agent push configurations under the original task authority. */
+    public AgentServicePushConfigPage agentServiceListPushConfigs(
+        String namespace, String tenant, String agent, String taskId,
+        Integer pageSize, String pageToken, AgentServiceReceipt source
+    ) throws ActeonException {
+        if (pageSize != null && (pageSize < 1 || pageSize > 100))
+            throw new IllegalArgumentException("pageSize must be between 1 and 100");
+        if (pageToken != null && pageToken.length() > 8192)
+            throw new IllegalArgumentException("pageToken is too large");
+        var params = new HashMap<String, Object>(); params.put("taskId", taskId);
+        if (pageSize != null) params.put("pageSize", pageSize);
+        if (pageToken != null) params.put("pageToken", pageToken);
+        return AgentServicePushConfigPage.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
+            "ListTaskPushNotificationConfigs", params, source), taskId);
+    }
+    /** Delete one exact-agent push configuration. Repeating deletion is safe. */
+    public void agentServiceDeletePushConfig(
+        String namespace, String tenant, String agent, String taskId, String configId,
+        AgentServiceReceipt source
+    ) throws ActeonException {
+        var result = agentServicePushRpc(namespace, tenant, agent, taskId,
+            "DeleteTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source);
+        if (!result.isObject() || result.size() != 0)
+            throw new ActeonException("agent service A2A delete result is invalid");
+    }
+    private Map<String, Object> pushConfigInput(String taskId, AgentServicePushConfigInput input) {
+        if (taskId == null || taskId.isEmpty() || input == null)
+            throw new IllegalArgumentException("task ID and push configuration are required");
+        var params = new HashMap<String, Object>(); params.put("taskId", taskId); params.put("url", input.url());
+        if (input.id() != null) params.put("id", input.id());
+        if (input.token() != null) params.put("token", input.token());
+        if (input.authentication() != null) {
+            var auth = new HashMap<String, Object>(); auth.put("scheme", input.authentication().scheme());
+            if (input.authentication().credentials() != null) auth.put("credentials", input.authentication().credentials());
+            params.put("authentication", auth);
+        }
+        return params;
+    }
+    private com.fasterxml.jackson.databind.JsonNode agentServicePushRpc(
+        String namespace, String tenant, String agent, String taskId, String method,
+        Map<String, Object> params, AgentServiceReceipt source
+    ) throws ActeonException {
+        String sourceContext = null;
+        if (source != null) {
+            if (!namespace.equals(source.namespace()) || !tenant.equals(source.tenant())
+                || !agent.equals(source.agent()) || !taskId.equals(source.taskId()))
+                throw new IllegalArgumentException("agent service push receipt does not match the route or task");
+            sourceContext = AgentServiceReceipt.source(source.sourceContext());
+        }
+        String requestId = "push:" + method + ":" + taskId;
+        var response = agentServiceRequest("POST", AgentServiceReceipt.rpcBase(namespace, tenant, agent),
+            Map.of("jsonrpc", "2.0", "id", requestId, "method", method, "params", params), sourceContext, null);
+        try {
+            var rpc = objectMapper.readTree(response.body());
+            if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
+                throw new ActeonException("agent service A2A response request identity mismatch");
+            if (rpc.path("error").isObject())
+                throw new ActeonException("A2A error " + rpc.path("error").path("code") + ": " + rpc.path("error").path("message").asText());
+            if (!rpc.path("result").isObject()) throw new ActeonException("agent service A2A response has no object result");
+            return rpc.path("result");
+        } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
+    }
     /** List current source-authorized registry options. Descriptions are untrusted data. */
     public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");

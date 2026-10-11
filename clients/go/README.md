@@ -546,6 +546,29 @@ fmt.Println(len(page.Tasks), page.TotalSize, page.NextPageToken)
 // Set Source: receipt for an agent principal or to narrow to this exact job.
 ```
 
+Manage an official callback with an operations-management credential:
+
+```go
+push, err := client.AgentServiceCreatePushConfig(ctx, "prod", "acme", "notifier",
+    receipt.TaskID, acteon.AgentServicePushConfigInput{
+        ID: "incident-hook", URL: "https://hooks.example/a2a",
+        Token: &callbackToken,
+        Authentication: &acteon.AgentServicePushAuthentication{
+            Scheme: "Bearer", Credentials: &webhookSecret,
+        },
+    }, receipt)
+if err != nil { return err }
+configs, err := client.AgentServiceListPushConfigs(ctx, "prod", "acme", "notifier",
+    receipt.TaskID, acteon.AgentServicePushConfigListOptions{PageSize: 25, Source: receipt})
+if err != nil { return err }
+err = client.AgentServiceDeletePushConfig(ctx, "prod", "acme", "notifier",
+    receipt.TaskID, push.ID, receipt)
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context.
+
 The acknowledgement always confirms a durable restriction on future starts.
 `CancellationConfirmed` is true only for a fenced local non-start or qualified
 provider proof of no effect. The official helper returns the A2A Task directly;

@@ -102,6 +102,7 @@ impl Server {
         drop(socket);
         let mut card = AgentCard::new("notifier", "prod", "acme", "Incident notifier", "1");
         card.capabilities.streaming = true;
+        card.capabilities.push_notifications = true;
         card.skills.push(Skill::new("notify"));
         card.interfaces.push(AgentCardInterface {
             kind: "rest".into(),
@@ -174,6 +175,17 @@ tenants = ["acme"]
 providers = ["agent.notifier"]
 actions = ["invoke"]
 [[api_keys]]
+name = "alice-manager"
+authority_id = "credential/alice"
+principal = {{id="alice",kind={source_kind:?}}}
+key_hash = {:?}
+role = "operator"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["agent.notifier"]
+actions = ["invoke"]
+[[api_keys]]
 name = "notifier"
 authority_id = "credential/notifier"
 principal = {{id="agent/notifier",kind="agent"}}
@@ -186,6 +198,7 @@ providers = [{worker_grant:?}]
 actions = ["execute"]
 "#,
                 acteon_server::auth::api_key::hash_api_key("alice-secret"),
+                acteon_server::auth::api_key::hash_api_key("alice-manager-secret"),
                 acteon_server::auth::api_key::hash_api_key("notifier-secret")
             ),
         )
@@ -1212,6 +1225,161 @@ async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_so
         .await
         .unwrap();
     assert_eq!(mismatched["error"]["code"], -32602);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_governed_push_configs_require_management_and_exact_source_authority() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let accepted: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"push-task", "method":"SendMessage",
+            "params":{"message":message("push-task")["message"],
+                "configuration":{"returnImmediately":true}}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+    let create = json!({
+        "jsonrpc":"2.0", "id":"push-create", "method":"CreateTaskPushNotificationConfig",
+        "params":{"taskId":task_id,"id":"ops-hook","url":"https://hooks.example/a2a",
+            "token":"session-token","authentication":{"scheme":"Bearer","credentials":"hook-secret"}}
+    });
+
+    let denied = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&create)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    let created: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&create)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["result"]["id"], "ops-hook");
+    assert_eq!(created["result"]["taskId"], task_id);
+    assert_eq!(created["result"]["authentication"]["scheme"], "Bearer");
+
+    let listed: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"push-list", "method":"ListTaskPushNotificationConfigs",
+            "params":{"taskId":task_id,"pageSize":1}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["configs"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["result"]["nextPageToken"], "");
+
+    let deleted: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"push-delete", "method":"DeleteTaskPushNotificationConfig",
+            "params":{"taskId":task_id,"id":"ops-hook"}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted["result"], json!({}));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_governed_inline_push_is_deterministic_on_exact_send_replay() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let send = json!({
+        "jsonrpc":"2.0", "id":"inline-send", "method":"SendMessage",
+        "params":{"message":message("inline-push")["message"],"configuration":{
+            "returnImmediately":true,
+            "taskPushNotificationConfig":{"url":"https://hooks.example/inline"}
+        }}
+    });
+    let mut task_id = String::new();
+    for _ in 0..2 {
+        let response: Value = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-manager-secret")
+            .header("a2a-version", "1.0")
+            .json(&send)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let observed = response["result"]["task"]["id"].as_str().unwrap();
+        if task_id.is_empty() {
+            task_id = observed.to_owned();
+        } else {
+            assert_eq!(observed, task_id);
+        }
+    }
+    let listed: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"inline-list", "method":"ListTaskPushNotificationConfigs",
+            "params":{"taskId":task_id}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["configs"].as_array().unwrap().len(), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
 }

@@ -169,7 +169,7 @@ def make_push_config(
 
     ``url`` must be ``http://`` or ``https://`` — the server denies
     other schemes at registration time. ``token`` (if set) is sent
-    as ``Authorization: Bearer <token>`` on every push POST and is
+    as ``X-A2A-Notification-Token`` on every push POST and is
     treated as a secret server-side.
     """
     body: dict[str, Any] = {"url": url}

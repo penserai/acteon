@@ -15,6 +15,23 @@ separates shipped milestones from possible extensions; it is not a delivery comm
 
 ## Areas under consideration
 
+### Durable ordered A2A callback delivery
+
+Exact-agent A2A push configuration and protocol-correct callback projection are
+available today. Callback delivery still consumes the live Task event broadcast,
+so lag, restart, and concurrent scheduling can lose or reorder notifications.
+The next delivery building block is a state-backend outbox keyed by Task and
+configuration, with monotonic sequence numbers, leases, persisted retry state,
+dead letters, and an acknowledged cursor. Inline push registration must join the
+same acceptance transaction or pre-runnable fence so the first Task transition
+cannot race configuration persistence.
+
+The completed control plane should also emit sanitized, durable audit evidence
+for create, update, and delete. Callback credentials currently follow the A2A
+wire model into the configured state backend; a production secret-custody layer
+should support encrypted values or secret-provider references without returning
+plaintext through ordinary projections.
+
 ### DynamoDB Hierarchical Tenant Index
 
 Hierarchical/multi-tenant audit reads currently fall back to a table `Scan` on the DynamoDB backend, because the `ns_tenant` composite partition key only supports exact match (see [DynamoDB Audit Backend](../backends/dynamodb-audit.md)). Add a sparse GSI keyed on `namespace` (PK) + `tenant` (SK) so a scoped read becomes a `begins_with(tenant, "acme.")` **Query** (indexed range) instead of a full Scan. Requires a write-time projection of the new key attributes and a one-time backfill. Only worth doing if users run scoped multi-tenant audit reads at volume on DynamoDB (ClickHouse/Postgres already handle this as an indexed prefix range).

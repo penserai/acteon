@@ -498,6 +498,23 @@ const page = await client.agentServiceListTasks("prod", "acme", "notifier", {
 console.log(page.tasks.length, page.totalSize, page.nextPageToken);
 ```
 
+Manage an official callback with an operations-management credential:
+
+```typescript
+const push = await client.agentServiceCreatePushConfig(
+  "prod", "acme", "notifier", receipt.taskId,
+  { id: "incident-hook", url: "https://hooks.example/a2a", token: callbackToken,
+    authentication: { scheme: "Bearer", credentials: webhookSecret } }, receipt);
+const configs = await client.agentServiceListPushConfigs(
+  "prod", "acme", "notifier", receipt.taskId, { pageSize: 25, source: receipt });
+await client.agentServiceDeletePushConfig(
+  "prod", "acme", "notifier", receipt.taskId, push.id, receipt);
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context.
+
 The acknowledgement always confirms a durable restriction on future starts.
 `cancellationConfirmed` is true only for a fenced local non-start or qualified
 provider proof of no effect. The official helper returns the A2A Task directly;
