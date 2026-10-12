@@ -33,7 +33,7 @@
 //! provider, so connection pooling and any mTLS or proxy settings are
 //! shared with the rest of the server.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -297,6 +297,8 @@ impl PushDeliveryWorker {
         full_repair.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut ready_cursor = None;
         let mut repair_cursor = None;
+        let mut ready_cursors = BTreeSet::new();
+        let mut repair_cursors = BTreeSet::new();
         loop {
             tokio::select! {
                 received = self.rx.recv() => match received {
@@ -330,13 +332,35 @@ impl PushDeliveryWorker {
                 },
                 _ = ready_recovery.tick() => {
                     match self.shared.recover_ready_page(ready_cursor.as_deref()).await {
-                        Ok(next) => ready_cursor = next,
+                        Ok(Some(next)) if ready_cursors.insert(next.clone()) => {
+                            ready_cursor = Some(next);
+                        }
+                        Ok(Some(next)) => {
+                            warn!(%next, "A2A push ready-index cursor cycled; restarting scan");
+                            ready_cursor = None;
+                            ready_cursors.clear();
+                        }
+                        Ok(None) => {
+                            ready_cursor = None;
+                            ready_cursors.clear();
+                        }
                         Err(error) => warn!(%error, "A2A push ready-index page failed"),
                     }
                 }
                 _ = full_repair.tick() => {
                     match self.shared.recover_task_page(repair_cursor.as_deref()).await {
-                        Ok(next) => repair_cursor = next,
+                        Ok(Some(next)) if repair_cursors.insert(next.clone()) => {
+                            repair_cursor = Some(next);
+                        }
+                        Ok(Some(next)) => {
+                            warn!(%next, "A2A push Task repair cursor cycled; restarting scan");
+                            repair_cursor = None;
+                            repair_cursors.clear();
+                        }
+                        Ok(None) => {
+                            repair_cursor = None;
+                            repair_cursors.clear();
+                        }
                         Err(error) => warn!(%error, "A2A push Task repair page failed"),
                     }
                 }
@@ -382,9 +406,6 @@ impl Shared {
                 });
             }
         }
-        if page.next_cursor.as_deref() == after {
-            return Err("A2A push ready-index cursor did not advance".into());
-        }
         Ok(page.next_cursor)
     }
 
@@ -420,9 +441,6 @@ impl Shared {
                     }
                 }
             });
-        }
-        if page.next_cursor.as_deref() == after {
-            return Err("A2A push Task repair cursor did not advance".into());
         }
         Ok(page.next_cursor)
     }
