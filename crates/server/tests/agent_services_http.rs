@@ -101,6 +101,8 @@ impl Server {
         let port = socket.local_addr().unwrap().port();
         drop(socket);
         let mut card = AgentCard::new("notifier", "prod", "acme", "Incident notifier", "1");
+        card.capabilities.streaming = true;
+        card.capabilities.push_notifications = true;
         card.skills.push(Skill::new("notify"));
         card.interfaces.push(AgentCardInterface {
             kind: "rest".into(),
@@ -173,6 +175,17 @@ tenants = ["acme"]
 providers = ["agent.notifier"]
 actions = ["invoke"]
 [[api_keys]]
+name = "alice-manager"
+authority_id = "credential/alice-manager"
+principal = {{id="alice",kind={source_kind:?}}}
+key_hash = {:?}
+role = "operator"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["agent.notifier"]
+actions = ["invoke"]
+[[api_keys]]
 name = "notifier"
 authority_id = "credential/notifier"
 principal = {{id="agent/notifier",kind="agent"}}
@@ -185,6 +198,7 @@ providers = [{worker_grant:?}]
 actions = ["execute"]
 "#,
                 acteon_server::auth::api_key::hash_api_key("alice-secret"),
+                acteon_server::auth::api_key::hash_api_key("alice-manager-secret"),
                 acteon_server::auth::api_key::hash_api_key("notifier-secret")
             ),
         )
@@ -378,6 +392,9 @@ actions = ["rpc"]
     }
     fn endpoint(&self) -> String {
         format!("{}/a2a/prod/acme/agents/notifier/v1/message:send", self.url)
+    }
+    fn rpc_endpoint(&self) -> String {
+        format!("{}/a2a/prod/acme/agents/notifier", self.url)
     }
 }
 
@@ -823,12 +840,744 @@ async fn send_task(server: &Server, client: &reqwest::Client, id: &str) -> (Valu
         .send()
         .await
         .unwrap();
+    let source = response
+        .headers()
+        .get("x-acteon-agent-source-context")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "message={id}; {body}; {}", server.log());
+    (serde_json::from_str(&body).unwrap(), source.unwrap())
+}
+
+#[tokio::test]
+async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to_its_receipt() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let request = json!({
+        "jsonrpc":"2.0",
+        "id":"send-1",
+        "method":"SendMessage",
+        "params":{
+            "message":message("official-governed")["message"],
+            "configuration":{"returnImmediately":true}
+        }
+    });
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    assert_eq!(response.headers()["a2a-version"], "1.0");
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    assert_eq!(accepted["id"], "send-1");
+    assert_eq!(
+        accepted.pointer("/result/task/status/state"),
+        Some(&json!("TASK_STATE_SUBMITTED"))
+    );
+    assert!(accepted.pointer("/result/task/namespace").is_none());
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+
+    let get = json!({
+        "jsonrpc":"2.0",
+        "id":"get-without-receipt",
+        "method":"GetTask",
+        "params":{"id":task_id}
+    });
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .json(&get)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let rejected: Value = response.json().await.unwrap();
+    assert_eq!(rejected["error"]["code"], -32001);
+
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = client
+                .post(server.rpc_endpoint())
+                .bearer_auth("alice-secret")
+                .header("x-acteon-agent-source-context", &source)
+                .json(&json!({
+                    "jsonrpc":"2.0",
+                    "id":"get-1",
+                    "method":"GetTask",
+                    "params":{"id":task_id}
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            if body.pointer("/result/status/state") == Some(&json!("TASK_STATE_COMPLETED")) {
+                break body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(completed["result"]["id"], task_id);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", &source)
+        .json(&json!({
+            "jsonrpc":"2.0",
+            "id":"cancel-1",
+            "method":"CancelTask",
+            "params":{"id":task_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let terminal: Value = response.json().await.unwrap();
+    assert_eq!(terminal["error"]["code"], -32002);
+    assert_eq!(
+        terminal["error"]["data"][0]["reason"],
+        "TASK_NOT_CANCELABLE"
+    );
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_cancel_task_fences_future_starts_without_inventing_provider_finality() {
+    let (url, calls, entered, release, webhook_task) = pausing_webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-cancel", "method":"SendMessage",
+            "params":{
+                "message":message("official-cancel")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let source = response.headers()["x-acteon-agent-source-context"]
         .to_str()
         .unwrap()
         .to_owned();
-    (response.json().await.unwrap(), source)
+    let accepted: Value = response.json().await.unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .header("x-acteon-agent-source-context", &source)
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"cancel-live", "method":"CancelTask",
+            "params":{"id":task_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let canceled: Value = response.json().await.unwrap();
+    assert_eq!(canceled["result"]["status"]["state"], "TASK_STATE_WORKING");
+    assert_eq!(
+        canceled["result"]["metadata"]["acteonCancellation"]["state"],
+        "requested"
+    );
+    assert_eq!(
+        canceled["result"]["metadata"]["acteonCancellation"]["futureStartsBlocked"],
+        true
+    );
+    assert_eq!(
+        canceled["result"]["metadata"]["acteonCancellation"]["providerAbort"]["state"],
+        "restricted_only"
+    );
+
+    release.add_permits(1);
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = client
+                .post(server.rpc_endpoint())
+                .bearer_auth("alice-secret")
+                .header("a2a-version", "1.0")
+                .header("x-acteon-agent-source-context", &source)
+                .json(&json!({
+                    "jsonrpc":"2.0", "id":"get-cancel", "method":"GetTask",
+                    "params":{"id":task_id}
+                }))
+                .send()
+                .await
+                .unwrap();
+            let body: Value = response.json().await.unwrap();
+            if body["result"]["status"]["state"] == "TASK_STATE_COMPLETED" {
+                break body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        completed["result"]["metadata"]["acteonCancellation"]["state"],
+        "requested"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_cancel_task_confirms_a_fenced_local_non_start_and_replays_it() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-before-start", "method":"SendMessage",
+            "params":{
+                "message":message("cancel-before-start")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+    for request_id in ["cancel-local", "cancel-local-replay"] {
+        let response = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-secret")
+            .header("a2a-version", "1.0")
+            .header("x-acteon-agent-source-context", &source)
+            .json(&json!({
+                "jsonrpc":"2.0", "id":request_id, "method":"CancelTask",
+                "params":{"id":task_id}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let canceled: Value = response.json().await.unwrap();
+        assert_eq!(canceled["result"]["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(
+            canceled["result"]["metadata"]["acteonCancellation"]["state"],
+            "confirmed"
+        );
+        assert_eq!(
+            canceled["result"]["metadata"]["acteonCancellation"]["futureStartsBlocked"],
+            true
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_source() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let mut accepted_ids = Vec::new();
+    for (rpc_id, message_id) in [("send-list-1", "list-1"), ("send-list-2", "list-2")] {
+        let response = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-secret")
+            .header("a2a-version", "1.0")
+            .json(&json!({
+                "jsonrpc":"2.0", "id":rpc_id, "method":"SendMessage",
+                "params":{
+                    "message":message(message_id)["message"],
+                    "configuration":{"returnImmediately":true}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let body: Value = response.json().await.unwrap();
+        accepted_ids.push(body["result"]["task"]["id"].as_str().unwrap().to_owned());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let first: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"list-first", "method":"ListTasks",
+            "params":{"pageSize":1,"historyLength":0,"includeArtifacts":false}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["result"]["totalSize"], 2);
+    assert_eq!(first["result"]["pageSize"], 1);
+    assert_eq!(first["result"]["tasks"].as_array().unwrap().len(), 1);
+    assert!(first["result"]["tasks"][0].get("history").is_none());
+    assert!(first["result"]["tasks"][0].get("artifacts").is_none());
+    assert!(
+        first["result"]["tasks"][0]
+            .pointer("/metadata/acteon_governed_execution")
+            .is_none()
+    );
+    // The second acceptance has the later update time and must sort first.
+    assert_eq!(first["result"]["tasks"][0]["id"], accepted_ids[1]);
+    let token = first["result"]["nextPageToken"].as_str().unwrap();
+    assert!(!token.is_empty());
+
+    let second: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"list-second", "method":"ListTasks",
+            "params":{
+                "pageSize":1,"pageToken":token,"historyLength":0,
+                "includeArtifacts":false
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["result"]["totalSize"], 2);
+    assert_eq!(second["result"]["tasks"][0]["id"], accepted_ids[0]);
+    assert_eq!(second["result"]["nextPageToken"], "");
+
+    let mismatched: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"list-mismatch", "method":"ListTasks",
+            "params":{
+                "pageSize":1,"pageToken":token,"historyLength":1,
+                "includeArtifacts":false
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mismatched["error"]["code"], -32602);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_governed_push_configs_require_management_and_exact_source_authority() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let accepted: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"push-task", "method":"SendMessage",
+            "params":{"message":message("push-task")["message"],
+                "configuration":{"returnImmediately":true}}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+    let create = json!({
+        "jsonrpc":"2.0", "id":"push-create", "method":"CreateTaskPushNotificationConfig",
+        "params":{"taskId":task_id,"id":"ops-hook","url":"https://hooks.example/a2a",
+            "token":"session-token","authentication":{"scheme":"Bearer","credentials":"hook-secret"}}
+    });
+
+    let denied = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&create)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    let created: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&create)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["result"]["id"], "ops-hook");
+    assert_eq!(created["result"]["taskId"], task_id);
+    assert_eq!(created["result"]["authentication"]["scheme"], "Bearer");
+
+    let listed: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"push-list", "method":"ListTaskPushNotificationConfigs",
+            "params":{"taskId":task_id,"pageSize":1}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["configs"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["result"]["nextPageToken"], "");
+
+    let deleted: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"push-delete", "method":"DeleteTaskPushNotificationConfig",
+            "params":{"taskId":task_id,"id":"ops-hook"}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted["result"], json!({}));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_governed_inline_push_is_deterministic_on_exact_send_replay() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let send = json!({
+        "jsonrpc":"2.0", "id":"inline-send", "method":"SendMessage",
+        "params":{"message":message("inline-push")["message"],"configuration":{
+            "returnImmediately":true,
+            "taskPushNotificationConfig":{"url":"https://hooks.example/inline"}
+        }}
+    });
+    let mut task_id = String::new();
+    for _ in 0..2 {
+        let response: Value = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-manager-secret")
+            .header("a2a-version", "1.0")
+            .json(&send)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let observed = response["result"]["task"]["id"].as_str().unwrap();
+        if task_id.is_empty() {
+            task_id = observed.to_owned();
+        } else {
+            assert_eq!(observed, task_id);
+        }
+    }
+    let listed: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-manager-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"inline-list", "method":"ListTaskPushNotificationConfigs",
+            "params":{"taskId":task_id}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["result"]["configs"].as_array().unwrap().len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_list_tasks_requires_the_exact_job_receipt_for_agent_sources() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-agent-list", "method":"SendMessage",
+            "params":{
+                "message":message("agent-list")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+
+    for (source_header, expected_total) in [(None, 0), (Some(source.as_str()), 1)] {
+        let mut request = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-secret")
+            .header("a2a-version", "1.0")
+            .json(&json!({
+                "jsonrpc":"2.0", "id":"list-agent", "method":"ListTasks",
+                "params":{}
+            }));
+        if let Some(source_header) = source_header {
+            request = request.header("x-acteon-agent-source-context", source_header);
+        }
+        let listed: Value = request.send().await.unwrap().json().await.unwrap();
+        assert_eq!(listed["result"]["totalSize"], expected_total, "{listed}");
+        if expected_total == 1 {
+            assert_eq!(listed["result"]["tasks"][0]["id"], task_id);
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_streaming_rpc_enters_the_governed_runtime_and_closes_at_completion() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0",
+            "id":"stream-1",
+            "method":"SendStreamingMessage",
+            "params":{"message":message("official-stream")["message"]}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    assert!(
+        response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream")
+    );
+    assert_eq!(response.headers()["a2a-version"], "1.0");
+    assert!(
+        response
+            .headers()
+            .contains_key("x-acteon-agent-source-context")
+    );
+    let body = tokio::time::timeout(Duration::from_secs(10), response.text())
+        .await
+        .unwrap()
+        .unwrap();
+    let frames = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(!frames.is_empty());
+    assert_eq!(frames[0]["id"], "stream-1");
+    assert!(frames[0].pointer("/result/task").is_some());
+    assert!(
+        frames[0]
+            .pointer("/result/task/metadata/acteon_governed_execution")
+            .is_none()
+    );
+    assert!(frames.iter().any(|frame| {
+        frame.pointer("/result/statusUpdate/status/state") == Some(&json!("TASK_STATE_COMPLETED"))
+            || frame.pointer("/result/task/status/state") == Some(&json!("TASK_STATE_COMPLETED"))
+    }));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_task_subscription_starts_with_a_governed_durable_snapshot() {
+    let (url, _, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let accepted = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-for-subscription", "method":"SendMessage",
+            "params":{
+                "message":message("official-subscribe")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    let source = accepted.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = accepted.json().await.unwrap();
+    let task_id = accepted
+        .pointer("/result/task/id")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    let mut response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", source)
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"subscribe-1", "method":"SubscribeToTask",
+            "params":{"id":task_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut body = Vec::new();
+        while !body.windows(2).any(|window| window == b"\n\n") {
+            body.extend_from_slice(&response.chunk().await.unwrap().unwrap());
+        }
+        String::from_utf8(body).unwrap()
+    })
+    .await
+    .unwrap();
+    let frame = body
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .unwrap();
+    assert_eq!(frame["id"], "subscribe-1");
+    assert_eq!(frame.pointer("/result/task/id"), Some(&json!(task_id)));
+    assert!(
+        frame
+            .pointer("/result/task/metadata/acteon_governed_execution")
+            .is_none()
+    );
+    webhook_task.abort();
 }
 
 #[tokio::test]
@@ -2139,10 +2888,23 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         notifier.log()
     );
     assert_eq!(continued["status"]["task"]["id"], remote_id);
-    assert_eq!(continued["status"]["task"]["status"]["state"], "completed");
+    assert!(matches!(
+        continued["status"]["task"]["status"]["state"].as_str(),
+        Some("working" | "completed")
+    ));
     assert!(continued["status"]["progress_cursor"].as_str().is_some());
     assert!(continued["continuation_id"].as_str().is_some());
-    let task_after = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
+    let task_after = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let task = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
+            if task.status.state == TaskState::Completed {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(task_after.status.state, TaskState::Completed);
     assert_eq!(
         task_after
@@ -2288,7 +3050,8 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let canceled: Value = response.json().await.unwrap();
-    assert_eq!(canceled["status"]["state"], "restricted");
+    assert_eq!(canceled["status"]["state"], "reconciled");
+    assert_eq!(canceled["status"]["task"]["status"]["state"], "canceled");
     assert_eq!(
         canceled["status"]["task"]["id"],
         peer["status"]["task"]["id"]
@@ -2310,17 +3073,17 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
     assert_eq!(replayed, canceled);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
-    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 0);
     assert_eq!(
         proxy
             .state
             .conditional_task_observations
             .load(Ordering::SeqCst),
-        1
+        0
     );
     assert_eq!(
         proxy.state.not_modified_observations.load(Ordering::SeqCst),
-        1
+        0
     );
     webhook_task.abort();
 }
@@ -2433,7 +3196,8 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     let committed = proxy.state.committed_stop.lock().unwrap().clone().unwrap();
     assert_eq!(committed["future_starts_blocked"], true);
     assert_eq!(committed["task"]["id"], task_id);
-    assert_eq!(committed["task"]["status"]["state"], "submitted");
+    assert_eq!(committed["task"]["status"]["state"], "canceled");
+    assert_eq!(committed["cancellation_confirmed"], true);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
     let cancellation_id = uncertain["cancellation_id"].clone();
@@ -2448,7 +3212,9 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let replayed: Value = response.json().await.unwrap();
     assert_eq!(replayed["cancellation_id"], cancellation_id);
-    assert_eq!(replayed, uncertain);
+    assert_eq!(replayed["status"]["state"], "reconciled");
+    assert_eq!(replayed["status"]["task"]["id"], task_id);
+    assert_eq!(replayed["status"]["task"]["status"]["state"], "canceled");
     assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
     assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -2460,7 +3226,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     );
     assert_eq!(
         proxy.state.not_modified_observations.load(Ordering::SeqCst),
-        1
+        0
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
@@ -2641,6 +3407,19 @@ async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the
 
     server.remove_service_and_retain_current(new_digest);
     server.ready(&client).await;
+    let retained_observation = client
+        .get(server.task_url(completed_task["id"].as_str().unwrap()))
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", &completed_source)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        retained_observation.status(),
+        200,
+        "{}",
+        retained_observation.text().await.unwrap()
+    );
     for (message_id, expected_id) in [
         ("completed-before-replacement", &completed_task["id"]),
         ("after-replacement", &new_task["id"]),
@@ -2933,8 +3712,9 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
     assert_eq!(task.status.state, acteon_core::TaskState::Submitted);
     let stopped = client.agent_service_stop_task(&restored).await.unwrap();
     assert!(stopped.future_starts_blocked);
+    assert!(stopped.cancellation_confirmed);
     assert_eq!(stopped.task.id, receipt.task_id());
-    assert_eq!(stopped.task.status.state, acteon_core::TaskState::Submitted);
+    assert_eq!(stopped.task.status.state, acteon_core::TaskState::Canceled);
     let repeated = client.agent_service_stop_task(&restored).await.unwrap();
     assert!(repeated.future_starts_blocked);
     assert_eq!(repeated.task.id, receipt.task_id());
@@ -3026,8 +3806,9 @@ async fn requester_stop_requires_original_job_provenance_and_never_starts_effect
         if expected == 200 {
             let body: Value = response.json().await.unwrap();
             assert_eq!(body["future_starts_blocked"], true);
+            assert_eq!(body["cancellation_confirmed"], true);
             assert_eq!(body["task"]["id"], task["id"]);
-            assert_eq!(body["task"]["status"]["state"], "submitted");
+            assert_eq!(body["task"]["status"]["state"], "canceled");
         }
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -3079,7 +3860,7 @@ async fn redis_restart_does_not_start_stopped_queued_service_work() {
         let stopped: Value = response.json().await.unwrap();
         assert_eq!(stopped["future_starts_blocked"], true);
         assert_eq!(stopped["task"]["id"], task["id"]);
-        assert_eq!(stopped["task"]["status"]["state"], "submitted");
+        assert_eq!(stopped["task"]["status"]["state"], "canceled");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let coordinator = acteon_governance::AuthorityCoordinator::connect(store, "prod", "acme")

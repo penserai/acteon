@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -128,6 +129,103 @@ class GovernanceTest {
                 assertEquals(denied, error.getStatus());
                 assertEquals(count + 1, requests.size());
             }
+        } finally { server.stop(0); }
+    }
+
+    @Test void federationManagementAndInertImportPreserveWire() throws Exception {
+        var mapper = JsonMapper.build();
+        var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/federation-management.json")));
+        var paths = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var bodies = new java.util.concurrent.CopyOnWriteArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            paths.add(exchange.getRequestURI().getPath());
+            var body = mapper.readTree(exchange.getRequestBody());
+            if (body != null && !body.isMissingNode()) bodies.add(body);
+            assertEquals("Bearer federation-key", exchange.getRequestHeaders().getFirst("Authorization"));
+            var path = exchange.getRequestURI().getPath();
+            var response = path.endsWith("/correlation")
+                ? fixture.get("finality_correlation")
+                : path.endsWith(":reconcile")
+                ? fixture.get("reconciled_evidence")
+                : path.endsWith(":abandon")
+                ? fixture.get("abandoned_evidence")
+                : path.equals("/v1/governance/federation/deliveries")
+                ? fixture.get("delivery_evidence_page")
+                : path.endsWith("/capabilities")
+                ? fixture.get("signed_capability_card")
+                : path.contains("/federation/exports/")
+                ? fixture.get("export_receipt")
+                : path.endsWith("message:send")
+                ? mapper.readTree("{\"id\":\"federated-task\",\"namespace\":\"prod\",\"tenant\":\"acme\"}")
+                : path.endsWith("envelopes:import") ? fixture.get("import_receipt") : fixture.get("change_receipt");
+            byte[] wire = response.toString().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, wire.length);
+            exchange.getResponseBody().write(wire);
+            exchange.close();
+        });
+        server.start();
+        try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort(), "federation-key")) {
+            var publication = mapper.treeToValue(fixture.get("publication"), Governance.PublishFederationTrustRequest.class);
+            var revocation = mapper.treeToValue(fixture.get("revocation"), Governance.RevokeFederationTrustRequest.class);
+            var envelope = mapper.treeToValue(fixture.get("envelope"), Governance.SignedFederationEnvelopeDeclaration.class);
+            client.publishFederationTrust(publication);
+            client.revokeFederationTrust(revocation);
+            var capability = client.federationCapabilities("prod", "acme", "maya");
+            var receipt = client.importFederationEnvelope("prod", "acme", envelope);
+            var invocation = new Governance.SignedFederationInvocationDeclaration("signed-payload", "a".repeat(128));
+            var message = Map.<String, Object>of("messageId", "message-1", "role", "user",
+                "parts", java.util.List.of(Map.of("text", "inspect")));
+            var task = client.invokeFederatedAgent("prod", "acme", "maya", invocation, message);
+            var exportMessage = mapper.convertValue(fixture.get("export_message"),
+                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            var sourceTask = "11111111-1111-4111-8111-111111111111";
+            var exported = client.exportFederatedMessage("prod", "acme", "maya", sourceTask,
+                "remote-triage", exportMessage);
+            client.observeFederatedExport("prod", "acme", "maya", sourceTask,
+                "remote-triage", exportMessage);
+            client.replayFederatedExport("prod", "acme", "maya", sourceTask,
+                "remote-triage", exportMessage);
+            var evidence = client.federationDeliveryEvidence("prod", "acme", null, 25);
+            var abandonRequest = mapper.treeToValue(fixture.get("abandon_request"),
+                Governance.AbandonFederationDeliveryRequest.class);
+            var abandoned = client.abandonFederationDelivery(
+                evidence.deliveries().get(0).deliveryId(), abandonRequest);
+            var correlation = client.federationFinalityCorrelation("prod", "acme",
+                evidence.deliveries().get(0).deliveryId());
+            var reconcileRequest = mapper.treeToValue(fixture.get("reconcile_request"),
+                Governance.ReconcileFederationDeliveryRequest.class);
+            var reconciled = client.reconcileFederationDelivery(
+                evidence.deliveries().get(0).deliveryId(), reconcileRequest);
+            assertFalse(receipt.executionStarted());
+            assertEquals(fixture.get("signed_capability_card").get("payload").asText(), capability.payload());
+            assertEquals("federated-task", task.get("id").asText());
+            assertEquals("in_flight", exported.attemptStatus());
+            assertEquals("export-message-1", evidence.deliveries().get(0).messageId());
+            assertEquals("abandoned", abandoned.status().get("status").asText());
+            assertEquals("import", correlation.stage());
+            assertEquals(1, reconciled.reconciliations().size());
+            assertEquals(java.util.List.of(
+                "/v1/governance/federation/trusts",
+                "/v1/governance/federation/trusts/revoke",
+                "/a2a/prod/acme/federation/agents/maya/capabilities",
+                "/a2a/prod/acme/federation/envelopes:import",
+                "/a2a/prod/acme/federation/agents/maya/v1/message:send",
+                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:send",
+                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:observe",
+                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:replay",
+                "/v1/governance/federation/deliveries",
+                "/v1/governance/federation/deliveries/" + evidence.deliveries().get(0).deliveryId() + ":abandon",
+                "/v1/governance/federation/deliveries/" + evidence.deliveries().get(0).deliveryId() + "/correlation",
+                "/v1/governance/federation/deliveries/" + evidence.deliveries().get(0).deliveryId() + ":reconcile"), paths);
+            assertEquals(fixture.get("publication"), bodies.get(0));
+            assertEquals(fixture.get("revocation"), bodies.get(1));
+            assertEquals(fixture.get("envelope"), bodies.get(2).get("envelope"));
+            assertEquals("signed-payload", bodies.get(3).get("invocation").get("payload").asText());
+            assertEquals("message-1", bodies.get(3).get("message").get("messageId").asText());
+            assertEquals(fixture.get("abandon_request"), bodies.get(7));
+            assertEquals(fixture.get("reconcile_request"), bodies.get(8));
         } finally { server.stop(0); }
     }
 

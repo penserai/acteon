@@ -8,6 +8,7 @@ class PlatformOperation(StrEnum):
     A2A_A2A_REST_TASK_GET = "a2a_a2a_rest_task_get"
     A2A_DISCOVERY_DELETE_AGENT_CARD = "a2a_discovery_delete_agent_card"
     A2A_DISCOVERY_DISCOVER_AGENT = "a2a_discovery_discover_agent"
+    A2A_DISCOVERY_DISCOVER_AGENT_V1 = "a2a_discovery_discover_agent_v1"
     A2A_DISCOVERY_GET_AGENT_CARD = "a2a_discovery_get_agent_card"
     A2A_DISCOVERY_PUT_AGENT_CARD = "a2a_discovery_put_agent_card"
     A2A_PUSH_REST_DELETE_PUSH_CONFIG = "a2a_push_rest_delete_push_config"
@@ -125,14 +126,26 @@ class PlatformOperation(StrEnum):
     EXECUTIONS_RESET_EXECUTION = "executions_reset_execution"
     EXECUTIONS_SIGNAL_EXECUTION = "executions_signal_execution"
     EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES = "executions_upsert_execution_attributes"
+    FEDERATION_CAPABILITIES = "federation_capabilities"
+    FEDERATION_EXPORT_MESSAGE = "federation_export_message"
+    FEDERATION_IMPORT_ENVELOPE = "federation_import_envelope"
+    FEDERATION_INVOKE_AGENT = "federation_invoke_agent"
+    FEDERATION_OBSERVE_EXPORT_MESSAGE = "federation_observe_export_message"
+    FEDERATION_REPLAY_EXPORT_MESSAGE = "federation_replay_export_message"
+    GOVERNANCE_ABANDON_FEDERATION_DELIVERY = "governance_abandon_federation_delivery"
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
+    GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE = "governance_federation_delivery_evidence"
+    GOVERNANCE_FEDERATION_FINALITY_CORRELATION = "governance_federation_finality_correlation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
     GOVERNANCE_MUTATE_REGISTRY = "governance_mutate_registry"
     GOVERNANCE_PROVIDER_HISTORY = "governance_provider_history"
+    GOVERNANCE_PUBLISH_FEDERATION_TRUST = "governance_publish_federation_trust"
     GOVERNANCE_PUBLISH_PERMIT = "governance_publish_permit"
+    GOVERNANCE_RECONCILE_FEDERATION_DELIVERY = "governance_reconcile_federation_delivery"
     GOVERNANCE_RECONCILIATION_CORRELATION = "governance_reconciliation_correlation"
     GOVERNANCE_REGISTRY_PROJECTION = "governance_registry_projection"
+    GOVERNANCE_REVOKE_FEDERATION_TRUST = "governance_revoke_federation_trust"
     GROUPS_FLUSH_GROUP = "groups_flush_group"
     GROUPS_GET_GROUP = "groups_get_group"
     GROUPS_LIST_GROUPS = "groups_list_groups"
@@ -246,6 +259,12 @@ OPERATIONS = {
         ("namespace", "tenant"),
         "json",
     ),
+    PlatformOperation.A2A_DISCOVERY_DISCOVER_AGENT_V1: (
+        "GET",
+        "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+        ("namespace", "tenant"),
+        "json",
+    ),
     PlatformOperation.A2A_DISCOVERY_GET_AGENT_CARD: (
         "GET",
         "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
@@ -308,19 +327,28 @@ OPERATIONS = {
     ),
     PlatformOperation.AGENT_SERVICES_PEER_AUTHORIZATION_RESOLVE: (
         "POST",
-        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill"
+            "}/submissions/{submission}/authorization:resolve"
+        ),
         ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
         "json",
     ),
     PlatformOperation.AGENT_SERVICES_PEER_CANCEL: (
         "POST",
-        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill"
+            "}/submissions/{submission}:cancel"
+        ),
         ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
         "json",
     ),
     PlatformOperation.AGENT_SERVICES_PEER_CONTINUE: (
         "POST",
-        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill"
+            "}/submissions/{submission}/message:send"
+        ),
         ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
         "json",
     ),
@@ -332,13 +360,19 @@ OPERATIONS = {
     ),
     PlatformOperation.AGENT_SERVICES_PEER_REFRESH: (
         "POST",
-        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill"
+            "}/submissions/{submission}:refresh"
+        ),
         ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
         "json",
     ),
     PlatformOperation.AGENT_SERVICES_PEER_SEND: (
         "POST",
-        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill"
+            "}/message:send"
+        ),
         ("namespace", "tenant", "agent", "id", "target", "skill"),
         "json",
     ),
@@ -372,7 +406,12 @@ OPERATIONS = {
         ("namespace", "tenant", "agent", "id"),
         "json",
     ),
-    PlatformOperation.ANALYTICS_QUERY_ANALYTICS: ("GET", "/v1/analytics", (), "json"),
+    PlatformOperation.ANALYTICS_QUERY_ANALYTICS: (
+        "GET",
+        "/v1/analytics",
+        (),
+        "json",
+    ),
     PlatformOperation.APPROVALS_APPROVE: (
         "POST",
         "/v1/approvals/{namespace}/{tenant}/{id}/approve",
@@ -385,7 +424,12 @@ OPERATIONS = {
         ("namespace", "tenant", "id"),
         "json",
     ),
-    PlatformOperation.APPROVALS_LIST_APPROVALS: ("GET", "/v1/approvals", (), "json"),
+    PlatformOperation.APPROVALS_LIST_APPROVALS: (
+        "GET",
+        "/v1/approvals",
+        (),
+        "json",
+    ),
     PlatformOperation.APPROVALS_REJECT: (
         "POST",
         "/v1/approvals/{namespace}/{tenant}/{id}/reject",
@@ -398,10 +442,30 @@ OPERATIONS = {
         ("action_id",),
         "json",
     ),
-    PlatformOperation.AUDIT_QUERY_AUDIT: ("GET", "/v1/audit", (), "json"),
-    PlatformOperation.AUTH_IDENTITY: ("GET", "/v1/auth/identity", (), "json"),
-    PlatformOperation.AUTH_LOGIN: ("POST", "/v1/auth/login", (), "json"),
-    PlatformOperation.AUTH_LOGOUT: ("POST", "/v1/auth/logout", (), "json"),
+    PlatformOperation.AUDIT_QUERY_AUDIT: (
+        "GET",
+        "/v1/audit",
+        (),
+        "json",
+    ),
+    PlatformOperation.AUTH_IDENTITY: (
+        "GET",
+        "/v1/auth/identity",
+        (),
+        "json",
+    ),
+    PlatformOperation.AUTH_LOGIN: (
+        "POST",
+        "/v1/auth/login",
+        (),
+        "json",
+    ),
+    PlatformOperation.AUTH_LOGOUT: (
+        "POST",
+        "/v1/auth/logout",
+        (),
+        "json",
+    ),
     PlatformOperation.BUS_ACK_SUBSCRIPTION: (
         "POST",
         "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
@@ -426,9 +490,24 @@ OPERATIONS = {
         ("namespace", "tenant", "name"),
         "json",
     ),
-    PlatformOperation.BUS_CREATE_SCHEMA: ("POST", "/v1/bus/schemas", (), "json"),
-    PlatformOperation.BUS_CREATE_SUBSCRIPTION: ("POST", "/v1/bus/subscriptions", (), "json"),
-    PlatformOperation.BUS_CREATE_TOPIC: ("POST", "/v1/bus/topics", (), "json"),
+    PlatformOperation.BUS_CREATE_SCHEMA: (
+        "POST",
+        "/v1/bus/schemas",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_CREATE_SUBSCRIPTION: (
+        "POST",
+        "/v1/bus/subscriptions",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_CREATE_TOPIC: (
+        "POST",
+        "/v1/bus/topics",
+        (),
+        "json",
+    ),
     PlatformOperation.BUS_DEADLETTER_SUBSCRIPTION: (
         "POST",
         "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
@@ -501,17 +580,42 @@ OPERATIONS = {
         ("namespace", "tenant", "agent_id"),
         "json",
     ),
-    PlatformOperation.BUS_LIST_AGENTS: ("GET", "/v1/bus/agents", (), "json"),
+    PlatformOperation.BUS_LIST_AGENTS: (
+        "GET",
+        "/v1/bus/agents",
+        (),
+        "json",
+    ),
     PlatformOperation.BUS_LIST_BUS_APPROVALS: (
         "GET",
         "/v1/bus/approvals/{namespace}/{tenant}",
         ("namespace", "tenant"),
         "json",
     ),
-    PlatformOperation.BUS_LIST_CONVERSATIONS: ("GET", "/v1/bus/conversations", (), "json"),
-    PlatformOperation.BUS_LIST_SCHEMAS: ("GET", "/v1/bus/schemas", (), "json"),
-    PlatformOperation.BUS_LIST_SUBSCRIPTIONS: ("GET", "/v1/bus/subscriptions", (), "json"),
-    PlatformOperation.BUS_LIST_TOPICS: ("GET", "/v1/bus/topics", (), "json"),
+    PlatformOperation.BUS_LIST_CONVERSATIONS: (
+        "GET",
+        "/v1/bus/conversations",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_LIST_SCHEMAS: (
+        "GET",
+        "/v1/bus/schemas",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_LIST_SUBSCRIPTIONS: (
+        "GET",
+        "/v1/bus/subscriptions",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_LIST_TOPICS: (
+        "GET",
+        "/v1/bus/topics",
+        (),
+        "json",
+    ),
     PlatformOperation.BUS_LOOKUP_TOOL_RESULT: (
         "GET",
         "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
@@ -542,9 +646,24 @@ OPERATIONS = {
         ("namespace", "tenant", "conversation_id"),
         "json",
     ),
-    PlatformOperation.BUS_PUBLISH: ("POST", "/v1/bus/publish", (), "json"),
-    PlatformOperation.BUS_REGISTER_AGENT: ("POST", "/v1/bus/agents", (), "json"),
-    PlatformOperation.BUS_REGISTER_CONVERSATION: ("POST", "/v1/bus/conversations", (), "json"),
+    PlatformOperation.BUS_PUBLISH: (
+        "POST",
+        "/v1/bus/publish",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_REGISTER_AGENT: (
+        "POST",
+        "/v1/bus/agents",
+        (),
+        "json",
+    ),
+    PlatformOperation.BUS_REGISTER_CONVERSATION: (
+        "POST",
+        "/v1/bus/conversations",
+        (),
+        "json",
+    ),
     PlatformOperation.BUS_REJECT_BUS_APPROVAL: (
         "POST",
         "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
@@ -695,7 +814,12 @@ OPERATIONS = {
         ("name",),
         "json",
     ),
-    PlatformOperation.CHAINS_GET_CHAIN: ("GET", "/v1/chains/{chain_id}", ("chain_id",), "json"),
+    PlatformOperation.CHAINS_GET_CHAIN: (
+        "GET",
+        "/v1/chains/{chain_id}",
+        ("chain_id",),
+        "json",
+    ),
     PlatformOperation.CHAINS_GET_CHAIN_DAG: (
         "GET",
         "/v1/chains/{chain_id}/dag",
@@ -720,8 +844,18 @@ OPERATIONS = {
         ("name",),
         "json",
     ),
-    PlatformOperation.CHAINS_LIST_CHAINS: ("GET", "/v1/chains", (), "json"),
-    PlatformOperation.CHAINS_LIST_DEFINITIONS: ("GET", "/v1/chains/definitions", (), "json"),
+    PlatformOperation.CHAINS_LIST_CHAINS: (
+        "GET",
+        "/v1/chains",
+        (),
+        "json",
+    ),
+    PlatformOperation.CHAINS_LIST_DEFINITIONS: (
+        "GET",
+        "/v1/chains/definitions",
+        (),
+        "json",
+    ),
     PlatformOperation.CHAINS_PUT_DEFINITION: (
         "PUT",
         "/v1/chains/definitions/{name}",
@@ -752,20 +886,60 @@ OPERATIONS = {
         (),
         "json",
     ),
-    PlatformOperation.COMPLIANCE_VERIFY_AUDIT_CHAIN: ("POST", "/v1/audit/verify", (), "json"),
-    PlatformOperation.CONFIG_GET_CONFIG: ("GET", "/admin/config", (), "json"),
-    PlatformOperation.DISPATCH_DISPATCH: ("POST", "/v1/dispatch", (), "json"),
-    PlatformOperation.DISPATCH_DISPATCH_BATCH: ("POST", "/v1/dispatch/batch", (), "json"),
-    PlatformOperation.DLQ_DLQ_DRAIN: ("POST", "/v1/dlq/drain", (), "json"),
-    PlatformOperation.DLQ_DLQ_STATS: ("GET", "/v1/dlq/stats", (), "json"),
-    PlatformOperation.EMBEDDINGS_SIMILARITY: ("POST", "/v1/embeddings/similarity", (), "json"),
+    PlatformOperation.COMPLIANCE_VERIFY_AUDIT_CHAIN: (
+        "POST",
+        "/v1/audit/verify",
+        (),
+        "json",
+    ),
+    PlatformOperation.CONFIG_GET_CONFIG: (
+        "GET",
+        "/admin/config",
+        (),
+        "json",
+    ),
+    PlatformOperation.DISPATCH_DISPATCH: (
+        "POST",
+        "/v1/dispatch",
+        (),
+        "json",
+    ),
+    PlatformOperation.DISPATCH_DISPATCH_BATCH: (
+        "POST",
+        "/v1/dispatch/batch",
+        (),
+        "json",
+    ),
+    PlatformOperation.DLQ_DLQ_DRAIN: (
+        "POST",
+        "/v1/dlq/drain",
+        (),
+        "json",
+    ),
+    PlatformOperation.DLQ_DLQ_STATS: (
+        "GET",
+        "/v1/dlq/stats",
+        (),
+        "json",
+    ),
+    PlatformOperation.EMBEDDINGS_SIMILARITY: (
+        "POST",
+        "/v1/embeddings/similarity",
+        (),
+        "json",
+    ),
     PlatformOperation.EVENTS_GET_EVENT: (
         "GET",
         "/v1/events/{fingerprint}",
         ("fingerprint",),
         "json",
     ),
-    PlatformOperation.EVENTS_LIST_EVENTS: ("GET", "/v1/events", (), "json"),
+    PlatformOperation.EVENTS_LIST_EVENTS: (
+        "GET",
+        "/v1/events",
+        (),
+        "json",
+    ),
     PlatformOperation.EVENTS_TRANSITION_EVENT: (
         "PUT",
         "/v1/events/{fingerprint}/transition",
@@ -784,7 +958,12 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
-    PlatformOperation.EXECUTIONS_LIST_EXECUTIONS: ("GET", "/v1/executions", (), "json"),
+    PlatformOperation.EXECUTIONS_LIST_EXECUTIONS: (
+        "GET",
+        "/v1/executions",
+        (),
+        "json",
+    ),
     PlatformOperation.EXECUTIONS_RESET_EXECUTION: (
         "POST",
         "/v1/executions/{execution_id}/reset",
@@ -803,22 +982,117 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
+    PlatformOperation.FEDERATION_CAPABILITIES: (
+        "GET",
+        "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+        ("namespace", "tenant", "agent"),
+        "json",
+    ),
+    PlatformOperation.FEDERATION_EXPORT_MESSAGE: (
+        "POST",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/expor"
+            "ts/{profile}/message:send"
+        ),
+        ("namespace", "tenant", "agent", "task_id", "profile"),
+        "json",
+    ),
+    PlatformOperation.FEDERATION_IMPORT_ENVELOPE: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+        ("namespace", "tenant"),
+        "json",
+    ),
+    PlatformOperation.FEDERATION_INVOKE_AGENT: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+        ("namespace", "tenant", "agent"),
+        "json",
+    ),
+    PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE: (
+        "POST",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/expor"
+            "ts/{profile}/message:observe"
+        ),
+        ("namespace", "tenant", "agent", "task_id", "profile"),
+        "json",
+    ),
+    PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE: (
+        "POST",
+        (
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/expor"
+            "ts/{profile}/message:replay"
+        ),
+        ("namespace", "tenant", "agent", "task_id", "profile"),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY: (
+        "POST",
+        "/v1/governance/federation/deliveries/{delivery_id}:abandon",
+        ("delivery_id",),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION: (
         "POST",
         "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
         ("execution_id", "ordinal"),
         "json",
     ),
-    PlatformOperation.GOVERNANCE_INSPECT: ("GET", "/v1/governance", (), "json"),
-    PlatformOperation.GOVERNANCE_INTERVENE: ("POST", "/v1/governance/changes", (), "json"),
-    PlatformOperation.GOVERNANCE_MUTATE_REGISTRY: ("POST", "/v1/governance/registry", (), "json"),
+    PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE: (
+        "GET",
+        "/v1/governance/federation/deliveries",
+        (),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION: (
+        "GET",
+        "/v1/governance/federation/deliveries/{delivery_id}/correlation",
+        ("delivery_id",),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_INSPECT: (
+        "GET",
+        "/v1/governance",
+        (),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_INTERVENE: (
+        "POST",
+        "/v1/governance/changes",
+        (),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_MUTATE_REGISTRY: (
+        "POST",
+        "/v1/governance/registry",
+        (),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_PROVIDER_HISTORY: (
         "GET",
         "/v1/governance/executions/{execution_id}",
         ("execution_id",),
         "json",
     ),
-    PlatformOperation.GOVERNANCE_PUBLISH_PERMIT: ("POST", "/v1/governance/permits", (), "json"),
+    PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST: (
+        "POST",
+        "/v1/governance/federation/trusts",
+        (),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_PUBLISH_PERMIT: (
+        "POST",
+        "/v1/governance/permits",
+        (),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY: (
+        "POST",
+        "/v1/governance/federation/deliveries/{delivery_id}:reconcile",
+        ("delivery_id",),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION: (
         "GET",
         "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
@@ -831,17 +1105,48 @@ OPERATIONS = {
         ("agent_id",),
         "json",
     ),
+    PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST: (
+        "POST",
+        "/v1/governance/federation/trusts/revoke",
+        (),
+        "json",
+    ),
     PlatformOperation.GROUPS_FLUSH_GROUP: (
         "DELETE",
         "/v1/groups/{group_key}",
         ("group_key",),
         "json",
     ),
-    PlatformOperation.GROUPS_GET_GROUP: ("GET", "/v1/groups/{group_key}", ("group_key",), "json"),
-    PlatformOperation.GROUPS_LIST_GROUPS: ("GET", "/v1/groups", (), "json"),
-    PlatformOperation.HEALTH_HEALTH: ("GET", "/health", (), "json"),
-    PlatformOperation.HEALTH_METRICS: ("GET", "/metrics", (), "json"),
-    PlatformOperation.PLUGINS_LIST_PLUGINS: ("GET", "/v1/plugins", (), "json"),
+    PlatformOperation.GROUPS_GET_GROUP: (
+        "GET",
+        "/v1/groups/{group_key}",
+        ("group_key",),
+        "json",
+    ),
+    PlatformOperation.GROUPS_LIST_GROUPS: (
+        "GET",
+        "/v1/groups",
+        (),
+        "json",
+    ),
+    PlatformOperation.HEALTH_HEALTH: (
+        "GET",
+        "/health",
+        (),
+        "json",
+    ),
+    PlatformOperation.HEALTH_METRICS: (
+        "GET",
+        "/metrics",
+        (),
+        "json",
+    ),
+    PlatformOperation.PLUGINS_LIST_PLUGINS: (
+        "GET",
+        "/v1/plugins",
+        (),
+        "json",
+    ),
     PlatformOperation.PLUGINS_UNREGISTER_PLUGIN: (
         "DELETE",
         "/v1/plugins/{name}",
@@ -854,7 +1159,12 @@ OPERATIONS = {
         (),
         "text",
     ),
-    PlatformOperation.PROMETHEUS_PROMETHEUS_METRICS: ("GET", "/metrics/prometheus", (), "text"),
+    PlatformOperation.PROMETHEUS_PROMETHEUS_METRICS: (
+        "GET",
+        "/metrics/prometheus",
+        (),
+        "text",
+    ),
     PlatformOperation.PROVIDER_HEALTH_LIST_PROVIDER_HEALTH: (
         "GET",
         "/v1/providers/health",
@@ -867,39 +1177,114 @@ OPERATIONS = {
         ("task_id",),
         "json",
     ),
-    PlatformOperation.QUEUES_ENQUEUE_TASK: ("POST", "/v1/queues/{queue}/tasks", ("queue",), "json"),
+    PlatformOperation.QUEUES_ENQUEUE_TASK: (
+        "POST",
+        "/v1/queues/{queue}/tasks",
+        ("queue",),
+        "json",
+    ),
     PlatformOperation.QUEUES_FAIL_TASK: (
         "POST",
         "/v1/queues/tasks/{task_id}/fail",
         ("task_id",),
         "json",
     ),
-    PlatformOperation.QUEUES_GET_TASK: ("GET", "/v1/queues/tasks/{task_id}", ("task_id",), "json"),
+    PlatformOperation.QUEUES_GET_TASK: (
+        "GET",
+        "/v1/queues/tasks/{task_id}",
+        ("task_id",),
+        "json",
+    ),
     PlatformOperation.QUEUES_HEARTBEAT_TASK: (
         "POST",
         "/v1/queues/tasks/{task_id}/heartbeat",
         ("task_id",),
         "json",
     ),
-    PlatformOperation.QUEUES_LIST_TASKS: ("GET", "/v1/queues/{queue}/tasks", ("queue",), "json"),
-    PlatformOperation.QUEUES_POLL_QUEUE: ("POST", "/v1/queues/{queue}/poll", ("queue",), "json"),
-    PlatformOperation.QUOTAS_CREATE_QUOTA: ("POST", "/v1/quotas", (), "json"),
-    PlatformOperation.QUOTAS_DELETE_QUOTA: ("DELETE", "/v1/quotas/{id}", ("id",), "json"),
-    PlatformOperation.QUOTAS_GET_QUOTA: ("GET", "/v1/quotas/{id}", ("id",), "json"),
-    PlatformOperation.QUOTAS_GET_QUOTA_USAGE: ("GET", "/v1/quotas/{id}/usage", ("id",), "json"),
-    PlatformOperation.QUOTAS_LIST_QUOTAS: ("GET", "/v1/quotas", (), "json"),
-    PlatformOperation.QUOTAS_RELOAD_STATIC_QUOTAS: ("POST", "/v1/quotas/reload", (), "json"),
-    PlatformOperation.QUOTAS_UPDATE_QUOTA: ("PUT", "/v1/quotas/{id}", ("id",), "json"),
+    PlatformOperation.QUEUES_LIST_TASKS: (
+        "GET",
+        "/v1/queues/{queue}/tasks",
+        ("queue",),
+        "json",
+    ),
+    PlatformOperation.QUEUES_POLL_QUEUE: (
+        "POST",
+        "/v1/queues/{queue}/poll",
+        ("queue",),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_CREATE_QUOTA: (
+        "POST",
+        "/v1/quotas",
+        (),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_DELETE_QUOTA: (
+        "DELETE",
+        "/v1/quotas/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_GET_QUOTA: (
+        "GET",
+        "/v1/quotas/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_GET_QUOTA_USAGE: (
+        "GET",
+        "/v1/quotas/{id}/usage",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_LIST_QUOTAS: (
+        "GET",
+        "/v1/quotas",
+        (),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_RELOAD_STATIC_QUOTAS: (
+        "POST",
+        "/v1/quotas/reload",
+        (),
+        "json",
+    ),
+    PlatformOperation.QUOTAS_UPDATE_QUOTA: (
+        "PUT",
+        "/v1/quotas/{id}",
+        ("id",),
+        "json",
+    ),
     PlatformOperation.RECURRING_BACKFILL_RECURRING: (
         "POST",
         "/v1/recurring/{id}/backfill",
         ("id",),
         "json",
     ),
-    PlatformOperation.RECURRING_CREATE_RECURRING: ("POST", "/v1/recurring", (), "json"),
-    PlatformOperation.RECURRING_DELETE_RECURRING: ("DELETE", "/v1/recurring/{id}", ("id",), "json"),
-    PlatformOperation.RECURRING_GET_RECURRING: ("GET", "/v1/recurring/{id}", ("id",), "json"),
-    PlatformOperation.RECURRING_LIST_RECURRING: ("GET", "/v1/recurring", (), "json"),
+    PlatformOperation.RECURRING_CREATE_RECURRING: (
+        "POST",
+        "/v1/recurring",
+        (),
+        "json",
+    ),
+    PlatformOperation.RECURRING_DELETE_RECURRING: (
+        "DELETE",
+        "/v1/recurring/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.RECURRING_GET_RECURRING: (
+        "GET",
+        "/v1/recurring/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.RECURRING_LIST_RECURRING: (
+        "GET",
+        "/v1/recurring",
+        (),
+        "json",
+    ),
     PlatformOperation.RECURRING_PAUSE_RECURRING: (
         "POST",
         "/v1/recurring/{id}/pause",
@@ -912,23 +1297,78 @@ OPERATIONS = {
         ("id",),
         "json",
     ),
-    PlatformOperation.RECURRING_UPDATE_RECURRING: ("PUT", "/v1/recurring/{id}", ("id",), "json"),
+    PlatformOperation.RECURRING_UPDATE_RECURRING: (
+        "PUT",
+        "/v1/recurring/{id}",
+        ("id",),
+        "json",
+    ),
     PlatformOperation.REPLAY_REPLAY_ACTION: (
         "POST",
         "/v1/audit/{action_id}/replay",
         ("action_id",),
         "json",
     ),
-    PlatformOperation.REPLAY_REPLAY_AUDIT: ("POST", "/v1/audit/replay", (), "json"),
-    PlatformOperation.RETENTION_CREATE_RETENTION: ("POST", "/v1/retention", (), "json"),
-    PlatformOperation.RETENTION_DELETE_RETENTION: ("DELETE", "/v1/retention/{id}", ("id",), "json"),
-    PlatformOperation.RETENTION_GET_RETENTION: ("GET", "/v1/retention/{id}", ("id",), "json"),
-    PlatformOperation.RETENTION_LIST_RETENTION: ("GET", "/v1/retention", (), "json"),
-    PlatformOperation.RETENTION_UPDATE_RETENTION: ("PUT", "/v1/retention/{id}", ("id",), "json"),
-    PlatformOperation.RULES_EVALUATE_RULES: ("POST", "/v1/rules/evaluate", (), "json"),
-    PlatformOperation.RULES_LIST_RULES: ("GET", "/v1/rules", (), "json"),
-    PlatformOperation.RULES_RELOAD_RULES: ("POST", "/v1/rules/reload", (), "json"),
-    PlatformOperation.RULES_RULE_COVERAGE: ("GET", "/v1/rules/coverage", (), "json"),
+    PlatformOperation.REPLAY_REPLAY_AUDIT: (
+        "POST",
+        "/v1/audit/replay",
+        (),
+        "json",
+    ),
+    PlatformOperation.RETENTION_CREATE_RETENTION: (
+        "POST",
+        "/v1/retention",
+        (),
+        "json",
+    ),
+    PlatformOperation.RETENTION_DELETE_RETENTION: (
+        "DELETE",
+        "/v1/retention/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.RETENTION_GET_RETENTION: (
+        "GET",
+        "/v1/retention/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.RETENTION_LIST_RETENTION: (
+        "GET",
+        "/v1/retention",
+        (),
+        "json",
+    ),
+    PlatformOperation.RETENTION_UPDATE_RETENTION: (
+        "PUT",
+        "/v1/retention/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.RULES_EVALUATE_RULES: (
+        "POST",
+        "/v1/rules/evaluate",
+        (),
+        "json",
+    ),
+    PlatformOperation.RULES_LIST_RULES: (
+        "GET",
+        "/v1/rules",
+        (),
+        "json",
+    ),
+    PlatformOperation.RULES_RELOAD_RULES: (
+        "POST",
+        "/v1/rules/reload",
+        (),
+        "json",
+    ),
+    PlatformOperation.RULES_RULE_COVERAGE: (
+        "GET",
+        "/v1/rules/coverage",
+        (),
+        "json",
+    ),
     PlatformOperation.RULES_SET_RULE_ENABLED: (
         "PUT",
         "/v1/rules/{name}/enabled",
@@ -941,51 +1381,126 @@ OPERATIONS = {
         (),
         "json",
     ),
-    PlatformOperation.SILENCES_CREATE_SILENCE: ("POST", "/v1/silences", (), "json"),
-    PlatformOperation.SILENCES_DELETE_SILENCE: ("DELETE", "/v1/silences/{id}", ("id",), "json"),
-    PlatformOperation.SILENCES_GET_SILENCE: ("GET", "/v1/silences/{id}", ("id",), "json"),
-    PlatformOperation.SILENCES_LIST_SILENCES: ("GET", "/v1/silences", (), "json"),
-    PlatformOperation.SILENCES_UPDATE_SILENCE: ("PUT", "/v1/silences/{id}", ("id",), "json"),
+    PlatformOperation.SILENCES_CREATE_SILENCE: (
+        "POST",
+        "/v1/silences",
+        (),
+        "json",
+    ),
+    PlatformOperation.SILENCES_DELETE_SILENCE: (
+        "DELETE",
+        "/v1/silences/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.SILENCES_GET_SILENCE: (
+        "GET",
+        "/v1/silences/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.SILENCES_LIST_SILENCES: (
+        "GET",
+        "/v1/silences",
+        (),
+        "json",
+    ),
+    PlatformOperation.SILENCES_UPDATE_SILENCE: (
+        "PUT",
+        "/v1/silences/{id}",
+        ("id",),
+        "json",
+    ),
     PlatformOperation.SWARM_CANCEL_SWARM_RUN: (
         "POST",
         "/v1/swarm/runs/{run_id}/cancel",
         ("run_id",),
         "json",
     ),
-    PlatformOperation.SWARM_GET_SWARM_RUN: ("GET", "/v1/swarm/runs/{run_id}", ("run_id",), "json"),
-    PlatformOperation.SWARM_LIST_SWARM_RUNS: ("GET", "/v1/swarm/runs", (), "json"),
-    PlatformOperation.TEMPLATES_CREATE_PROFILE: ("POST", "/v1/templates/profiles", (), "json"),
-    PlatformOperation.TEMPLATES_CREATE_TEMPLATE: ("POST", "/v1/templates", (), "json"),
+    PlatformOperation.SWARM_GET_SWARM_RUN: (
+        "GET",
+        "/v1/swarm/runs/{run_id}",
+        ("run_id",),
+        "json",
+    ),
+    PlatformOperation.SWARM_LIST_SWARM_RUNS: (
+        "GET",
+        "/v1/swarm/runs",
+        (),
+        "json",
+    ),
+    PlatformOperation.TEMPLATES_CREATE_PROFILE: (
+        "POST",
+        "/v1/templates/profiles",
+        (),
+        "json",
+    ),
+    PlatformOperation.TEMPLATES_CREATE_TEMPLATE: (
+        "POST",
+        "/v1/templates",
+        (),
+        "json",
+    ),
     PlatformOperation.TEMPLATES_DELETE_PROFILE: (
         "DELETE",
         "/v1/templates/profiles/{id}",
         ("id",),
         "json",
     ),
-    PlatformOperation.TEMPLATES_DELETE_TEMPLATE: ("DELETE", "/v1/templates/{id}", ("id",), "json"),
+    PlatformOperation.TEMPLATES_DELETE_TEMPLATE: (
+        "DELETE",
+        "/v1/templates/{id}",
+        ("id",),
+        "json",
+    ),
     PlatformOperation.TEMPLATES_GET_PROFILE: (
         "GET",
         "/v1/templates/profiles/{id}",
         ("id",),
         "json",
     ),
-    PlatformOperation.TEMPLATES_GET_TEMPLATE: ("GET", "/v1/templates/{id}", ("id",), "json"),
-    PlatformOperation.TEMPLATES_LIST_PROFILES: ("GET", "/v1/templates/profiles", (), "json"),
-    PlatformOperation.TEMPLATES_LIST_TEMPLATES: ("GET", "/v1/templates", (), "json"),
+    PlatformOperation.TEMPLATES_GET_TEMPLATE: (
+        "GET",
+        "/v1/templates/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.TEMPLATES_LIST_PROFILES: (
+        "GET",
+        "/v1/templates/profiles",
+        (),
+        "json",
+    ),
+    PlatformOperation.TEMPLATES_LIST_TEMPLATES: (
+        "GET",
+        "/v1/templates",
+        (),
+        "json",
+    ),
     PlatformOperation.TEMPLATES_RELOAD_STATIC_TEMPLATES: (
         "POST",
         "/v1/templates/reload",
         (),
         "json",
     ),
-    PlatformOperation.TEMPLATES_RENDER_PREVIEW: ("POST", "/v1/templates/render", (), "json"),
+    PlatformOperation.TEMPLATES_RENDER_PREVIEW: (
+        "POST",
+        "/v1/templates/render",
+        (),
+        "json",
+    ),
     PlatformOperation.TEMPLATES_UPDATE_PROFILE: (
         "PUT",
         "/v1/templates/profiles/{id}",
         ("id",),
         "json",
     ),
-    PlatformOperation.TEMPLATES_UPDATE_TEMPLATE: ("PUT", "/v1/templates/{id}", ("id",), "json"),
+    PlatformOperation.TEMPLATES_UPDATE_TEMPLATE: (
+        "PUT",
+        "/v1/templates/{id}",
+        ("id",),
+        "json",
+    ),
     PlatformOperation.TIME_INTERVALS_CREATE_TIME_INTERVAL: (
         "POST",
         "/v1/time-intervals",
@@ -1004,14 +1519,24 @@ OPERATIONS = {
         ("namespace", "tenant", "name"),
         "json",
     ),
-    PlatformOperation.TIME_INTERVALS_LIST_TIME_INTERVALS: ("GET", "/v1/time-intervals", (), "json"),
+    PlatformOperation.TIME_INTERVALS_LIST_TIME_INTERVALS: (
+        "GET",
+        "/v1/time-intervals",
+        (),
+        "json",
+    ),
     PlatformOperation.TIME_INTERVALS_UPDATE_TIME_INTERVAL: (
         "PUT",
         "/v1/time-intervals/{namespace}/{tenant}/{name}",
         ("namespace", "tenant", "name"),
         "json",
     ),
-    PlatformOperation.VERIFY_VERIFY_ACTION: ("GET", "/v1/actions/{id}/verify", ("id",), "json"),
+    PlatformOperation.VERIFY_VERIFY_ACTION: (
+        "GET",
+        "/v1/actions/{id}/verify",
+        ("id",),
+        "json",
+    ),
     PlatformOperation.WORKFLOWS_CANCEL_WORKFLOW: (
         "POST",
         "/v1/workflows/executions/{execution_id}/cancel",
@@ -1024,7 +1549,12 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
-    PlatformOperation.WORKFLOWS_LIST_WORKFLOWS: ("GET", "/v1/workflows/executions", (), "json"),
+    PlatformOperation.WORKFLOWS_LIST_WORKFLOWS: (
+        "GET",
+        "/v1/workflows/executions",
+        (),
+        "json",
+    ),
     PlatformOperation.WORKFLOWS_RECORD_CHECKPOINT: (
         "POST",
         "/v1/workflows/executions/{execution_id}/checkpoints",
@@ -1043,7 +1573,22 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
-    PlatformOperation.WORKFLOWS_START_WORKFLOW: ("POST", "/v1/workflows/start", (), "json"),
-    PlatformOperation.WORKFORCE_CHANGE: ("POST", "/v1/workforce/changes", (), "json"),
-    PlatformOperation.WORKFORCE_INSPECT: ("GET", "/v1/workforce", (), "json"),
+    PlatformOperation.WORKFLOWS_START_WORKFLOW: (
+        "POST",
+        "/v1/workflows/start",
+        (),
+        "json",
+    ),
+    PlatformOperation.WORKFORCE_CHANGE: (
+        "POST",
+        "/v1/workforce/changes",
+        (),
+        "json",
+    ),
+    PlatformOperation.WORKFORCE_INSPECT: (
+        "GET",
+        "/v1/workforce",
+        (),
+        "json",
+    ),
 }

@@ -1,7 +1,7 @@
 """Typed governance management. Public values never establish caller authority."""
 
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from .models import ActionOutcome, PrincipalIdentity
 from .platform_catalog import PlatformOperation
@@ -56,6 +56,320 @@ class PublishGovernancePermitRequest:
     expected_revision: int
     permit: GovernancePermitDeclaration
     reason: str
+
+
+@dataclass
+class FederationGrantCeilingDeclaration:
+    source: PrincipalIdentity
+    target: PrincipalIdentity
+    agent_resource: GovernanceResource
+    binding_digest: str
+    skill: str
+    ingress_effect: GovernanceEffect
+    effects: list[GovernanceEffect]
+    limits: GovernanceLimits
+    max_depth: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationGrantCeilingDeclaration":
+        return cls(
+            PrincipalIdentity(**data["source"]),
+            PrincipalIdentity(**data["target"]),
+            GovernanceResource(**data["agent_resource"]),
+            data["binding_digest"],
+            data["skill"],
+            GovernanceEffect.from_dict(data["ingress_effect"]),
+            [GovernanceEffect.from_dict(effect) for effect in data["effects"]],
+            GovernanceLimits(**data["limits"]),
+            data["max_depth"],
+        )
+
+
+@dataclass
+class FederationTrustDeclaration:
+    id: str
+    revision: int
+    foreign_domain: str
+    local_audience: str
+    key_id: str
+    verifying_key: str
+    minimum_issuer_epoch: int
+    max_revocation_staleness_ms: int
+    max_clock_skew_ms: int
+    valid_from_ms: int
+    deadline_ms: int
+    approved: list[FederationGrantCeilingDeclaration]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationTrustDeclaration":
+        return cls(
+            **{
+                **data,
+                "approved": [
+                    FederationGrantCeilingDeclaration.from_dict(shape) for shape in data["approved"]
+                ],
+            }
+        )
+
+
+@dataclass
+class PublishFederationTrustRequest:
+    namespace: str
+    tenant: str
+    change_id: str
+    expected_revision: int
+    trust: FederationTrustDeclaration
+    reason: str
+
+
+@dataclass
+class RevokeFederationTrustRequest:
+    namespace: str
+    tenant: str
+    change_id: str
+    trust_id: str
+    expected_revision: int
+    reason: str
+
+
+@dataclass
+class SignedFederationEnvelopeDeclaration:
+    payload: str
+    signature: str
+
+
+@dataclass
+class SignedFederationCapabilityCard:
+    payload: str
+    signature: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SignedFederationCapabilityCard":
+        if (
+            not isinstance(data.get("payload"), str)
+            or not data["payload"]
+            or not isinstance(data.get("signature"), str)
+            or len(data["signature"]) != 128
+        ):
+            raise ValueError("invalid signed federation capability card")
+        return cls(data["payload"], data["signature"])
+
+
+@dataclass
+class SignedFederationInvocationDeclaration:
+    payload: str
+    signature: str
+
+
+@dataclass
+class FederationImportReceipt:
+    namespace: str
+    tenant: str
+    import_id: str
+    envelope_digest: str
+    trust_id: str
+    trust_revision: int
+    issuer_domain: str
+    source: PrincipalIdentity
+    target: PrincipalIdentity
+    agent_resource: GovernanceResource
+    binding_digest: str
+    skill: str
+    root_id: str
+    expires_at_ms: int
+    accepted_at_ms: int
+    execution_started: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationImportReceipt":
+        return cls(
+            **{
+                **data,
+                "source": PrincipalIdentity(**data["source"]),
+                "target": PrincipalIdentity(**data["target"]),
+                "agent_resource": GovernanceResource(**data["agent_resource"]),
+            }
+        )
+
+
+@dataclass
+class FederationExportReceipt:
+    attempt_id: str
+    attempt_status: Literal["in_flight", "settled", "uncertain"]
+    delivery_id: str
+    delivery: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationExportReceipt":
+        status = data.get("attempt_status")
+        delivery = data.get("delivery")
+        if (
+            not isinstance(data.get("attempt_id"), str)
+            or not data["attempt_id"]
+            or status not in {"in_flight", "settled", "uncertain"}
+            or not isinstance(data.get("delivery_id"), str)
+            or not data["delivery_id"]
+            or not isinstance(delivery, dict)
+            or delivery.get("status")
+            not in {
+                "registered",
+                "import_uncertain",
+                "imported",
+                "invoke_uncertain",
+                "accepted",
+                "rejected",
+                "abandoned",
+            }
+        ):
+            raise ValueError("invalid federation export receipt")
+        return cls(data["attempt_id"], status, data["delivery_id"], delivery)
+
+
+@dataclass
+class FederationCapabilityEvidence:
+    card_digest: str
+    key_id: str
+    issuer_epoch: int
+    expires_at_ms: int
+    protocol_revision: str
+    authentication_scheme: str
+    credential_revision: str
+
+
+@dataclass
+class FederationDeliveryEvidence:
+    delivery_id: str
+    parent_execution_id: str
+    source: PrincipalIdentity
+    agent_id: str
+    message_id: str
+    trust_id: str
+    trust_revision: int
+    key_id: str
+    issuer_epoch: int
+    created_at_ms: int
+    expires_at_ms: int
+    expired: bool
+    exact_replay_idempotent: bool
+    capability: FederationCapabilityEvidence | None
+    status: dict[str, Any]
+    reconciliations: list["FederationDeliveryFinalityEvidence"]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryEvidence":
+        if (
+            not isinstance(data.get("delivery_id"), str)
+            or not data["delivery_id"]
+            or not isinstance(data.get("parent_execution_id"), str)
+            or not data["parent_execution_id"]
+            or not isinstance(data.get("status"), dict)
+        ):
+            raise ValueError("invalid federation delivery evidence")
+        reconciliations = data.get("reconciliations")
+        if not isinstance(reconciliations, list):
+            raise ValueError("invalid federation delivery reconciliation evidence")
+        return cls(
+            **{
+                **data,
+                "source": PrincipalIdentity(**data["source"]),
+                "capability": (
+                    FederationCapabilityEvidence(**data["capability"])
+                    if isinstance(data.get("capability"), dict)
+                    else None
+                ),
+                "reconciliations": [
+                    FederationDeliveryFinalityEvidence.from_dict(item) for item in reconciliations
+                ],
+            }
+        )
+
+
+@dataclass
+class FederationDeliveryFinalityEvidence:
+    stage: Literal["import", "invoke"]
+    accepted: bool
+    source_id: str
+    qualification_ref: str
+    verifier_revision: str
+    proof_digest: str
+    operator: PrincipalIdentity
+    authority_incarnation: str
+    authority_generation: int
+    accepted_at_ms: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryFinalityEvidence":
+        if (
+            data.get("stage") not in {"import", "invoke"}
+            or not isinstance(data.get("accepted"), bool)
+            or not isinstance(data.get("proof_digest"), str)
+            or len(data["proof_digest"]) != 64
+        ):
+            raise ValueError("invalid federation delivery finality evidence")
+        return cls(**{**data, "operator": PrincipalIdentity(**data["operator"])})
+
+
+@dataclass
+class FederationFinalityCorrelation:
+    delivery_id: str
+    stage: Literal["import", "invoke"]
+    parent_execution_id: str
+    source: PrincipalIdentity
+    adapter_revision: str
+    binding_digest: str
+    envelope_digest: str
+    invocation_digest: str
+    import_id: str
+    invocation_nonce: str
+    agent_id: str
+    message_id: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationFinalityCorrelation":
+        if data.get("stage") not in {"import", "invoke"}:
+            raise ValueError("invalid federation finality correlation")
+        return cls(**{**data, "source": PrincipalIdentity(**data["source"])})
+
+
+@dataclass
+class FederationDeliveryEvidencePage:
+    deliveries: list[FederationDeliveryEvidence]
+    next_cursor: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryEvidencePage":
+        deliveries = data.get("deliveries")
+        if not isinstance(deliveries, list):
+            raise ValueError("invalid federation delivery evidence page")
+        return cls(
+            [FederationDeliveryEvidence.from_dict(item) for item in deliveries],
+            data.get("next_cursor"),
+        )
+
+
+@dataclass
+class AbandonFederationDeliveryRequest:
+    namespace: str
+    tenant: str
+    disposition_id: str
+    reason: str
+
+
+@dataclass
+class ReconcileFederationDeliveryRequest:
+    namespace: str
+    tenant: str
+    proof_base64: str
+
+
+@dataclass
+class FederationTrustView:
+    trust: FederationTrustDeclaration
+    revoked: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationTrustView":
+        return cls(FederationTrustDeclaration.from_dict(data["trust"]), data["revoked"])
 
 
 @dataclass
@@ -155,6 +469,7 @@ class GovernanceManagementBounds:
     limits: GovernanceLimits
     can_read_history: bool = False
     can_reconcile: bool = False
+    can_manage_federation: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GovernanceManagementBounds":
@@ -166,6 +481,7 @@ class GovernanceManagementBounds:
             GovernanceLimits(**data["limits"]),
             data.get("can_read_history", False),
             data.get("can_reconcile", False),
+            data.get("can_manage_federation", False),
         )
 
 
@@ -180,6 +496,7 @@ class GovernanceScopeView:
     permits: list[GovernancePermitView]
     closed_resources: list[GovernanceResource]
     revoked_subjects: list[str]
+    federation_trusts: list[FederationTrustView] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GovernanceScopeView":
@@ -200,6 +517,7 @@ class GovernanceScopeView:
             [GovernancePermitView.from_dict(p) for p in data["permits"]],
             [GovernanceResource(**r) for r in data["closed_resources"]],
             data["revoked_subjects"],
+            [FederationTrustView.from_dict(view) for view in data.get("federation_trusts", [])],
         )
 
 
@@ -597,6 +915,213 @@ class _GovernanceMixin:
             self.platform_request(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, body=asdict(request))
         )
 
+    def publish_federation_trust(
+        self, request: PublishFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    def revoke_federation_trust(
+        self, request: RevokeFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    def federation_delivery_evidence(
+        self,
+        namespace: str,
+        tenant: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> FederationDeliveryEvidencePage:
+        query: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        if after is not None:
+            query["after"] = after
+        if limit is not None:
+            query["limit"] = limit
+        return FederationDeliveryEvidencePage.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
+                query=query,
+            )
+        )
+
+    def abandon_federation_delivery(
+        self,
+        delivery_id: str,
+        request: AbandonFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
+    def federation_finality_correlation(
+        self, namespace: str, tenant: str, delivery_id: str
+    ) -> FederationFinalityCorrelation:
+        return FederationFinalityCorrelation.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
+                path={"delivery_id": delivery_id},
+                query={"namespace": namespace, "tenant": tenant},
+            )
+        )
+
+    def reconcile_federation_delivery(
+        self,
+        delivery_id: str,
+        request: ReconcileFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
+    def import_federation_envelope(
+        self,
+        namespace: str,
+        tenant: str,
+        envelope: SignedFederationEnvelopeDeclaration,
+    ) -> FederationImportReceipt:
+        receipt = FederationImportReceipt.from_dict(
+            self.platform_request(
+                PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
+                path={"namespace": namespace, "tenant": tenant},
+                body={"envelope": asdict(envelope)},
+            )
+        )
+        if receipt.namespace != namespace or receipt.tenant != tenant or receipt.execution_started:
+            raise ValueError("federation import receipt identity or execution state mismatch")
+        return receipt
+
+    def federation_capabilities(
+        self, namespace: str, tenant: str, agent: str
+    ) -> SignedFederationCapabilityCard:
+        return SignedFederationCapabilityCard.from_dict(
+            self.platform_request(
+                PlatformOperation.FEDERATION_CAPABILITIES,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+            )
+        )
+
+    def invoke_federated_agent(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        invocation: SignedFederationInvocationDeclaration,
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = cast(
+            dict[str, Any],
+            self.platform_request(
+                PlatformOperation.FEDERATION_INVOKE_AGENT,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                body={"invocation": asdict(invocation), "message": message},
+            ),
+        )
+        if (
+            task.get("namespace") != namespace
+            or task.get("tenant") != tenant
+            or not isinstance(task.get("id"), str)
+            or not task["id"]
+        ):
+            raise ValueError("federated task receipt identity mismatch")
+        return task
+
+    def export_federated_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return self._federation_export_request(
+            PlatformOperation.FEDERATION_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    def observe_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return self._federation_export_request(
+            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    def replay_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return self._federation_export_request(
+            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    def _federation_export_request(
+        self,
+        operation: PlatformOperation,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return FederationExportReceipt.from_dict(
+            self.platform_request(
+                operation,
+                path={
+                    "namespace": namespace,
+                    "tenant": tenant,
+                    "agent": agent,
+                    "task_id": task_id,
+                    "profile": profile,
+                },
+                body={"message": message},
+            )
+        )
+
     def intervene_governance(
         self, request: GovernanceInterventionRequest
     ) -> GovernanceChangeReceipt:
@@ -692,6 +1217,213 @@ class _AsyncGovernanceMixin:
         return GovernanceChangeReceipt.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, body=asdict(request)
+            )
+        )
+
+    async def publish_federation_trust(
+        self, request: PublishFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    async def revoke_federation_trust(
+        self, request: RevokeFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    async def federation_delivery_evidence(
+        self,
+        namespace: str,
+        tenant: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> FederationDeliveryEvidencePage:
+        query: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        if after is not None:
+            query["after"] = after
+        if limit is not None:
+            query["limit"] = limit
+        return FederationDeliveryEvidencePage.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
+                query=query,
+            )
+        )
+
+    async def abandon_federation_delivery(
+        self,
+        delivery_id: str,
+        request: AbandonFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
+    async def federation_finality_correlation(
+        self, namespace: str, tenant: str, delivery_id: str
+    ) -> FederationFinalityCorrelation:
+        return FederationFinalityCorrelation.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
+                path={"delivery_id": delivery_id},
+                query={"namespace": namespace, "tenant": tenant},
+            )
+        )
+
+    async def reconcile_federation_delivery(
+        self,
+        delivery_id: str,
+        request: ReconcileFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
+    async def import_federation_envelope(
+        self,
+        namespace: str,
+        tenant: str,
+        envelope: SignedFederationEnvelopeDeclaration,
+    ) -> FederationImportReceipt:
+        receipt = FederationImportReceipt.from_dict(
+            await self.platform_request(
+                PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
+                path={"namespace": namespace, "tenant": tenant},
+                body={"envelope": asdict(envelope)},
+            )
+        )
+        if receipt.namespace != namespace or receipt.tenant != tenant or receipt.execution_started:
+            raise ValueError("federation import receipt identity or execution state mismatch")
+        return receipt
+
+    async def federation_capabilities(
+        self, namespace: str, tenant: str, agent: str
+    ) -> SignedFederationCapabilityCard:
+        return SignedFederationCapabilityCard.from_dict(
+            await self.platform_request(
+                PlatformOperation.FEDERATION_CAPABILITIES,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+            )
+        )
+
+    async def invoke_federated_agent(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        invocation: SignedFederationInvocationDeclaration,
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = cast(
+            dict[str, Any],
+            await self.platform_request(
+                PlatformOperation.FEDERATION_INVOKE_AGENT,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                body={"invocation": asdict(invocation), "message": message},
+            ),
+        )
+        if (
+            task.get("namespace") != namespace
+            or task.get("tenant") != tenant
+            or not isinstance(task.get("id"), str)
+            or not task["id"]
+        ):
+            raise ValueError("federated task receipt identity mismatch")
+        return task
+
+    async def export_federated_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return await self._federation_export_request(
+            PlatformOperation.FEDERATION_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    async def observe_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return await self._federation_export_request(
+            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    async def replay_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return await self._federation_export_request(
+            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    async def _federation_export_request(
+        self,
+        operation: PlatformOperation,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return FederationExportReceipt.from_dict(
+            await self.platform_request(
+                operation,
+                path={
+                    "namespace": namespace,
+                    "tenant": tenant,
+                    "agent": agent,
+                    "task_id": task_id,
+                    "profile": profile,
+                },
+                body={"message": message},
             )
         )
 

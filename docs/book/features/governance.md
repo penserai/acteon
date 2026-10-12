@@ -158,6 +158,8 @@ instead of attaching a fresh authority stamp to an old decision.
 | Read verified provider history | `GET /v1/governance/executions/{execution_id}?namespace=prod&tenant=acme` |
 | Issue or revise a qualified permit | `POST /v1/governance/permits` |
 | Close/reopen a resource or revoke authority | `POST /v1/governance/changes` |
+| Publish an exact configured federation trust | `POST /v1/governance/federation/trusts` |
+| Terminally revoke a configured federation trust | `POST /v1/governance/federation/trusts/revoke` |
 
 Inspection returns permitted routes and their exact qualified effect resources,
 current permits within the manager's subjects/routes, closures, subject
@@ -200,6 +202,15 @@ current authority, 409 reports an authority/revision or idempotency conflict,
 and 503 reports unavailable governance. A 409 requires fresh evaluation; the
 SDKs do not automatically retry management mutations.
 
+Federation trust management is an independent right. The manager declaration
+must set `can_manage_federation = true` and list exact
+`federation_trust_ids`. Publication accepts only the complete trust declaration
+already installed in that deployment ceiling; a request cannot add a key,
+domain, audience, recipient, effect, or limit. Inspection shows only trust IDs
+inside the caller's federation footprint. Revocation is terminal for that trust
+ID. See [A2A federation status](a2a.md#federation-status) for signed-envelope
+admission and its intentionally inert result.
+
 ## SDKs and UI
 
 | SDK | Inspect | Publish | Intervene |
@@ -209,6 +220,13 @@ SDKs do not automatically retry management mutations.
 | TypeScript | `governance` | `publishGovernancePermit` | `interveneGovernance` |
 | Go | `Governance` | `PublishGovernancePermit` | `InterveneGovernance` |
 | Java | `governance` | `publishGovernancePermit` | `interveneGovernance` |
+
+Federation helpers are `publish_federation_trust`,
+`revoke_federation_trust`, and `import_federation_envelope` in Rust and Python;
+`publishFederationTrust`, `revokeFederationTrust`, and
+`importFederationEnvelope` in TypeScript and Java; and
+`PublishFederationTrust`, `RevokeFederationTrust`, and
+`ImportFederationEnvelope` in Go.
 
 All methods use typed models and retain HTTP refusal status. The **Governance**
 page in the Admin UI inspects a scope, issues new permits, shows route/resource
@@ -613,6 +631,7 @@ The stop response keeps these facts separate:
 {
   "task": {"id": "...", "status": {"state": "working"}},
   "future_starts_blocked": true,
+  "cancellation_confirmed": false,
   "provider_abort": {
     "state": "uncertain",
     "attempt_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479"
@@ -626,6 +645,10 @@ display `restricted_only`, `uncertain`, and `reconciled`. Attempt IDs use the
 canonical lowercase UUIDv5 representation, and proof digests use lowercase
 SHA-256 hex. Concrete provider adapters still need to qualify their external
 attempt mapping and irrevocable finality source.
+
+`cancellation_confirmed` becomes true only when the returned task is `canceled`
+because no attempt started or qualified reconciliation proved no effect. A
+durable fence with an unsupported or uncertain abort keeps it false.
 
 #### Replacing a configured service binding
 

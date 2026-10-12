@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 216 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 223 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation
@@ -23,6 +23,18 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 ## Typed governance management
 
 Use `governance`, `publish_governance_permit`, and `intervene_governance` (sync and async) to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+
+Cross-domain execution uses `publish_federation_trust`,
+`revoke_federation_trust`, `federation_capabilities`, `import_federation_envelope`, and
+`invoke_federated_agent` in both clients. The
+import helper requires a configured peer credential, correlates the returned
+scope, and accepts only a receipt with `execution_started == False`. Import
+retains signed authority without dispatching work. Invocation sends the exact
+signed intent and message, validates the returned task scope and ID, and does
+not retry automatically. Accepted source tasks use
+`export_federated_message`, `observe_federated_export`, and
+`replay_federated_export`; both sync and async clients return a typed retained
+receipt and never accept endpoint, credential, signer, permit, or timestamps. Reconciliation managers use `federation_delivery_evidence` for typed sanitized pages and `abandon_federation_delivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 
@@ -511,6 +523,17 @@ receipt = client.agent_service_send_message(
 task = client.agent_service_get_task(receipt)
 ```
 
+The same client makes real official A2A streaming calls:
+
+```python
+for frame in client.agent_service_send_streaming_message("prod", "acme", "notifier", message):
+    save_host_provenance(frame.source_context)
+    render(frame.result)
+
+for frame in client.agent_service_subscribe_task(receipt):
+    render(frame.result)
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```python
@@ -551,8 +574,9 @@ The server recovers the sealed parent, verifies the authenticated caller, and
 rechecks current permit, registry, grant, and budget state. Keep the context in
 host state and never source either header from model output.
 
-The async client exposes the same methods with `await`. Persist the frozen
-`AgentServiceReceipt` in host state when work must survive a client restart.
+The async client exposes finite methods with `await`; its streaming methods are
+async iterators used with `async for`. Persist the frozen `AgentServiceReceipt`
+in host state when work must survive a client restart.
 
 Acceptance does not prove that provider execution has completed. Read the task's
 status and artifacts through the receipt. Its source context comes only from the
@@ -574,10 +598,56 @@ The helper sends that job's original identity and source context in one request:
 
 ```python
 stopped = client.agent_service_stop_task(receipt)
-print(stopped.future_starts_blocked, stopped.provider_abort, stopped.task["status"]["state"])
+print(
+    stopped.future_starts_blocked,
+    stopped.cancellation_confirmed,
+    stopped.provider_abort,
+    stopped.task["status"]["state"],
+)
+
+official_task = client.agent_service_cancel_task(receipt)
+print(official_task["metadata"]["acteonCancellation"]["state"])
+
+page = client.agent_service_list_tasks("prod", "acme", "notifier", page_size=25)
+print(len(page.tasks), page.total_size, page.next_page_token)
+# Agent principals pass source=receipt to retain exact job isolation.
 ```
 
+Manage an official callback with an operations-management credential:
+
+```python
+from acteon_client import AgentServicePushAuthentication, AgentServicePushConfigInput
+
+push = client.agent_service_create_push_config(
+    "prod",
+    "acme",
+    "notifier",
+    receipt.task_id,
+    AgentServicePushConfigInput(
+        "https://hooks.example/a2a",
+        id="incident-hook",
+        token=callback_token,
+        authentication=AgentServicePushAuthentication("Bearer", webhook_secret),
+    ),
+    source=receipt,
+)
+configs = client.agent_service_list_push_configs(
+    "prod", "acme", "notifier", receipt.task_id, page_size=25, source=receipt
+)
+client.agent_service_delete_push_config(
+    "prod", "acme", "notifier", receipt.task_id, push.id, source=receipt
+)
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context. The async client exposes the
+same methods with `await`.
+
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellation_confirmed` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `provider_abort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

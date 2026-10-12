@@ -3,7 +3,13 @@
 use crate::{ActeonClient, Error, PermitReference, a2a::A2A_PROTOCOL_VERSION};
 use acteon_core::{ExecutionContextReference, Task, TaskMessage, TaskState};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 pub const AGENT_SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
 pub const AGENT_EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
@@ -27,12 +33,145 @@ pub struct AgentServiceReceipt {
     task_id: String,
     source_context: String,
 }
-/// Restriction acknowledgement; task status continues to reflect provider evidence.
+
+/// Filters for the official exact-agent `ListTasks` method.
+#[derive(Clone, Debug, Default)]
+pub struct AgentServiceListOptions {
+    pub context_id: Option<String>,
+    pub status: Option<TaskState>,
+    pub page_size: Option<u32>,
+    pub page_token: Option<String>,
+    pub history_length: Option<u32>,
+    pub status_timestamp_after: Option<chrono::DateTime<chrono::Utc>>,
+    pub include_artifacts: bool,
+}
+
+/// Schema-validated official A2A task page. Tasks remain protocol JSON because
+/// their schema intentionally omits Acteon's private ownership fields.
+#[derive(Clone, Debug)]
+pub struct AgentServiceTaskPage {
+    pub tasks: Vec<Value>,
+    pub next_page_token: String,
+    pub page_size: u32,
+    pub total_size: u32,
+}
+
+/// Authentication material Acteon sends with official A2A push callbacks.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentServicePushAuthentication {
+    pub scheme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<String>,
+}
+
+impl std::fmt::Debug for AgentServicePushAuthentication {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentServicePushAuthentication")
+            .field("scheme", &self.scheme)
+            .field(
+                "credentials",
+                &self.credentials.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+/// Input for one exact-agent push notification configuration.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentServicePushConfigInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<AgentServicePushAuthentication>,
+}
+
+impl std::fmt::Debug for AgentServicePushConfigInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentServicePushConfigInput")
+            .field("id", &self.id)
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("authentication", &self.authentication)
+            .finish()
+    }
+}
+
+/// Schema-validated official A2A push configuration.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentServicePushConfig {
+    pub id: String,
+    pub task_id: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<AgentServicePushAuthentication>,
+}
+
+impl std::fmt::Debug for AgentServicePushConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentServicePushConfig")
+            .field("id", &self.id)
+            .field("task_id", &self.task_id)
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("authentication", &self.authentication)
+            .finish()
+    }
+}
+
+/// One page of exact-agent push configurations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentServicePushConfigPage {
+    pub configs: Vec<AgentServicePushConfig>,
+    pub next_page_token: String,
+}
+
+/// Official A2A JSON-RPC responses received from one governed agent over SSE.
+/// The admission source context is host-owned and never appears in a frame.
+pub struct AgentServiceA2aStream {
+    inner: Pin<Box<dyn Stream<Item = Result<Value, Error>> + Send>>,
+    source_context: Option<String>,
+    request_id: Value,
+}
+
+impl AgentServiceA2aStream {
+    /// Opaque admission receipt returned by `SendStreamingMessage`.
+    #[must_use]
+    pub fn source_context(&self) -> Option<&str> {
+        self.source_context.as_deref()
+    }
+
+    /// JSON-RPC request id expected on every frame.
+    #[must_use]
+    pub fn request_id(&self) -> &Value {
+        &self.request_id
+    }
+}
+
+impl Stream for AgentServiceA2aStream {
+    type Item = Result<Value, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+/// Cancellation acknowledgement with provider finality kept separate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentServiceStopReceipt {
     pub task: Task,
     pub future_starts_blocked: bool,
+    pub cancellation_confirmed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_abort: Option<AgentServiceProviderAbort>,
 }
@@ -219,6 +358,176 @@ fn valid_progress_cursor(value: &str) -> bool {
             })
 }
 
+fn proto_task_state(state: TaskState) -> &'static str {
+    match state {
+        TaskState::Submitted => "TASK_STATE_SUBMITTED",
+        TaskState::Working => "TASK_STATE_WORKING",
+        TaskState::Completed => "TASK_STATE_COMPLETED",
+        TaskState::Failed => "TASK_STATE_FAILED",
+        TaskState::Canceled => "TASK_STATE_CANCELED",
+        TaskState::InputRequired => "TASK_STATE_INPUT_REQUIRED",
+        TaskState::AuthRequired => "TASK_STATE_AUTH_REQUIRED",
+        TaskState::Rejected => "TASK_STATE_REJECTED",
+    }
+}
+
+fn parse_agent_service_task_page(value: &Value) -> Result<AgentServiceTaskPage, Error> {
+    let object = value.as_object().ok_or_else(|| {
+        Error::Deserialization("agent service A2A task page must be an object".into())
+    })?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "tasks" | "nextPageToken" | "pageSize" | "totalSize"
+        )
+    }) {
+        return Err(Error::Deserialization(
+            "agent service A2A task page contains unknown fields".into(),
+        ));
+    }
+    let tasks = object
+        .get("tasks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Deserialization("agent service A2A tasks missing".into()))?;
+    let page_size = object
+        .get("pageSize")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| (1..=100).contains(value))
+        .ok_or_else(|| Error::Deserialization("agent service A2A pageSize invalid".into()))?;
+    let total_size = object
+        .get("totalSize")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| Error::Deserialization("agent service A2A totalSize invalid".into()))?;
+    let next_page_token = object
+        .get("nextPageToken")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() <= 8192)
+        .ok_or_else(|| Error::Deserialization("agent service A2A nextPageToken invalid".into()))?;
+    let task_count = u32::try_from(tasks.len()).map_err(|_| {
+        Error::Deserialization("agent service A2A task page counts are inconsistent".into())
+    })?;
+    if tasks.len() > page_size as usize || total_size < task_count {
+        return Err(Error::Deserialization(
+            "agent service A2A task page counts are inconsistent".into(),
+        ));
+    }
+    for task in tasks {
+        let Some(task) = task.as_object() else {
+            return Err(Error::Deserialization(
+                "agent service A2A task must be an object".into(),
+            ));
+        };
+        let id_valid = task
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+        let state_valid = task
+            .get("status")
+            .and_then(Value::as_object)
+            .and_then(|status| status.get("state"))
+            .and_then(Value::as_str)
+            .is_some_and(|state| {
+                matches!(
+                    state,
+                    "TASK_STATE_SUBMITTED"
+                        | "TASK_STATE_WORKING"
+                        | "TASK_STATE_COMPLETED"
+                        | "TASK_STATE_FAILED"
+                        | "TASK_STATE_CANCELED"
+                        | "TASK_STATE_INPUT_REQUIRED"
+                        | "TASK_STATE_AUTH_REQUIRED"
+                        | "TASK_STATE_REJECTED"
+                )
+            });
+        if !id_valid
+            || !state_valid
+            || task.contains_key("namespace")
+            || task.contains_key("tenant")
+            || task
+                .get("metadata")
+                .and_then(Value::as_object)
+                .is_some_and(|metadata| metadata.contains_key("acteon_governed_execution"))
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A task projection is invalid".into(),
+            ));
+        }
+    }
+    Ok(AgentServiceTaskPage {
+        tasks: tasks.clone(),
+        next_page_token: next_page_token.into(),
+        page_size,
+        total_size,
+    })
+}
+
+fn parse_agent_service_push_config(
+    value: &Value,
+    task_id: &str,
+    config_id: Option<&str>,
+) -> Result<AgentServicePushConfig, Error> {
+    let config: AgentServicePushConfig = serde_json::from_value(value.clone())
+        .map_err(|error| Error::Deserialization(error.to_string()))?;
+    if config.id.is_empty()
+        || config.task_id != task_id
+        || config_id.is_some_and(|expected| config.id != expected)
+        || config.url.is_empty()
+        || config
+            .authentication
+            .as_ref()
+            .is_some_and(|authentication| {
+                authentication.scheme.trim().is_empty()
+                    || authentication.scheme.len() > 256
+                    || authentication
+                        .credentials
+                        .as_ref()
+                        .is_some_and(|credentials| credentials.len() > 4096)
+            })
+        || config
+            .token
+            .as_ref()
+            .is_some_and(|token| token.len() > 4096)
+    {
+        return Err(Error::Deserialization(
+            "agent service A2A push configuration is invalid".into(),
+        ));
+    }
+    Ok(config)
+}
+
+fn parse_agent_service_push_page(
+    value: &Value,
+    task_id: &str,
+) -> Result<AgentServicePushConfigPage, Error> {
+    let object = value.as_object().ok_or_else(|| {
+        Error::Deserialization("agent service A2A push page must be an object".into())
+    })?;
+    if object.len() != 2 || !object.contains_key("configs") || !object.contains_key("nextPageToken")
+    {
+        return Err(Error::Deserialization(
+            "agent service A2A push page fields are invalid".into(),
+        ));
+    }
+    let configs = object
+        .get("configs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Deserialization("agent service A2A configs missing".into()))?
+        .iter()
+        .map(|config| parse_agent_service_push_config(config, task_id, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_page_token = object
+        .get("nextPageToken")
+        .and_then(Value::as_str)
+        .filter(|token| token.len() <= 8192)
+        .ok_or_else(|| Error::Deserialization("agent service A2A nextPageToken invalid".into()))?;
+    Ok(AgentServicePushConfigPage {
+        configs,
+        next_page_token: next_page_token.into(),
+    })
+}
+
 impl std::fmt::Debug for AgentServiceReceipt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentServiceReceipt")
@@ -287,6 +596,120 @@ async fn response_task(response: reqwest::Response) -> Result<Task, Error> {
         .json()
         .await
         .map_err(|e| Error::Deserialization(e.to_string()))
+}
+
+fn parse_agent_a2a_result(data: &str, request_id: &Value) -> Result<Value, Error> {
+    let response: Value = serde_json::from_str(data)
+        .map_err(|error| Error::Deserialization(format!("invalid A2A SSE frame: {error}")))?;
+    if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || response.get("id") != Some(request_id)
+    {
+        return Err(Error::Deserialization(
+            "A2A SSE frame request identity mismatch".into(),
+        ));
+    }
+    if let Some(error) = response.get("error") {
+        return Err(Error::Api {
+            code: error
+                .get("code")
+                .map_or_else(|| "A2A".into(), Value::to_string),
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("A2A stream error")
+                .into(),
+            retryable: false,
+        });
+    }
+    response
+        .get("result")
+        .filter(|result| result.is_object())
+        .cloned()
+        .ok_or_else(|| Error::Deserialization("A2A SSE frame has no object result".into()))
+}
+
+async fn agent_a2a_stream_response(
+    response: reqwest::Response,
+    request_id: Value,
+    require_source: bool,
+) -> Result<AgentServiceA2aStream, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Http {
+            status: response.status().as_u16(),
+            message: response
+                .text()
+                .await
+                .map_err(|error| Error::Connection(error.to_string()))?,
+        });
+    }
+    if response
+        .headers()
+        .get("a2a-version")
+        .and_then(|value| value.to_str().ok())
+        != Some(A2A_PROTOCOL_VERSION)
+    {
+        return Err(Error::Deserialization(
+            "agent service A2A stream version missing or unsupported".into(),
+        ));
+    }
+    let source_context = if require_source {
+        response
+            .headers()
+            .get(AGENT_SOURCE_CONTEXT_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    if require_source && !source_context.as_deref().is_some_and(valid_source) {
+        return Err(Error::Deserialization(
+            "agent service admission source context missing or malformed".into(),
+        ));
+    }
+    if !response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"))
+    {
+        return Err(Error::Deserialization(
+            response
+                .text()
+                .await
+                .unwrap_or_else(|_| "agent service did not return an A2A SSE stream".into()),
+        ));
+    }
+    let expected = request_id.clone();
+    let parsed = crate::stream::sse_envelope_stream(response).filter_map(move |envelope| {
+        let expected = expected.clone();
+        async move {
+            match envelope {
+                Ok(crate::stream::SseEnvelope::Frame(frame)) => {
+                    if frame.data.len() > 2 * 1024 * 1024 {
+                        Some(Err(Error::Deserialization(
+                            "A2A SSE frame exceeds 2 MiB".into(),
+                        )))
+                    } else {
+                        Some(parse_agent_a2a_result(&frame.data, &expected))
+                    }
+                }
+                Ok(crate::stream::SseEnvelope::KeepAlive) => None,
+                Err(error) => Some(Err(error)),
+            }
+        }
+    });
+    let inner = parsed.scan(false, |terminated, item| {
+        let output = if *terminated { None } else { Some(item) };
+        if output.as_ref().is_some_and(Result::is_err) {
+            *terminated = true;
+        }
+        futures::future::ready(output)
+    });
+    Ok(AgentServiceA2aStream {
+        inner: Box::pin(inner),
+        source_context,
+        request_id,
+    })
 }
 async fn peer_response(
     response: reqwest::Response,
@@ -936,6 +1359,498 @@ impl ActeonClient {
             .await
     }
 
+    /// Invoke one exact governed agent through official A2A streaming.
+    /// The returned source context is host provenance and must be retained
+    /// outside prompts if the caller will later observe or continue the Task.
+    pub async fn agent_service_send_streaming_message(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        self.agent_service_send_streaming_message_inner(namespace, tenant, agent, message, None)
+            .await
+    }
+
+    /// Stream a bounded descendant invocation under a verified parent context.
+    pub async fn agent_service_send_streaming_message_with_parent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+        parent: AgentServiceParent<'_>,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        self.agent_service_send_streaming_message_inner(
+            namespace,
+            tenant,
+            agent,
+            message,
+            Some(parent),
+        )
+        .await
+    }
+
+    async fn agent_service_send_streaming_message_inner(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+        parent: Option<AgentServiceParent<'_>>,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(namespace)?,
+            segment(tenant)?,
+            segment(agent)?
+        );
+        let request_id = serde_json::json!(format!("stream:{}", message.message_id));
+        let mut request = self
+            .add_auth(self.stream_client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        if let Some(parent) = parent {
+            if parent.permits.is_empty() {
+                return Err(Error::Configuration(
+                    "delegated agent service invocation requires permits".into(),
+                ));
+            }
+            let context = serde_json::to_vec(parent.execution_context)
+                .map_err(|error| Error::Configuration(error.to_string()))?;
+            request = request
+                .header(
+                    AGENT_EXECUTION_CONTEXT_HEADER,
+                    URL_SAFE_NO_PAD.encode(context),
+                )
+                .header(
+                    EXECUTION_PERMITS_HEADER,
+                    serde_json::to_string(parent.permits)
+                        .map_err(|error| Error::Configuration(error.to_string()))?,
+                );
+        }
+        let response = request
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"SendStreamingMessage", "params":{"message":message}
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        agent_a2a_stream_response(response, request_id, true).await
+    }
+
+    /// Subscribe to one retained governed Task through official A2A SSE.
+    pub async fn agent_service_subscribe_task(
+        &self,
+        receipt: &AgentServiceReceipt,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?
+        );
+        let request_id = serde_json::json!(format!("subscribe:{}", receipt.task_id));
+        let response = self
+            .add_auth(self.stream_client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"SubscribeToTask", "params":{"id":receipt.task_id}
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        agent_a2a_stream_response(response, request_id, false).await
+    }
+
+    /// Request cancellation through the official exact-agent A2A method.
+    /// A returned nonterminal Task means the durable fence is active while
+    /// provider finality remains pending; inspect `metadata.acteonCancellation`.
+    pub async fn agent_service_cancel_task(
+        &self,
+        receipt: &AgentServiceReceipt,
+    ) -> Result<Value, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?
+        );
+        let request_id = serde_json::json!(format!("cancel:{}", receipt.task_id));
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"CancelTask", "params":{"id":receipt.task_id}
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|error| Error::Connection(error.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A response version missing or unsupported".into(),
+            ));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        let task = parse_agent_a2a_result(&body, &request_id)?;
+        if task.get("id").and_then(Value::as_str) != Some(receipt.task_id.as_str())
+            || !task.get("status").is_some_and(Value::is_object)
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A cancellation task identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
+
+    /// List Tasks owned by the current authenticated source for one exact
+    /// governed agent. Supplying a receipt narrows visibility to that job and
+    /// is required when the authenticated principal is itself an agent.
+    pub async fn agent_service_list_tasks(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        options: &AgentServiceListOptions,
+        source: Option<&AgentServiceReceipt>,
+    ) -> Result<AgentServiceTaskPage, Error> {
+        if options
+            .page_size
+            .is_some_and(|value| !(1..=100).contains(&value))
+            || options
+                .page_token
+                .as_ref()
+                .is_some_and(|value| value.len() > 8192)
+        {
+            return Err(Error::Configuration(
+                "invalid agent service ListTasks pagination".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(namespace)?,
+            segment(tenant)?,
+            segment(agent)?
+        );
+        let mut request = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION);
+        if let Some(source) = source {
+            if source.namespace != namespace
+                || source.tenant != tenant
+                || source.agent != agent
+                || !valid_source(&source.source_context)
+            {
+                return Err(Error::Configuration(
+                    "agent service ListTasks receipt does not match the route".into(),
+                ));
+            }
+            request = request.header(AGENT_SOURCE_CONTEXT_HEADER, &source.source_context);
+        }
+        let request_id = serde_json::json!(format!("list:{agent}"));
+        let mut params = serde_json::Map::new();
+        if let Some(context_id) = &options.context_id {
+            params.insert("contextId".into(), Value::String(context_id.clone()));
+        }
+        if let Some(status) = options.status {
+            params.insert(
+                "status".into(),
+                Value::String(proto_task_state(status).into()),
+            );
+        }
+        if let Some(page_size) = options.page_size {
+            params.insert("pageSize".into(), Value::from(page_size));
+        }
+        if let Some(page_token) = &options.page_token {
+            params.insert("pageToken".into(), Value::String(page_token.clone()));
+        }
+        if let Some(history_length) = options.history_length {
+            if history_length > i32::MAX as u32 {
+                return Err(Error::Configuration(
+                    "historyLength must fit a signed 32-bit integer".into(),
+                ));
+            }
+            params.insert("historyLength".into(), Value::from(history_length));
+        }
+        if let Some(after) = options.status_timestamp_after {
+            params.insert("statusTimestampAfter".into(), serde_json::json!(after));
+        }
+        if options.include_artifacts {
+            params.insert("includeArtifacts".into(), Value::Bool(true));
+        }
+        let response = request
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"ListTasks", "params":params
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|error| Error::Connection(error.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A response version missing or unsupported".into(),
+            ));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        parse_agent_service_task_page(&parse_agent_a2a_result(&body, &request_id)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn agent_service_push_rpc(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        method: &str,
+        params: Value,
+        source: Option<&AgentServiceReceipt>,
+    ) -> Result<Value, Error> {
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(namespace)?,
+            segment(tenant)?,
+            segment(agent)?
+        );
+        let mut request = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION);
+        if let Some(source) = source {
+            if source.namespace != namespace
+                || source.tenant != tenant
+                || source.agent != agent
+                || source.task_id != task_id
+                || !valid_source(&source.source_context)
+            {
+                return Err(Error::Configuration(
+                    "agent service push receipt does not match the route or task".into(),
+                ));
+            }
+            request = request.header(AGENT_SOURCE_CONTEXT_HEADER, &source.source_context);
+        }
+        let request_id = serde_json::json!(format!("push:{method}:{task_id}"));
+        let response = request
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id, "method":method, "params":params
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|error| Error::Connection(error.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent service A2A response version missing or unsupported".into(),
+            ));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        parse_agent_a2a_result(&body, &request_id)
+    }
+
+    /// Create or update one official A2A push configuration. The configured
+    /// credential must have operations-management authority.
+    pub async fn agent_service_create_push_config(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        input: &AgentServicePushConfigInput,
+        source: Option<&AgentServiceReceipt>,
+    ) -> Result<AgentServicePushConfig, Error> {
+        if task_id.is_empty()
+            || input.url.is_empty()
+            || input.token.as_ref().is_some_and(|token| token.len() > 4096)
+            || input.authentication.as_ref().is_some_and(|authentication| {
+                authentication.scheme.trim().is_empty()
+                    || authentication.scheme.len() > 256
+                    || authentication
+                        .credentials
+                        .as_ref()
+                        .is_some_and(|credentials| credentials.len() > 4096)
+            })
+        {
+            return Err(Error::Configuration(
+                "agent service push configuration is invalid".into(),
+            ));
+        }
+        let mut params =
+            serde_json::to_value(input).map_err(|error| Error::Configuration(error.to_string()))?;
+        params["taskId"] = Value::String(task_id.into());
+        let result = self
+            .agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "CreateTaskPushNotificationConfig",
+                params,
+                source,
+            )
+            .await?;
+        parse_agent_service_push_config(&result, task_id, input.id.as_deref())
+    }
+
+    /// Read one exact-agent push configuration, including its secret material.
+    pub async fn agent_service_get_push_config(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        config_id: &str,
+        source: Option<&AgentServiceReceipt>,
+    ) -> Result<AgentServicePushConfig, Error> {
+        let result = self
+            .agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "GetTaskPushNotificationConfig",
+                serde_json::json!({"taskId":task_id,"id":config_id}),
+                source,
+            )
+            .await?;
+        parse_agent_service_push_config(&result, task_id, Some(config_id))
+    }
+
+    /// List exact-agent push configurations under the original task authority.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn agent_service_list_push_configs(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        page_size: Option<u32>,
+        page_token: Option<&str>,
+        source: Option<&AgentServiceReceipt>,
+    ) -> Result<AgentServicePushConfigPage, Error> {
+        if page_size.is_some_and(|size| !(1..=100).contains(&size))
+            || page_token.is_some_and(|token| token.len() > 8192)
+        {
+            return Err(Error::Configuration(
+                "invalid agent service push pagination".into(),
+            ));
+        }
+        let mut params = serde_json::json!({"taskId":task_id});
+        if let Some(size) = page_size {
+            params["pageSize"] = Value::from(size);
+        }
+        if let Some(token) = page_token {
+            params["pageToken"] = Value::String(token.into());
+        }
+        let result = self
+            .agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "ListTaskPushNotificationConfigs",
+                params,
+                source,
+            )
+            .await?;
+        parse_agent_service_push_page(&result, task_id)
+    }
+
+    /// Delete one exact-agent push configuration. Repeating a successful
+    /// delete is idempotent at the protocol boundary.
+    pub async fn agent_service_delete_push_config(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        config_id: &str,
+        source: Option<&AgentServiceReceipt>,
+    ) -> Result<(), Error> {
+        let result = self
+            .agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "DeleteTaskPushNotificationConfig",
+                serde_json::json!({"taskId":task_id,"id":config_id}),
+                source,
+            )
+            .await?;
+        if result.as_object().is_none_or(|object| !object.is_empty()) {
+            return Err(Error::Deserialization(
+                "agent service A2A delete result is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn agent_service_send_message_inner(
         &self,
         namespace: &str,
@@ -1049,6 +1964,8 @@ impl ActeonClient {
             .await
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         if !stopped.future_starts_blocked
+            || (stopped.cancellation_confirmed
+                && stopped.task.status.state != acteon_core::TaskState::Canceled)
             || stopped
                 .provider_abort
                 .as_ref()
@@ -1226,9 +2143,80 @@ mod tests {
                         .contains_key(AGENT_EXECUTION_CONTEXT_HEADER);
                     let has_execution_permits =
                         request.headers().contains_key(EXECUTION_PERMITS_HEADER);
+                    let accept = request
+                        .headers()
+                        .get("accept")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
                     let raw = to_bytes(request.into_body(), 2 * 1024 * 1024)
                         .await
                         .unwrap();
+                    if path == "/a2a/prod/acme/agents/notifier" {
+                        let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                        let method = body["method"].as_str().unwrap();
+                        if method == "ListTasks" {
+                            assert_eq!(
+                                source.as_deref(),
+                                wire["jobs"][0]["source_context"].as_str()
+                            );
+                            assert_eq!(body["params"]["pageSize"], 1);
+                            assert_eq!(body["params"]["status"], "TASK_STATE_SUBMITTED");
+                            assert_ne!(accept.as_deref(), Some("text/event-stream"));
+                            let mut response = Json(serde_json::json!({
+                                "jsonrpc":"2.0", "id":body["id"],
+                                "result":{
+                                    "tasks":[{"id":"job-1","status":{"state":"TASK_STATE_SUBMITTED"}}],
+                                    "nextPageToken":"next-1","pageSize":1,"totalSize":2
+                                }
+                            }))
+                            .into_response();
+                            response
+                                .headers_mut()
+                                .insert("a2a-version", "1.0".parse().unwrap());
+                            return response;
+                        }
+                        if method == "CancelTask" {
+                            assert_eq!(source.as_deref(), wire["jobs"][0]["source_context"].as_str());
+                            assert_eq!(body["params"]["id"], "job-1");
+                            assert_ne!(accept.as_deref(), Some("text/event-stream"));
+                            let mut response = Json(serde_json::json!({
+                                "jsonrpc":"2.0", "id":body["id"],
+                                "result":{"id":"job-1","status":{"state":"TASK_STATE_CANCELED"},
+                                    "metadata":{"acteonCancellation":{"state":"confirmed","futureStartsBlocked":true}}}
+                            })).into_response();
+                            response.headers_mut().insert("a2a-version", "1.0".parse().unwrap());
+                            return response;
+                        }
+                        assert_eq!(accept.as_deref(), Some("text/event-stream"));
+                        assert!(matches!(method, "SendStreamingMessage" | "SubscribeToTask"));
+                        if method == "SubscribeToTask" {
+                            assert_eq!(
+                                source.as_deref(),
+                                wire["jobs"][0]["source_context"].as_str()
+                            );
+                            assert_eq!(body["params"]["id"], "job-1");
+                        }
+                        let data = serde_json::json!({
+                            "jsonrpc":"2.0", "id":body["id"],
+                            "result":{"task":{"id":"job-1","status":{"state":"TASK_STATE_SUBMITTED"}}}
+                        });
+                        let mut response = (
+                            [("content-type", "text/event-stream"), ("a2a-version", "1.0")],
+                            format!(": ping\n\ndata: {data}\n\n"),
+                        )
+                            .into_response();
+                        if method == "SendStreamingMessage" {
+                            response.headers_mut().insert(
+                                AGENT_SOURCE_CONTEXT_HEADER,
+                                wire["jobs"][0]["source_context"]
+                                    .as_str()
+                                    .unwrap()
+                                    .parse()
+                                    .unwrap(),
+                            );
+                        }
+                        return response;
+                    }
                     if !path.contains("/peers/")
                         && (path.ends_with("/authorization:request")
                             || path.ends_with("/authorization:resolve"))
@@ -1358,6 +2346,152 @@ mod tests {
                 server,
             }
         }
+    }
+    #[tokio::test]
+    async fn official_agent_streams_preserve_request_identity_and_source_out_of_band() {
+        let fixture = Fixture::new().await;
+        let message = TaskMessage::text("m1", acteon_core::TaskRole::User, "one");
+        let mut sent = fixture
+            .client
+            .agent_service_send_streaming_message("prod", "acme", "notifier", &message)
+            .await
+            .unwrap();
+        assert!(sent.source_context().is_some_and(valid_source));
+        assert_eq!(sent.next().await.unwrap().unwrap()["task"]["id"], "job-1");
+
+        let receipt = fixture
+            .client
+            .agent_service_send_message("prod", "acme", "notifier", &message)
+            .await
+            .unwrap();
+        let mut subscribed = fixture
+            .client
+            .agent_service_subscribe_task(&receipt)
+            .await
+            .unwrap();
+        assert!(subscribed.source_context().is_none());
+        assert_eq!(
+            subscribed.next().await.unwrap().unwrap()["task"]["id"],
+            "job-1"
+        );
+        let canceled = fixture
+            .client
+            .agent_service_cancel_task(&receipt)
+            .await
+            .unwrap();
+        assert_eq!(canceled["id"], "job-1");
+        assert_eq!(
+            canceled["metadata"]["acteonCancellation"]["state"],
+            "confirmed"
+        );
+        let page = fixture
+            .client
+            .agent_service_list_tasks(
+                "prod",
+                "acme",
+                "notifier",
+                &AgentServiceListOptions {
+                    status: Some(TaskState::Submitted),
+                    page_size: Some(1),
+                    ..AgentServiceListOptions::default()
+                },
+                Some(&receipt),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.tasks[0]["id"], "job-1");
+        assert_eq!(page.next_page_token, "next-1");
+        assert_eq!(page.total_size, 2);
+        assert!(
+            fixture
+                .calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .ends_with("/agents/notifier")
+        );
+    }
+
+    #[test]
+    fn official_agent_stream_frames_require_exact_identity_and_object_results() {
+        let request_id = serde_json::json!("stream:m1");
+        let result = parse_agent_a2a_result(
+            r#"{"jsonrpc":"2.0","id":"stream:m1","result":{"task":{"id":"job-1"}}}"#,
+            &request_id,
+        )
+        .unwrap();
+        assert_eq!(result["task"]["id"], "job-1");
+        assert!(
+            parse_agent_a2a_result(r#"{"jsonrpc":"2.0","id":"other","result":{}}"#, &request_id,)
+                .is_err()
+        );
+        assert!(
+            parse_agent_a2a_result(
+                r#"{"jsonrpc":"2.0","id":"stream:m1","result":"unsafe"}"#,
+                &request_id,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn official_agent_task_pages_reject_private_or_inconsistent_results() {
+        let valid = parse_agent_service_task_page(&serde_json::json!({
+            "tasks":[{"id":"job-1","status":{"state":"TASK_STATE_WORKING"}}],
+            "nextPageToken":"", "pageSize":50, "totalSize":1
+        }))
+        .unwrap();
+        assert_eq!(valid.total_size, 1);
+        assert!(
+            parse_agent_service_task_page(&serde_json::json!({
+                "tasks":[{"id":"job-1","status":{},"namespace":"private"}],
+                "nextPageToken":"", "pageSize":50, "totalSize":1
+            }))
+            .is_err()
+        );
+        assert!(
+            parse_agent_service_task_page(&serde_json::json!({
+                "tasks":[{"id":"job-1","status":{}}],
+                "nextPageToken":"", "pageSize":1, "totalSize":0
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn official_agent_push_pages_are_schema_and_task_bound() {
+        let page = parse_agent_service_push_page(
+            &serde_json::json!({
+                "configs":[{"id":"cfg-1","taskId":"job-1","url":"https://hooks.example/a2a",
+                    "authentication":{"scheme":"Bearer","credentials":"secret"}}],
+                "nextPageToken":""
+            }),
+            "job-1",
+        )
+        .unwrap();
+        assert_eq!(page.configs[0].id, "cfg-1");
+        let rendered = format!("{:?}", page.configs[0]);
+        assert!(!rendered.contains("secret"));
+        assert!(rendered.contains("<redacted>"));
+        assert!(
+            parse_agent_service_push_page(
+                &serde_json::json!({
+                    "configs":[{"id":"cfg-1","taskId":"other","url":"https://hooks.example/a2a"}],
+                    "nextPageToken":""
+                }),
+                "job-1",
+            )
+            .is_err()
+        );
+        assert!(
+            parse_agent_service_push_page(
+                &serde_json::json!({"configs":[],"nextPageToken":"","private":true}),
+                "job-1",
+            )
+            .is_err()
+        );
     }
     #[tokio::test]
     async fn peer_tool_sends_only_message_and_validates_durable_receipt() {

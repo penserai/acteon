@@ -2,7 +2,18 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **216 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **223 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. Together with seven streaming or polymorphic routes, the checked cross-language contract covers 230 logical operations. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation capability negotiation, admission and agent dispatch, and operator APIs. Streaming routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+
+All five SDKs also expose typed federation delivery evidence pages. The helper
+accepts namespace, tenant, optional delivery cursor and page size, and preserves
+the server's sanitized lifecycle status without exposing retained messages or
+signed authority payloads. Each SDK also exposes a typed abandonment request for
+an ambiguous delivery. It records the operator, authority generation, reason and
+idempotency ID while making no claim about the peer outcome.
+They also expose typed peer-finality correlation and acceptance. The acceptance
+request carries only opaque proof bytes. A deployment-installed verifier binds
+those bytes to the retained signed delivery; SDK callers cannot select a
+verifier, key, result, task, receipt, or remote endpoint.
 
 ## Choose the right interface
 
@@ -13,6 +24,8 @@ The current source tree provides a generated catalog for **216 finite HTTP opera
 | Native streaming and A2A helpers | Yes | Yes | Yes | Yes | Yes |
 | Authenticated agent-service receipts, input continuation, local and remote verifier-backed authorization, and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Governed registry inspection, mutation and explicit recovery | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Typed federation trust, inert import and signed agent invocation | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Delivery evidence, operator abandonment and qualified peer finality | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
 
@@ -141,6 +154,28 @@ send. Python exposes `outcome.pending`, Node `outcome.pending`, Go
 
 All five SDKs expose native typed scope inspection, permit publication, and intervention methods. See [governance management](../features/governance.md) for method names and authority requirements. The shared governance fixture checks request bodies, authentication, typed responses, and HTTP refusal preservation; actual authority enforcement is tested separately against the server and configured state backend.
 
+### Federation trust, admission and governed export
+
+All five SDKs expose typed trust publication, terminal trust revocation and
+signed capability-card retrieval and signed-envelope import. Imports return `FederationImportReceipt` and require
+`execution_started` to be false. The SDKs also correlate the receipt namespace
+and tenant with the requested path before returning it. Signed destination
+invocation and the three source export lifecycle operations are also typed.
+
+| SDK | Capability card | Import | Invoke | Export / observe / replay |
+|---|---|---|---|---|
+| Rust | `federation_capabilities` | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
+| Python, sync/async | `federation_capabilities` | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
+| TypeScript | `federationCapabilities` | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
+| Go | `FederationCapabilities` | `ImportFederationEnvelope` | `InvokeFederatedAgent` | `ExportFederatedMessage` / `ObserveFederatedExport` / `ReplayFederatedExport` |
+| Java | `federationCapabilities` | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
+
+The generated catalog verifies the exact methods, paths and parameter names for
+all federation routes. The public request types describe proposed data; authentication
+and deployment-owned ceilings establish authority. Import admission retains a
+bounded signed assertion and does not dispatch local work. See [federation
+status](../features/a2a.md#federation-status).
+
 ## Governed registry metadata
 
 Every SDK has typed helpers for an exact agent/card projection and its versioned
@@ -203,15 +238,43 @@ Individual governed services expose `POST
 service and the requester's original private authentication; a registry card
 alone does not install a runtime or authorize an invocation.
 
-All five SDKs expose native acceptance and observation helpers:
+All five SDKs expose native finite and streaming helpers:
 
-| SDK | Accept message | Accept governed child | Observe retained receipt |
-| --- | --- | --- | --- |
-| Rust | `agent_service_send_message` | `agent_service_send_message_with_parent` | `agent_service_get_task` |
-| Python, sync/async | `agent_service_send_message` | `parent=AgentServiceParent(...)` | `agent_service_get_task` |
-| TypeScript | `agentServiceSendMessage` | `parent: AgentServiceParentOptions` | `agentServiceGetTask` |
-| Go | `AgentServiceSendMessage` | `AgentServiceSendMessageWithParent` | `AgentServiceGetTask` |
-| Java | `agentServiceSendMessage` | overload with `AgentServiceParent` | `agentServiceGetTask` |
+| SDK | Accept message | Stream exact agent | Subscribe retained Task | Observe receipt |
+| --- | --- | --- | --- | --- |
+| Rust | `agent_service_send_message` | `agent_service_send_streaming_message` | `agent_service_subscribe_task` | `agent_service_get_task` |
+| Python, sync/async | `agent_service_send_message` | `agent_service_send_streaming_message` | `agent_service_subscribe_task` | `agent_service_get_task` |
+| TypeScript | `agentServiceSendMessage` | `agentServiceSendStreamingMessage` | `agentServiceSubscribeTask` | `agentServiceGetTask` |
+| Go | `AgentServiceSendMessage` | `AgentServiceSendStreamingMessage` | `AgentServiceSubscribeTask` | `AgentServiceGetTask` |
+| Java | `agentServiceSendMessage` | `agentServiceSendStreamingMessage` | `agentServiceSubscribeTask` | `agentServiceGetTask` |
+
+They also expose schema-validated official task listing:
+
+| SDK | Exact-agent `ListTasks` helper |
+| --- | --- |
+| Rust | `agent_service_list_tasks(namespace, tenant, agent, options, source)` |
+| Python sync/async | `agent_service_list_tasks(namespace, tenant, agent, ...)` |
+| TypeScript | `agentServiceListTasks(namespace, tenant, agent, options)` |
+| Go | `AgentServiceListTasks(ctx, namespace, tenant, agent, options)` |
+| Java | `agentServiceListTasks(namespace, tenant, agent, options)` |
+
+The typed page requires `tasks`, `nextPageToken`, `pageSize`, and `totalSize`,
+rejects private execution or ownership fields, and preserves protocol Tasks as
+their schema-closed A2A projection. A source receipt narrows the query to its
+job and is required for agent principals. The browser agent panel provides the
+same paginated history view for current human source authority.
+
+The streaming helpers call the official exact-agent JSON-RPC endpoint and yield
+the `result` object from each validated `StreamResponse`. They require protocol
+version 1.0, `text/event-stream`, and the original JSON-RPC request identity on
+every frame. The streaming-send return value also keeps the admission source
+context outside the protocol result. Subscribe helpers send the retained source
+receipt from host state. Default streaming transports have no total request
+deadline; cancellation or closing the iterator releases the connection.
+
+Governed-child streaming uses `agent_service_send_streaming_message_with_parent`
+in Rust and Go, and the existing optional `parent` argument or overload in
+Python, TypeScript, and Java.
 
 The returned receipt retains the `x-acteon-agent-source-context` response header
 separately from task data and binds it to the original namespace, tenant, agent,
@@ -339,18 +402,37 @@ context when invoking this control.
 | Go | `AgentServiceStopTask(ctx, receipt)` | `AgentServiceStopReceipt` |
 | Java | `agentServiceStopTask(receipt)` | `AgentServiceStopReceipt` |
 
+The official exact-agent A2A endpoint is also available through receipt-aware
+cancel helpers:
+
+| SDK | Official `CancelTask` helper |
+| --- | --- |
+| Rust | `agent_service_cancel_task(&receipt)` |
+| Python sync/async | `agent_service_cancel_task(receipt)` |
+| TypeScript | `agentServiceCancelTask(receipt)` |
+| Go | `AgentServiceCancelTask(ctx, receipt)` |
+| Java | `agentServiceCancelTask(receipt)` |
+
 All helpers send one request, validate the original task identity and exact
 restriction acknowledgement, and reject redirects. The agent detail view provides
 **Stop future starts** for each locally retained job. A failed acknowledgement
 keeps that job available for an explicit retry; a successful acknowledgement
 keeps the restriction visible alongside later provider results.
 
-A successful response is `{"task": ..., "future_starts_blocked": true,
+A successful native response is `{"task": ..., "future_starts_blocked": true,
+"cancellation_confirmed": boolean,
 "provider_abort": ...}`. `provider_abort` is optional and has one typed state:
 `restricted_only`, `uncertain` with the stable provider attempt ID, or
 `reconciled` with the accepted finality-proof digest. Every SDK validates this
 shape, including the canonical lowercase UUIDv5 attempt ID and lowercase
 SHA-256 proof digest. The browser explains the same distinction beside the task.
+
+`cancellation_confirmed=true` requires a `canceled` Task. It means either no
+provider attempt existed before the fence or qualified provider evidence proved
+no effect. `false` means cancellation was requested and future starts are blocked,
+while an existing provider effect still has an unsupported, uncertain, or known
+non-canceled outcome. Official `CancelTask` exposes the same distinction under
+`metadata.acteonCancellation` without adding a nonstandard Task state.
 
 The restriction blocks future starts in the recipient execution subtree and survives
 restart. It leaves the task's status and artifacts tied to actual provider

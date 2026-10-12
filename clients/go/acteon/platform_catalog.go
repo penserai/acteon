@@ -9,6 +9,7 @@ const (
 	OpA2aA2aRestTaskGet PlatformOperation = "a2a_a2a_rest_task_get"
 	OpA2aDiscoveryDeleteAgentCard PlatformOperation = "a2a_discovery_delete_agent_card"
 	OpA2aDiscoveryDiscoverAgent PlatformOperation = "a2a_discovery_discover_agent"
+	OpA2aDiscoveryDiscoverAgentV1 PlatformOperation = "a2a_discovery_discover_agent_v1"
 	OpA2aDiscoveryGetAgentCard PlatformOperation = "a2a_discovery_get_agent_card"
 	OpA2aDiscoveryPutAgentCard PlatformOperation = "a2a_discovery_put_agent_card"
 	OpA2aPushRestDeletePushConfig PlatformOperation = "a2a_push_rest_delete_push_config"
@@ -126,14 +127,26 @@ const (
 	OpExecutionsResetExecution PlatformOperation = "executions_reset_execution"
 	OpExecutionsSignalExecution PlatformOperation = "executions_signal_execution"
 	OpExecutionsUpsertExecutionAttributes PlatformOperation = "executions_upsert_execution_attributes"
+	OpFederationCapabilities PlatformOperation = "federation_capabilities"
+	OpFederationExportMessage PlatformOperation = "federation_export_message"
+	OpFederationImportEnvelope PlatformOperation = "federation_import_envelope"
+	OpFederationInvokeAgent PlatformOperation = "federation_invoke_agent"
+	OpFederationObserveExportMessage PlatformOperation = "federation_observe_export_message"
+	OpFederationReplayExportMessage PlatformOperation = "federation_replay_export_message"
+	OpGovernanceAbandonFederationDelivery PlatformOperation = "governance_abandon_federation_delivery"
 	OpGovernanceAcceptReconciliation PlatformOperation = "governance_accept_reconciliation"
+	OpGovernanceFederationDeliveryEvidence PlatformOperation = "governance_federation_delivery_evidence"
+	OpGovernanceFederationFinalityCorrelation PlatformOperation = "governance_federation_finality_correlation"
 	OpGovernanceInspect PlatformOperation = "governance_inspect"
 	OpGovernanceIntervene PlatformOperation = "governance_intervene"
 	OpGovernanceMutateRegistry PlatformOperation = "governance_mutate_registry"
 	OpGovernanceProviderHistory PlatformOperation = "governance_provider_history"
+	OpGovernancePublishFederationTrust PlatformOperation = "governance_publish_federation_trust"
 	OpGovernancePublishPermit PlatformOperation = "governance_publish_permit"
+	OpGovernanceReconcileFederationDelivery PlatformOperation = "governance_reconcile_federation_delivery"
 	OpGovernanceReconciliationCorrelation PlatformOperation = "governance_reconciliation_correlation"
 	OpGovernanceRegistryProjection PlatformOperation = "governance_registry_projection"
+	OpGovernanceRevokeFederationTrust PlatformOperation = "governance_revoke_federation_trust"
 	OpGroupsFlushGroup PlatformOperation = "groups_flush_group"
 	OpGroupsGetGroup PlatformOperation = "groups_get_group"
 	OpGroupsListGroups PlatformOperation = "groups_list_groups"
@@ -222,6 +235,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpA2aA2aRestTaskGet: {"GET", "/a2a/{namespace}/{tenant}/v1/tasks/{id}", []string{"namespace", "tenant", "id"}, false},
 	OpA2aDiscoveryDeleteAgentCard: {"DELETE", "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card", []string{"namespace", "tenant", "agent_id"}, false},
 	OpA2aDiscoveryDiscoverAgent: {"GET", "/a2a/{namespace}/{tenant}/.well-known/agent.json", []string{"namespace", "tenant"}, false},
+	OpA2aDiscoveryDiscoverAgentV1: {"GET", "/a2a/{namespace}/{tenant}/.well-known/agent-card.json", []string{"namespace", "tenant"}, false},
 	OpA2aDiscoveryGetAgentCard: {"GET", "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card", []string{"namespace", "tenant", "agent_id"}, false},
 	OpA2aDiscoveryPutAgentCard: {"PUT", "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card", []string{"namespace", "tenant", "agent_id"}, false},
 	OpA2aPushRestDeletePushConfig: {"DELETE", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}", []string{"namespace", "tenant", "id", "cfgId"}, false},
@@ -339,14 +353,26 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpExecutionsResetExecution: {"POST", "/v1/executions/{execution_id}/reset", []string{"execution_id"}, false},
 	OpExecutionsSignalExecution: {"POST", "/v1/executions/{execution_id}/signal/{signal_name}", []string{"execution_id", "signal_name"}, false},
 	OpExecutionsUpsertExecutionAttributes: {"PUT", "/v1/executions/{execution_id}/attributes", []string{"execution_id"}, false},
+	OpFederationCapabilities: {"GET", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities", []string{"namespace", "tenant", "agent"}, false},
+	OpFederationExportMessage: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send", []string{"namespace", "tenant", "agent", "task_id", "profile"}, false},
+	OpFederationImportEnvelope: {"POST", "/a2a/{namespace}/{tenant}/federation/envelopes:import", []string{"namespace", "tenant"}, false},
+	OpFederationInvokeAgent: {"POST", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
+	OpFederationObserveExportMessage: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe", []string{"namespace", "tenant", "agent", "task_id", "profile"}, false},
+	OpFederationReplayExportMessage: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay", []string{"namespace", "tenant", "agent", "task_id", "profile"}, false},
+	OpGovernanceAbandonFederationDelivery: {"POST", "/v1/governance/federation/deliveries/{delivery_id}:abandon", []string{"delivery_id"}, false},
 	OpGovernanceAcceptReconciliation: {"POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", []string{"execution_id", "ordinal"}, false},
+	OpGovernanceFederationDeliveryEvidence: {"GET", "/v1/governance/federation/deliveries", []string{}, false},
+	OpGovernanceFederationFinalityCorrelation: {"GET", "/v1/governance/federation/deliveries/{delivery_id}/correlation", []string{"delivery_id"}, false},
 	OpGovernanceInspect: {"GET", "/v1/governance", []string{}, false},
 	OpGovernanceIntervene: {"POST", "/v1/governance/changes", []string{}, false},
 	OpGovernanceMutateRegistry: {"POST", "/v1/governance/registry", []string{}, false},
 	OpGovernanceProviderHistory: {"GET", "/v1/governance/executions/{execution_id}", []string{"execution_id"}, false},
+	OpGovernancePublishFederationTrust: {"POST", "/v1/governance/federation/trusts", []string{}, false},
 	OpGovernancePublishPermit: {"POST", "/v1/governance/permits", []string{}, false},
+	OpGovernanceReconcileFederationDelivery: {"POST", "/v1/governance/federation/deliveries/{delivery_id}:reconcile", []string{"delivery_id"}, false},
 	OpGovernanceReconciliationCorrelation: {"GET", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceRegistryProjection: {"GET", "/v1/governance/registry/{agent_id}", []string{"agent_id"}, false},
+	OpGovernanceRevokeFederationTrust: {"POST", "/v1/governance/federation/trusts/revoke", []string{}, false},
 	OpGroupsFlushGroup: {"DELETE", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsGetGroup: {"GET", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsListGroups: {"GET", "/v1/groups", []string{}, false},

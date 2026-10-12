@@ -14,8 +14,11 @@ use serde::Serialize;
 use super::super::{
     Binding, Evidence, GovernedProviderError, GovernedProviderReceipt, GovernedProviderStatus,
     MAX_ATTEMPTS, MAX_BYTES, Operation, Settings, attempt_id, decode_record,
-    history::{HistoricalProviderStore, OperationIntegrity},
-    operation_key, result_key, validate_evidence,
+    history::{
+        HistoricalProviderStore, OperationIntegrity, validate_federated_operation,
+        validate_federated_start,
+    },
+    operation_attempt_id, operation_key, result_key, validate_evidence,
 };
 use super::{
     MAX_PROOF_BYTES, ProviderReconciliationVerifier, ReconciliationAttempt, Resolution,
@@ -99,7 +102,12 @@ impl ProviderReconciliationStore {
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?
         else {
-            return if (0..MAX_ATTEMPTS).any(|ordinal| {
+            return if snapshot.starts.values().any(|start| {
+                start
+                    .operation_evidence
+                    .as_ref()
+                    .is_some_and(|seal| seal.id == execution_id.to_string())
+            }) || (0..MAX_ATTEMPTS).any(|ordinal| {
                 snapshot
                     .starts
                     .contains_key(&attempt_id(execution_id, ordinal))
@@ -135,11 +143,6 @@ impl ProviderReconciliationStore {
         ordinal: u32,
         authorization: &ReconciliationAuthorization<'_>,
     ) -> Result<(Operation, StartRecord), GovernedProviderError> {
-        let id = attempt_id(context.execution_id(), ordinal);
-        self.coordinator
-            .check_reconciliation_authorization(&id, authorization)
-            .await
-            .map_err(|error| reconciliation_authority_error(&error))?;
         let history = HistoricalProviderStore::new(
             self.state.clone(),
             self.coordinator.clone(),
@@ -176,16 +179,22 @@ impl ProviderReconciliationStore {
             .map_err(|_| GovernedProviderError::Unavailable)?;
         // Authenticate the second operation read and current attempt set rather
         // than treating an earlier history projection as a write authorization.
-        let recovered = self
-            .contexts
-            .recover_reference_for_observation(context)
-            .await
-            .map_err(|_| GovernedProviderError::Unavailable)?;
-        super::super::history::validate_operation(&op, context, &recovered)?;
+        let recovered = if op.federation_invocation.is_some() {
+            validate_federated_operation(&op, context, &snapshot)?;
+            None
+        } else {
+            let recovered = self
+                .contexts
+                .recover_reference_for_observation(context)
+                .await
+                .map_err(|_| GovernedProviderError::Unavailable)?;
+            super::super::history::validate_operation(&op, context, &recovered)?;
+            Some(recovered)
+        };
         let mut latest = None;
         let mut gap = false;
         for retained_ordinal in 0..MAX_ATTEMPTS {
-            let retained_id = attempt_id(context.execution_id(), retained_ordinal);
+            let retained_id = operation_attempt_id(&op, retained_ordinal)?;
             let Some(retained) = snapshot.starts.get(&retained_id) else {
                 gap = true;
                 continue;
@@ -193,12 +202,17 @@ impl ProviderReconciliationStore {
             if gap || (self.current.is_none() && retained.operation_evidence.is_none()) {
                 return Err(GovernedProviderError::Conflict);
             }
-            super::super::history::validate_start(&op, &digest, &recovered, retained)?;
+            if let Some(recovered) = &recovered {
+                super::super::history::validate_start(&op, &digest, recovered, retained)?;
+            } else {
+                validate_federated_start(&op, &digest, &snapshot, retained)?;
+            }
             latest = Some(retained_ordinal);
         }
         if latest != Some(ordinal) {
             return Err(GovernedProviderError::Conflict);
         }
+        let id = operation_attempt_id(&op, ordinal)?;
         let start = snapshot
             .starts
             .get(&id)
@@ -230,7 +244,7 @@ impl ProviderReconciliationStore {
         ordinal: u32,
         start: &StartRecord,
     ) -> Result<Option<(Resolution, AttemptEvidenceReference)>, GovernedProviderError> {
-        let key = resolution_key(&op.context, ordinal);
+        let key = resolution_key(op, ordinal)?;
         let Some(raw) = self
             .state
             .get(&key)
@@ -257,7 +271,7 @@ impl ProviderReconciliationStore {
         ordinal: u32,
         token: &str,
     ) -> Result<Option<(Evidence, AttemptEvidenceReference)>, GovernedProviderError> {
-        let key = result_key(&op.context, ordinal);
+        let key = result_key(op, ordinal)?;
         let Some(raw) = self
             .state
             .get(&key)
@@ -303,7 +317,7 @@ impl ProviderReconciliationStore {
             // Recheck before staging; the authoritative CAS still checks again.
             self.coordinator
                 .check_reconciliation_authorization(
-                    &attempt_id(op.context.execution_id(), ordinal),
+                    &operation_attempt_id(op, ordinal)?,
                     authorization,
                 )
                 .await
@@ -319,7 +333,7 @@ impl ProviderReconciliationStore {
             };
             self.state
                 .check_and_set(
-                    &resolution_key(&op.context, ordinal),
+                    &resolution_key(op, ordinal)?,
                     &self.encode(&resolution)?,
                     None,
                 )
@@ -375,10 +389,10 @@ impl ProviderReconciliationStore {
         if proof.is_empty() || proof.len() > MAX_PROOF_BYTES || ordinal >= MAX_ATTEMPTS {
             return Err(GovernedProviderError::Invalid);
         }
-        let id = attempt_id(context.execution_id(), ordinal);
         let (op, start) = self
             .management_attempt(context, owner, ordinal, &authorization)
             .await?;
+        let id = operation_attempt_id(&op, ordinal)?;
         let existing = self.load_resolution(&op, ordinal, &start).await?;
         if let Some(link) = &start.reconciliation {
             let (stored, reference) = existing.ok_or(GovernedProviderError::Unavailable)?;

@@ -252,8 +252,8 @@ impl GatewayBuilder {
     /// Set how long entries in the built-in in-memory DLQ are retained.
     ///
     /// Custom [`DeadLetterSink`] implementations own their persistence and
-    /// retention policy. The configured duration is also used by the server's
-    /// persistent A2A push-DLQ rows when set at the HTTP boundary.
+    /// retention policy. Durable A2A callback failures require an explicit
+    /// operator resolution and do not use this age-based policy.
     #[must_use]
     pub fn dlq_retention(mut self, retention: Duration) -> Self {
         self.dlq_retention = Some(retention);

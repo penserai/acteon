@@ -378,7 +378,7 @@ pub struct PushConfigInput {
     pub id: Option<String>,
     /// Destination URL (must be `http://` or `https://`).
     pub url: String,
-    /// Optional bearer token sent in `Authorization: Bearer …`.
+    /// Optional callback token sent in `X-A2A-Notification-Token`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Optional richer authentication metadata.

@@ -768,7 +768,7 @@ View and drain actions that exhausted all retry attempts.
 | Config Path | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `executor.dlq_enabled` | bool | false | Enable dead-letter queue |
-| `executor.dlq_retention_seconds` | u64? | none | Retain action and A2A push DLQ entries for this many seconds |
+| `executor.dlq_retention_seconds` | u64? | none | Retain built-in action DLQ entries for this many seconds |
 
 ---
 

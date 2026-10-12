@@ -172,6 +172,31 @@ pub(crate) fn build_task_audit_record(
     }
 }
 
+/// Build a credential-free audit record for a Task callback configuration
+/// mutation. The public configuration contains a destination URL and optional
+/// credentials, so this projection accepts only its opaque ID and never the
+/// configuration itself.
+pub(crate) fn build_task_push_config_audit_record(
+    task: &Task,
+    operation: &str,
+    config_id: &str,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+) -> AuditRecord {
+    let mut record = build_task_audit_record(task, operation, None, occurred_at, None);
+    AuditEventKind::A2aPushConfigMutation
+        .as_action_type()
+        .clone_into(&mut record.action_type);
+    "executed".clone_into(&mut record.outcome);
+    record.outcome_details = serde_json::json!({
+        "operation": operation,
+        "config_id": config_id,
+    });
+    // Task metadata can contain application-defined values. Configuration
+    // receipts need only stable identities and the operation.
+    record.metadata = serde_json::json!({});
+    record
+}
+
 /// Stable audit-record ID for an A2A task's terminal lifecycle transition.
 ///
 /// Task IDs are scoped to a namespace and tenant, while audit IDs are global.

@@ -2,8 +2,11 @@
 ///
 /// KEYS\[1\] = the plain string key
 /// KEYS\[2\] = the hash key (`:h` suffix, used by `set`/`compare_and_swap`)
+/// KEYS\[3\] = ordered scope/kind index
+/// KEYS\[4\] = ordered global kind index
 /// ARGV\[1\] = value to set
 /// ARGV\[2\] = TTL in milliseconds (0 means no expiry)
+/// ARGV\[3\] = canonical key index member
 ///
 /// Returns 1 if the key was newly set, 0 if it already existed in either form.
 pub const CHECK_AND_SET: &str = r"
@@ -11,9 +14,13 @@ pub const CHECK_AND_SET: &str = r"
 local str_exists = redis.call('EXISTS', KEYS[1])
 local hash_exists = redis.call('EXISTS', KEYS[2])
 if str_exists == 1 or hash_exists == 1 then
+    redis.call('ZADD', KEYS[3], 0, ARGV[3])
+    redis.call('ZADD', KEYS[4], 0, ARGV[3])
     return 0
 end
 redis.call('HSET', KEYS[2], 'v', ARGV[1], 'ver', 1)
+redis.call('ZADD', KEYS[3], 0, ARGV[3])
+redis.call('ZADD', KEYS[4], 0, ARGV[3])
 local ttl = tonumber(ARGV[2])
 if ttl > 0 then
     redis.call('PEXPIRE', KEYS[2], ttl)
@@ -22,7 +29,9 @@ return 1
 ";
 
 /// Read a versioned entry atomically, promoting legacy strings while preserving
-/// their remaining TTL. KEYS: hash, legacy string. Returns [value | false, version].
+/// their remaining TTL. KEYS: hash, legacy string, scope index, global kind
+/// index. ARGV: canonical
+/// key index member. Returns [value | false, version].
 /// Any shadow legacy value is removed so it cannot reappear after hash expiry.
 pub const GET_VERSIONED: &str = r"
 local value = redis.call('HGET', KEYS[1], 'v')
@@ -30,6 +39,8 @@ if value then
     local version = redis.call('HGET', KEYS[1], 'ver')
     if not version then return redis.error_reply('missing entry version') end
     redis.call('DEL', KEYS[2])
+    redis.call('ZADD', KEYS[3], 0, ARGV[1])
+    redis.call('ZADD', KEYS[4], 0, ARGV[1])
     return {value, tonumber(version)}
 end
 local legacy = redis.call('GET', KEYS[2])
@@ -38,11 +49,15 @@ local ttl = redis.call('PTTL', KEYS[2])
 redis.call('HSET', KEYS[1], 'v', legacy, 'ver', 1)
 if ttl >= 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
 redis.call('DEL', KEYS[2])
+redis.call('ZADD', KEYS[3], 0, ARGV[1])
+redis.call('ZADD', KEYS[4], 0, ARGV[1])
 return {legacy, 1}
 ";
 
-/// Atomic CAS over existing values. KEYS: hash, legacy string. ARGV: expected
-/// version, replacement value, TTL ms (0 clears expiry). Conflicts leave the
+/// Atomic CAS over existing values. KEYS: hash, legacy string, scope index,
+/// global kind index.
+/// ARGV: expected version, replacement value, TTL ms (0 clears expiry),
+/// canonical key index member. Conflicts leave the
 /// value and TTL unchanged. Missing records always conflict, even at version 0.
 pub const COMPARE_AND_SWAP: &str = r"
 local current = redis.call('HGET', KEYS[1], 'v')
@@ -55,6 +70,8 @@ else
     version = 1
 end
 if not version then return redis.error_reply('missing entry version') end
+redis.call('ZADD', KEYS[3], 0, ARGV[4])
+redis.call('ZADD', KEYS[4], 0, ARGV[4])
 local expected = tonumber(ARGV[1])
 if version ~= expected then return {0, version, current} end
 local next_version = version + 1
@@ -70,7 +87,8 @@ return {1, next_version}
 ";
 
 /// Conditional deletion of a live version, including legacy strings at version 1.
-/// KEYS: hash, legacy string. ARGV: expected version. A conflict changes neither.
+/// KEYS: hash, legacy string, scope index, global kind index. ARGV: expected version, canonical
+/// key index member. A version conflict changes no stored value.
 pub const COMPARE_AND_DELETE: &str = r"
 local current = redis.call('HGET', KEYS[1], 'v')
 local version
@@ -82,8 +100,12 @@ else
     version = 1
 end
 if not version then return redis.error_reply('missing entry version') end
+redis.call('ZADD', KEYS[3], 0, ARGV[2])
+redis.call('ZADD', KEYS[4], 0, ARGV[2])
 if version ~= tonumber(ARGV[1]) then return 0 end
 redis.call('DEL', KEYS[1], KEYS[2])
+redis.call('ZREM', KEYS[3], ARGV[2])
+redis.call('ZREM', KEYS[4], ARGV[2])
 return 1
 ";
 
@@ -133,7 +155,8 @@ end
 return 0
 ";
 /// Increment either storage representation without losing integer precision in Lua.
-/// KEYS are the string key and hash key; ARGV are delta and TTL ms (-1 preserves TTL).
+/// KEYS are the string key, hash key, scope index and global kind index; ARGV are delta, TTL ms
+/// (-1 preserves TTL), and the canonical key index member.
 pub const INCREMENT: &str = r"
 local key = KEYS[1]
 local value
@@ -150,5 +173,7 @@ local ttl = tonumber(ARGV[2])
 if ttl >= 0 then
     redis.call('PEXPIRE', key, ttl)
 end
+redis.call('ZADD', KEYS[3], 0, ARGV[3])
+redis.call('ZADD', KEYS[4], 0, ARGV[3])
 return value
 ";

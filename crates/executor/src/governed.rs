@@ -12,7 +12,7 @@ use std::{
 
 use acteon_core::{
     Action, ActionError, ActionOutcome, ExecutionContextReference, PrincipalIdentity, ResourceKind,
-    ResourceRef,
+    ResourceRef, TaskMessage,
 };
 use acteon_crypto::PayloadEncryptor;
 use acteon_governance::context::{AcceptedEffect, TrustedContextStore};
@@ -21,7 +21,8 @@ use acteon_governance::permit::{
 };
 use acteon_governance::{
     AttemptEvidenceReference, AttemptStatus, AuthorityCoordinator, CoordinationError,
-    StartRegistration,
+    CoordinatorSnapshot, StartRegistration,
+    federation::{FederatedAttempt, FederationImportRecord, SignedFederationInvocation},
 };
 use acteon_provider::{DynProvider, ProviderError};
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -286,6 +287,8 @@ struct Operation {
     schema: u32,
     context: ExecutionContextReference,
     permits: Vec<PermitReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    federation_invocation: Option<SignedFederationInvocation>,
     action: Action,
     binding: Binding,
     settings: Settings,
@@ -330,6 +333,11 @@ struct Runtime {
     reconciler: Option<Arc<dyn reconciliation::ProviderReconciliationVerifier>>,
     aborter: Option<Arc<dyn abort::ProviderAbortAdapter>>,
 }
+struct ObservationAuthority {
+    resources: Vec<ResourceRef>,
+    request_digest: String,
+    root_id: String,
+}
 /// Direct provider boundary, not the rules/approval/chain dispatch pipeline.
 /// Authentication and qualification are host prerequisites; no public server
 /// enforce switch is enabled by constructing this object.
@@ -350,13 +358,125 @@ fn operation_key(reference: &ExecutionContextReference) -> StateKey {
 fn attempt_id(root: Uuid, ordinal: u32) -> String {
     Uuid::new_v5(&root, &ordinal.to_be_bytes()).to_string()
 }
-fn result_key(reference: &ExecutionContextReference, ordinal: u32) -> StateKey {
-    StateKey::new(
-        reference.namespace(),
-        reference.tenant(),
+fn operation_attempt_id(op: &Operation, ordinal: u32) -> Result<String, GovernedProviderError> {
+    match &op.federation_invocation {
+        Some(invocation) => invocation
+            .attempt_id(ordinal)
+            .map_err(|_| GovernedProviderError::Conflict),
+        None => Ok(attempt_id(op.context.execution_id(), ordinal)),
+    }
+}
+fn result_key(op: &Operation, ordinal: u32) -> Result<StateKey, GovernedProviderError> {
+    let id = operation_attempt_id(op, ordinal)?;
+    Ok(StateKey::new(
+        op.context.namespace(),
+        op.context.tenant(),
         KeyKind::Custom(RESULT_KIND.into()),
-        attempt_id(reference.execution_id(), ordinal),
+        id,
+    ))
+}
+
+fn federation_execution_id(
+    invocation: &SignedFederationInvocation,
+) -> Result<Uuid, GovernedProviderError> {
+    let digest = invocation
+        .digest()
+        .map_err(|_| GovernedProviderError::Invalid)?;
+    Ok(Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("acteon.federated-execution.v1\0{digest}").as_bytes(),
+    ))
+}
+
+fn federation_context_id(
+    invocation: &SignedFederationInvocation,
+) -> Result<Uuid, GovernedProviderError> {
+    let digest = invocation
+        .digest()
+        .map_err(|_| GovernedProviderError::Invalid)?;
+    Ok(Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("acteon.federated-context.v1\0{digest}").as_bytes(),
+    ))
+}
+
+/// Deterministic correlation reference for a signed foreign invocation. This
+/// value carries no authority; the coordinator verifies the signature, import
+/// and current restrictions before each provider start.
+pub fn federated_execution_reference(
+    invocation: &SignedFederationInvocation,
+    namespace: &str,
+    tenant: &str,
+    target: PrincipalIdentity,
+    provider_input_digest: &str,
+) -> Result<ExecutionContextReference, GovernedProviderError> {
+    invocation
+        .invocation()
+        .map_err(|_| GovernedProviderError::Invalid)?;
+    ExecutionContextReference::new(
+        federation_context_id(invocation)?,
+        federation_execution_id(invocation)?,
+        namespace.into(),
+        tenant.into(),
+        target,
+        provider_input_digest.into(),
     )
+    .map_err(|_| GovernedProviderError::Invalid)
+}
+
+fn federated_agent_message(action: &Action) -> Result<TaskMessage, GovernedProviderError> {
+    let payload = action
+        .payload
+        .as_object()
+        .filter(|payload| payload.len() == 1)
+        .and_then(|payload| payload.get("a2a_message"))
+        .ok_or(GovernedProviderError::Ownership)?;
+    let message: TaskMessage =
+        serde_json::from_value(payload.clone()).map_err(|_| GovernedProviderError::Ownership)?;
+    if message.task_id.is_some() || message.validate().is_err() {
+        return Err(GovernedProviderError::Ownership);
+    }
+    Ok(message)
+}
+
+fn invocation_matches_action(
+    invocation: &acteon_governance::federation::FederationInvocation,
+    action: &Action,
+) -> Result<bool, GovernedProviderError> {
+    let message = federated_agent_message(action)?;
+    Ok(
+        serde_json::to_value(&invocation.message).map_err(|_| GovernedProviderError::Invalid)?
+            == serde_json::to_value(message).map_err(|_| GovernedProviderError::Invalid)?,
+    )
+}
+
+fn federation_import<'a>(
+    op: &Operation,
+    snapshot: &'a CoordinatorSnapshot,
+) -> Result<Option<&'a FederationImportRecord>, GovernedProviderError> {
+    let Some(signed) = &op.federation_invocation else {
+        return Ok(None);
+    };
+    let invocation = signed
+        .invocation()
+        .map_err(|_| GovernedProviderError::Conflict)?;
+    let imported = snapshot
+        .federation_imports
+        .get(&invocation.import.id)
+        .filter(|record| record.envelope_digest == invocation.import.envelope_digest)
+        .ok_or(GovernedProviderError::Conflict)?;
+    if op.permits.is_empty()
+        && invocation_matches_action(&invocation, &op.action)?
+        && governed_provider_input_digest(&op.action)? == op.context.request_digest()
+        && imported.target == *op.context.principal()
+        && imported.authority.incarnation == snapshot.incarnation
+        && federation_execution_id(signed)? == op.context.execution_id()
+        && imported.allows_effect(&op.binding.effect)
+    {
+        Ok(Some(imported))
+    } else {
+        Err(GovernedProviderError::Conflict)
+    }
 }
 
 fn validate_evidence(
@@ -453,16 +573,6 @@ impl Runtime {
         {
             return Err(GovernedProviderError::Conflict);
         }
-        let verified = self
-            .contexts
-            .recover_reference_for_observation(&op.context)
-            .await
-            .map_err(|_| GovernedProviderError::Unavailable)?;
-        if permit_revision_tag(&op.permits).map_err(|_| GovernedProviderError::Invalid)?
-            != verified.accepted_ceiling_revision()
-        {
-            return Err(GovernedProviderError::Conflict);
-        }
         // Delivery identity and retry policy are excluded from the semantic input
         // digest. New starts additionally pin the original whole envelope.
         // Legacy starts keep their existing evidence level; never add a seal on read.
@@ -471,10 +581,22 @@ impl Runtime {
             .snapshot()
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?;
+        if federation_import(&op, &snapshot)?.is_none() {
+            let verified = self
+                .contexts
+                .recover_reference_for_observation(&op.context)
+                .await
+                .map_err(|_| GovernedProviderError::Unavailable)?;
+            if permit_revision_tag(&op.permits).map_err(|_| GovernedProviderError::Invalid)?
+                != verified.accepted_ceiling_revision()
+            {
+                return Err(GovernedProviderError::Conflict);
+            }
+        }
         for ordinal in 0..MAX_ATTEMPTS {
             if let Some(seal) = snapshot
                 .starts
-                .get(&attempt_id(reference.execution_id(), ordinal))
+                .get(&operation_attempt_id(&op, ordinal)?)
                 .and_then(|start| start.operation_evidence.as_ref())
                 && (seal.id != reference.execution_id().to_string() || seal.digest != digest)
             {
@@ -511,7 +633,7 @@ impl Runtime {
         ordinal: u32,
         token: &str,
     ) -> Result<Option<(Evidence, AttemptEvidenceReference)>, GovernedProviderError> {
-        let key = result_key(&op.context, ordinal);
+        let key = result_key(op, ordinal)?;
         let Some(raw) = self
             .state
             .get(&key)
@@ -530,6 +652,40 @@ impl Runtime {
             },
         )))
     }
+    async fn observation_authority(
+        &self,
+        op: &Operation,
+        snapshot: &CoordinatorSnapshot,
+    ) -> Result<ObservationAuthority, GovernedProviderError> {
+        if let Some(imported) = federation_import(op, snapshot)? {
+            return Ok(ObservationAuthority {
+                resources: op.binding.effect.resources.clone(),
+                request_digest: op.context.request_digest().to_owned(),
+                root_id: imported.root_id.clone(),
+            });
+        }
+        let verified = self
+            .contexts
+            .recover_reference_for_observation(&op.context)
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?;
+        if verified.authority_stamp().incarnation != snapshot.incarnation {
+            return Err(GovernedProviderError::Conflict);
+        }
+        Ok(ObservationAuthority {
+            resources: verified
+                .effect_registration_resources(&op.binding.effect)
+                .map_err(|_| GovernedProviderError::Conflict)?,
+            request_digest: permitted_attempt_digest(
+                &op.context,
+                &op.binding.effect,
+                1,
+                &op.permits,
+            )
+            .map_err(|_| GovernedProviderError::Conflict)?,
+            root_id: op.context.execution_id().to_string(),
+        })
+    }
     async fn observe(
         &self,
         op: &Operation,
@@ -539,35 +695,24 @@ impl Runtime {
             .snapshot()
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?;
-        let verified = self
-            .contexts
-            .recover_reference_for_observation(&op.context)
-            .await
-            .map_err(|_| GovernedProviderError::Unavailable)?;
-        if verified.authority_stamp().incarnation != snapshot.incarnation {
-            return Err(GovernedProviderError::Conflict);
-        }
-        let resources = verified
-            .effect_registration_resources(&op.binding.effect)
-            .map_err(|_| GovernedProviderError::Conflict)?;
+        let authority = self.observation_authority(op, &snapshot).await?;
         let mut receipt = GovernedProviderReceipt {
             execution_id: op.context.execution_id(),
             attempts: 0,
             status: GovernedProviderStatus::Prepared,
         };
         for ordinal in 0..op.settings.max_attempts {
-            let id = attempt_id(op.context.execution_id(), ordinal);
+            let id = operation_attempt_id(op, ordinal)?;
             let Some(start) = snapshot.starts.get(&id) else {
                 return Ok(receipt);
             };
-            if start.request_digest
-                != permitted_attempt_digest(&op.context, &op.binding.effect, 1, &op.permits)
-                    .map_err(|_| GovernedProviderError::Conflict)?
+            if start.request_digest != authority.request_digest
                 || start.subject != op.context.principal().id()
-                || start.resources.iter().ne(resources.iter())
-                || start.reservation.as_ref().is_none_or(|r| {
-                    r.root_id != op.context.execution_id().to_string() || r.units != 1
-                })
+                || start.resources.iter().ne(authority.resources.iter())
+                || start
+                    .reservation
+                    .as_ref()
+                    .is_none_or(|r| r.root_id != authority.root_id || r.units != 1)
             {
                 return Err(GovernedProviderError::Conflict);
             }
@@ -756,6 +901,7 @@ impl GovernedProviderExecutor {
             schema: 1,
             context: reference.clone(),
             permits: selected,
+            federation_invocation: None,
             action: action.clone(),
             binding: self.runtime.bound.binding.clone(),
             settings: self.runtime.settings.clone(),
@@ -811,6 +957,212 @@ impl GovernedProviderExecutor {
         }
         Ok(result)
     }
+
+    /// Execute an exact provider input authorized by a signed foreign intent
+    /// and an already admitted local federation import. Each provider attempt
+    /// rechecks current trust, expiry, effect attenuation and root budget in the
+    /// coordinator CAS immediately before delivery.
+    pub async fn execute_federated(
+        &self,
+        signed: &SignedFederationInvocation,
+        action: &Action,
+        target: &PrincipalIdentity,
+    ) -> Result<GovernedProviderReceipt, GovernedProviderError> {
+        let invocation = signed
+            .invocation()
+            .map_err(|_| GovernedProviderError::Invalid)?;
+        let input_digest = governed_provider_input_digest(action)?;
+        if !invocation_matches_action(&invocation, action)? {
+            return Err(GovernedProviderError::Ownership);
+        }
+        let snapshot = self
+            .runtime
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?;
+        let imported = snapshot
+            .federation_imports
+            .get(&invocation.import.id)
+            .filter(|record| record.envelope_digest == invocation.import.envelope_digest)
+            .ok_or(GovernedProviderError::Ownership)?;
+        if imported.target != *target
+            || action.namespace.as_str() != imported.agent_resource.namespace()
+            || action.tenant.as_str() != imported.agent_resource.tenant()
+            || action.action_type != self.runtime.bound.action_type
+            || action.template.is_some()
+            || !action.attachments.is_empty()
+            || self
+                .runtime
+                .bound
+                .binding
+                .effect
+                .resources
+                .iter()
+                .any(|resource| {
+                    resource.namespace() != action.namespace.as_str()
+                        || resource.tenant() != action.tenant.as_str()
+                })
+        {
+            return Err(GovernedProviderError::Ownership);
+        }
+        let reference = federated_execution_reference(
+            signed,
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            target.clone(),
+            &input_digest,
+        )?;
+        let proposed = Operation {
+            schema: 1,
+            context: reference.clone(),
+            permits: Vec::new(),
+            federation_invocation: Some(signed.clone()),
+            action: action.clone(),
+            binding: self.runtime.bound.binding.clone(),
+            settings: self.runtime.settings.clone(),
+        };
+        if let Some(existing) = self.runtime.load_operation(&reference, target).await? {
+            if existing.federation_invocation.as_ref() != Some(signed) {
+                return Err(GovernedProviderError::Conflict);
+            }
+            let observed = self.runtime.observe(&existing).await?;
+            if !matches!(
+                observed.status,
+                GovernedProviderStatus::Prepared | GovernedProviderStatus::AwaitingRetry { .. }
+            ) {
+                return Ok(observed);
+            }
+        }
+        let prepared = self.prepare_federated(signed, action, target).await?;
+        if prepared != reference {
+            return Err(GovernedProviderError::Conflict);
+        }
+        self.runtime
+            .state
+            .check_and_set(
+                &operation_key(&reference),
+                &self.runtime.encode(&proposed)?,
+                None,
+            )
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?;
+        let op = self
+            .runtime
+            .load_operation(&reference, target)
+            .await?
+            .ok_or(GovernedProviderError::Unavailable)?;
+        if op.federation_invocation.as_ref() != Some(signed) {
+            return Err(GovernedProviderError::Conflict);
+        }
+        self.run(&op).await
+    }
+
+    /// Verify current signed federation authority and the exact provider input
+    /// before a host persists higher-level task admission. No budget is spent
+    /// and no provider is called; execution repeats the check in its start CAS.
+    pub async fn prepare_federated(
+        &self,
+        signed: &SignedFederationInvocation,
+        action: &Action,
+        target: &PrincipalIdentity,
+    ) -> Result<ExecutionContextReference, GovernedProviderError> {
+        let request_digest = governed_provider_input_digest(action)?;
+        let invocation = signed
+            .invocation()
+            .map_err(|_| GovernedProviderError::Invalid)?;
+        if !invocation_matches_action(&invocation, action)?
+            || action.action_type != self.runtime.bound.action_type
+            || action.template.is_some()
+            || !action.attachments.is_empty()
+        {
+            return Err(GovernedProviderError::Ownership);
+        }
+        let expected_authority = self
+            .runtime
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?
+            .stamp();
+        let imported = self
+            .runtime
+            .coordinator
+            .check_federated_attempt(FederatedAttempt {
+                invocation: signed,
+                effect: &self.runtime.bound.binding.effect,
+                request_digest: &request_digest,
+                ordinal: 0,
+                units: 1,
+                expected_authority: &expected_authority,
+                clock: self.runtime.clock.as_ref(),
+            })
+            .await
+            .map_err(|error| match error {
+                CoordinationError::State(_) => GovernedProviderError::Unavailable,
+                _ => GovernedProviderError::Admission("FEDERATION_AUTHORITY_DENIED"),
+            })?;
+        if imported.target != *target
+            || action.namespace.as_str() != imported.agent_resource.namespace()
+            || action.tenant.as_str() != imported.agent_resource.tenant()
+            || self
+                .runtime
+                .bound
+                .binding
+                .effect
+                .resources
+                .iter()
+                .any(|resource| {
+                    resource.namespace() != action.namespace.as_str()
+                        || resource.tenant() != action.tenant.as_str()
+                })
+        {
+            return Err(GovernedProviderError::Ownership);
+        }
+        federated_execution_reference(
+            signed,
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            target.clone(),
+            &request_digest,
+        )
+    }
+
+    async fn run(&self, op: &Operation) -> Result<GovernedProviderReceipt, GovernedProviderError> {
+        let before = self.runtime.observe(op).await?;
+        let base = match before.status {
+            GovernedProviderStatus::Prepared => 0,
+            GovernedProviderStatus::AwaitingRetry { .. } => before.attempts,
+            _ => return Ok(before),
+        };
+        let refused = Arc::new(Mutex::new(None));
+        let gate = Gate {
+            runtime: self.runtime.clone(),
+            op: op.clone(),
+            base,
+            refused: refused.clone(),
+        };
+        let _outcome = self
+            .executor
+            .execute_with_gate(
+                &op.action,
+                self.runtime.bound.provider.as_ref(),
+                None,
+                &gate,
+            )
+            .await;
+        let result = self.runtime.observe(op).await?;
+        if matches!(
+            result.status,
+            GovernedProviderStatus::Prepared | GovernedProviderStatus::AwaitingRetry { .. }
+        ) && let Some(error) = *refused
+            .lock()
+            .map_err(|_| GovernedProviderError::Unavailable)?
+        {
+            return Err(GovernedProviderError::Admission(error.code()));
+        }
+        Ok(result)
+    }
 }
 
 struct Gate {
@@ -849,6 +1201,122 @@ impl ProviderAttemptGate for Gate {
     }
 }
 impl Gate {
+    async fn wait_for_retry(&self, ordinal: u32) -> Result<(), AttemptGateError> {
+        if ordinal == 0 {
+            return Ok(());
+        }
+        let snapshot = self
+            .runtime
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| AttemptGateError::Unavailable)?;
+        let prior = snapshot
+            .starts
+            .get(
+                &operation_attempt_id(&self.op, ordinal - 1)
+                    .map_err(|_| AttemptGateError::Conflict)?,
+            )
+            .ok_or(AttemptGateError::Conflict)?;
+        let (evidence, reference) = self
+            .runtime
+            .load_evidence(&self.op, ordinal - 1, &prior.token)
+            .await
+            .map_err(|_| AttemptGateError::Unavailable)?
+            .ok_or(AttemptGateError::Conflict)?;
+        if prior.status != AttemptStatus::Settled
+            || prior.evidence.as_ref() != Some(&reference)
+            || !evidence.known
+        {
+            return Err(AttemptGateError::Conflict);
+        }
+        let due = evidence.retry_at_ms.ok_or(AttemptGateError::Conflict)?;
+        let deadline = match &self.op.federation_invocation {
+            Some(signed) => {
+                signed
+                    .invocation()
+                    .map_err(|_| AttemptGateError::Conflict)?
+                    .expires_at_ms
+            }
+            None => self
+                .runtime
+                .contexts
+                .recover_reference_for_observation(&self.op.context)
+                .await
+                .map_err(|_| AttemptGateError::Unavailable)?
+                .deadline_ms(),
+        };
+        let wake = due.min(deadline);
+        let now = self.runtime.clock.now().timestamp_millis();
+        if wake > now {
+            self.runtime
+                .clock
+                .sleep(Duration::from_millis(
+                    u64::try_from(wake - now).map_err(|_| AttemptGateError::Denied)?,
+                ))
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn register(
+        &self,
+        ordinal: u32,
+        id: &str,
+        envelope: &AttemptEvidenceReference,
+    ) -> Result<StartRegistration, AttemptGateError> {
+        let result = if let Some(invocation) = &self.op.federation_invocation {
+            let expected_authority = self
+                .runtime
+                .coordinator
+                .snapshot()
+                .await
+                .map_err(|_| AttemptGateError::Unavailable)?
+                .stamp();
+            self.runtime
+                .coordinator
+                .register_federated_attempt_with_operation(
+                    FederatedAttempt {
+                        invocation,
+                        effect: &self.op.binding.effect,
+                        request_digest: self.op.context.request_digest(),
+                        ordinal,
+                        units: 1,
+                        expected_authority: &expected_authority,
+                        clock: self.runtime.clock.as_ref(),
+                    },
+                    envelope,
+                )
+                .await
+        } else {
+            let context = self
+                .runtime
+                .contexts
+                .recover_reference(
+                    &self.op.context,
+                    self.runtime.clock.now().timestamp_millis(),
+                )
+                .await
+                .map_err(|_| AttemptGateError::Denied)?;
+            self.runtime
+                .coordinator
+                .register_permitted_attempt_with_operation(
+                    PermittedAttempt {
+                        id,
+                        context: &context,
+                        permits: &self.op.permits,
+                        effect: &self.op.binding.effect,
+                        request_digest: self.op.context.request_digest(),
+                        units: 1,
+                        clock: self.runtime.clock.as_ref(),
+                    },
+                    envelope,
+                )
+                .await
+        };
+        result.map_err(|error| admission_error(&error))
+    }
+
     async fn start_inner(
         &self,
         attempt: ProviderAttempt<'_>,
@@ -865,79 +1333,14 @@ impl Gate {
         {
             return Err(AttemptGateError::Conflict);
         }
-        if ordinal > 0 {
-            let snapshot = self
-                .runtime
-                .coordinator
-                .snapshot()
-                .await
-                .map_err(|_| AttemptGateError::Unavailable)?;
-            let prior = snapshot
-                .starts
-                .get(&attempt_id(self.op.context.execution_id(), ordinal - 1))
-                .ok_or(AttemptGateError::Conflict)?;
-            let (e, reference) = self
-                .runtime
-                .load_evidence(&self.op, ordinal - 1, &prior.token)
-                .await
-                .map_err(|_| AttemptGateError::Unavailable)?
-                .ok_or(AttemptGateError::Conflict)?;
-            if prior.status != AttemptStatus::Settled
-                || prior.evidence.as_ref() != Some(&reference)
-                || !e.known
-            {
-                return Err(AttemptGateError::Conflict);
-            }
-            let due = e.retry_at_ms.ok_or(AttemptGateError::Conflict)?;
-            let verified = self
-                .runtime
-                .contexts
-                .recover_reference_for_observation(&self.op.context)
-                .await
-                .map_err(|_| AttemptGateError::Unavailable)?;
-            let wake = due.min(verified.deadline_ms());
-            let now = self.runtime.clock.now().timestamp_millis();
-            if wake > now {
-                self.runtime
-                    .clock
-                    .sleep(Duration::from_millis(
-                        u64::try_from(wake - now).map_err(|_| AttemptGateError::Denied)?,
-                    ))
-                    .await;
-            }
-        }
-        let context = self
-            .runtime
-            .contexts
-            .recover_reference(
-                &self.op.context,
-                self.runtime.clock.now().timestamp_millis(),
-            )
-            .await
-            .map_err(|_| AttemptGateError::Denied)?;
-        let id = attempt_id(self.op.context.execution_id(), ordinal);
+        self.wait_for_retry(ordinal).await?;
+        let id = operation_attempt_id(&self.op, ordinal).map_err(|_| AttemptGateError::Conflict)?;
         let envelope = self
             .runtime
             .operation_evidence(&self.op)
             .await
             .map_err(|_| AttemptGateError::Conflict)?;
-        let result = self
-            .runtime
-            .coordinator
-            .register_permitted_attempt_with_operation(
-                PermittedAttempt {
-                    id: &id,
-                    context: &context,
-                    permits: &self.op.permits,
-                    effect: &self.op.binding.effect,
-                    request_digest: self.op.context.request_digest(),
-                    units: 1,
-                    clock: self.runtime.clock.as_ref(),
-                },
-                &envelope,
-            )
-            .await
-            .map_err(|error| admission_error(&error))?;
+        let result = self.register(ordinal, &id, &envelope).await?;
         let StartRegistration::New(record) = result else {
             return Err(AttemptGateError::Conflict);
         };
@@ -1007,7 +1410,7 @@ impl RegisteredProviderAttempt for Guard {
             known,
             retry_at_ms,
         };
-        let key = result_key(&self.op.context, self.ordinal);
+        let key = result_key(&self.op, self.ordinal).map_err(|_| AttemptGateError::Conflict)?;
         self.runtime
             .state
             .check_and_set(

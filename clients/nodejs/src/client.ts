@@ -1,9 +1,9 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, agentServiceRpcBase, agentServicePushConfig, agentServicePushConfigPage, agentServiceTaskPage, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceA2aFrame, type AgentServiceListOptions, type AgentServicePushConfig, type AgentServicePushConfigInput, type AgentServicePushConfigPage, type AgentServiceReceipt, type AgentServiceStopReceipt, type AgentServiceTaskPage } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { GovernanceScopeView, GovernanceChangeReceipt, PublishGovernancePermitRequest, GovernanceInterventionRequest } from "./governance.js";
+import type { AbandonFederationDeliveryRequest, FederationDeliveryEvidence, FederationDeliveryEvidencePage, FederationExportReceipt, FederationFinalityCorrelation, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, ReconcileFederationDeliveryRequest, RevokeFederationTrustRequest, SignedFederationCapabilityCard, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -407,6 +407,140 @@ export class ActeonClient {
     const task = agentTask(await response.json(), namespace, tenant);
     return Object.freeze({ namespace, tenant, agent, taskId: task.id as string, sourceContext: agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)), task });
   }
+  /** Invoke one exact governed agent through official A2A streaming. */
+  async *agentServiceSendStreamingMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+    if (typeof message.messageId !== "string" || message.messageId.length === 0) throw new Error("streaming message requires messageId");
+    const parentHeaders = parent === undefined ? undefined : permitHeaders(parent.permits);
+    if (parent !== undefined && (!parentHeaders || parent.permits.length === 0)) throw new Error("delegated agent service invocation requires permits");
+    const requestId = `stream:${message.messageId}`;
+    yield* this.connectAgentA2aSse(
+      agentServiceRpcBase(namespace, tenant, agent),
+      { jsonrpc: "2.0", id: requestId, method: "SendStreamingMessage", params: { message } },
+      requestId,
+      { ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) },
+      true,
+    );
+  }
+  /** Subscribe to one retained governed Task through official A2A streaming. */
+  async *agentServiceSubscribeTask(receipt: AgentServiceReceipt): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+    const requestId = `subscribe:${receipt.taskId}`;
+    yield* this.connectAgentA2aSse(
+      agentServiceRpcBase(receipt.namespace, receipt.tenant, receipt.agent),
+      { jsonrpc: "2.0", id: requestId, method: "SubscribeToTask", params: { id: receipt.taskId } },
+      requestId,
+      { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) },
+      false,
+    );
+  }
+  /** Request official A2A cancellation; nonterminal results retain pending finality metadata. */
+  async agentServiceCancelTask(receipt: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    const requestId = `cancel:${receipt.taskId}`;
+    const response = await this.request("POST", agentServiceRpcBase(receipt.namespace, receipt.tenant, receipt.agent), {
+      body: { jsonrpc: "2.0", id: requestId, method: "CancelTask", params: { id: receipt.taskId } },
+      extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) },
+      redirect: "error",
+    });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid agent service A2A response");
+    const rpc = value as Record<string, unknown>;
+    if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("agent service A2A response request identity mismatch");
+    if (rpc.error && typeof rpc.error === "object") {
+      const error = rpc.error as Record<string, unknown>;
+      throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "cancellation failed")}`);
+    }
+    if (!rpc.result || typeof rpc.result !== "object" || Array.isArray(rpc.result)) throw new Error("agent service A2A response has no object result");
+    const task = rpc.result as Record<string, unknown>;
+    if (task.id !== receipt.taskId || !task.status || typeof task.status !== "object" || Array.isArray(task.status)) throw new Error("agent service A2A cancellation task identity mismatch");
+    return task;
+  }
+  /** List only Tasks visible to the current source through one exact governed agent. */
+  async agentServiceListTasks(namespace: string, tenant: string, agent: string, options: AgentServiceListOptions = {}): Promise<AgentServiceTaskPage> {
+    if (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)) throw new Error("pageSize must be between 1 and 100");
+    if (options.historyLength !== undefined && (!Number.isSafeInteger(options.historyLength) || options.historyLength < 0 || options.historyLength > 2147483647)) throw new Error("historyLength must fit a signed 32-bit integer");
+    if (options.pageToken !== undefined && options.pageToken.length > 8192) throw new Error("pageToken is too large");
+    const source = options.source;
+    if (source !== undefined && (source.namespace !== namespace || source.tenant !== tenant || source.agent !== agent)) throw new Error("agent service ListTasks receipt does not match the route");
+    const params: Record<string, unknown> = {};
+    if (options.contextId !== undefined) params.contextId = options.contextId;
+    if (options.status !== undefined) params.status = options.status;
+    if (options.pageSize !== undefined) params.pageSize = options.pageSize;
+    if (options.pageToken !== undefined) params.pageToken = options.pageToken;
+    if (options.historyLength !== undefined) params.historyLength = options.historyLength;
+    if (options.statusTimestampAfter !== undefined) params.statusTimestampAfter = options.statusTimestampAfter;
+    if (options.includeArtifacts === true) params.includeArtifacts = true;
+    const requestId = `list:${agent}`;
+    const response = await this.request("POST", agentServiceRpcBase(namespace, tenant, agent), {
+      body: { jsonrpc: "2.0", id: requestId, method: "ListTasks", params },
+      extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) },
+      redirect: "error",
+    });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid agent service A2A response");
+    const rpc = value as Record<string, unknown>;
+    if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("agent service A2A response request identity mismatch");
+    if (rpc.error && typeof rpc.error === "object") {
+      const error = rpc.error as Record<string, unknown>;
+      throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "list failed")}`);
+    }
+    return agentServiceTaskPage(rpc.result);
+  }
+  /** Create or update one official A2A push configuration under task authority. */
+  async agentServiceCreatePushConfig(namespace: string, tenant: string, agent: string, taskId: string, config: AgentServicePushConfigInput, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
+    const params = this.agentServicePushInput(taskId, config);
+    return agentServicePushConfig(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "CreateTaskPushNotificationConfig", params, source), taskId, config.id);
+  }
+  /** Read one exact-agent push configuration, including management-only secrets. */
+  async agentServiceGetPushConfig(namespace: string, tenant: string, agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
+    return agentServicePushConfig(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "GetTaskPushNotificationConfig", { taskId, id: configId }, source), taskId, configId);
+  }
+  /** List exact-agent push configurations under the original task authority. */
+  async agentServiceListPushConfigs(namespace: string, tenant: string, agent: string, taskId: string, options: { readonly pageSize?: number; readonly pageToken?: string; readonly source?: AgentServiceReceipt } = {}): Promise<AgentServicePushConfigPage> {
+    if (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)) throw new Error("pageSize must be between 1 and 100");
+    if (options.pageToken !== undefined && options.pageToken.length > 8192) throw new Error("pageToken is too large");
+    const params: Record<string, unknown> = { taskId };
+    if (options.pageSize !== undefined) params.pageSize = options.pageSize;
+    if (options.pageToken !== undefined) params.pageToken = options.pageToken;
+    return agentServicePushConfigPage(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "ListTaskPushNotificationConfigs", params, options.source), taskId);
+  }
+  /** Delete one exact-agent push configuration. Repeating deletion is safe. */
+  async agentServiceDeletePushConfig(namespace: string, tenant: string, agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<void> {
+    const result = await this.agentServicePushRpc(namespace, tenant, agent, taskId, "DeleteTaskPushNotificationConfig", { taskId, id: configId }, source);
+    if (Object.keys(result).length !== 0) throw new Error("agent service A2A delete result is invalid");
+  }
+  private agentServicePushInput(taskId: string, config: AgentServicePushConfigInput): Record<string, unknown> {
+    if (!taskId || !config.url) throw new Error("taskId and push URL must not be empty");
+    if (config.token !== undefined && config.token.length > 4096) throw new Error("push token is too large");
+    const params: Record<string, unknown> = { taskId, url: config.url };
+    if (config.id !== undefined) params.id = config.id;
+    if (config.token !== undefined) params.token = config.token;
+    if (config.authentication !== undefined) {
+      const auth = config.authentication;
+      if (!auth.scheme.trim() || auth.scheme.length > 256 || (auth.credentials !== undefined && auth.credentials.length > 4096)) throw new Error("push authentication is invalid");
+      params.authentication = { scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}) };
+    }
+    return params;
+  }
+  private async agentServicePushRpc(namespace: string, tenant: string, agent: string, taskId: string, method: string, params: Record<string, unknown>, source?: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    if (source !== undefined && (source.namespace !== namespace || source.tenant !== tenant || source.agent !== agent || source.taskId !== taskId)) throw new Error("agent service push receipt does not match the route or task");
+    const requestId = `push:${method}:${taskId}`;
+    const response = await this.request("POST", agentServiceRpcBase(namespace, tenant, agent), { body: { jsonrpc: "2.0", id: requestId, method, params }, extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid agent service A2A response");
+    const rpc = value as Record<string, unknown>;
+    if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("agent service A2A response request identity mismatch");
+    if (rpc.error && typeof rpc.error === "object") {
+      const error = rpc.error as Record<string, unknown>;
+      throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "push operation failed")}`);
+    }
+    if (!rpc.result || typeof rpc.result !== "object" || Array.isArray(rpc.result)) throw new Error("agent service A2A response has no object result");
+    return rpc.result as Record<string, unknown>;
+  }
   /** List current safe registry options. Descriptions are untrusted data. */
   async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {
     if (!/^[A-Za-z0-9._-]{1,120}$/.test(skill) || skill === "*") throw new Error("invalid exact peer skill");
@@ -501,10 +635,12 @@ export class ActeonClient {
     const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/stop", { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
-    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; provider_abort?: unknown } | null;
-    if (!value || value.future_starts_blocked !== true) throw new Error("agent service stop acknowledgement missing or malformed");
+    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; cancellation_confirmed?: unknown; provider_abort?: unknown } | null;
+    if (!value || value.future_starts_blocked !== true || typeof value.cancellation_confirmed !== "boolean") throw new Error("agent service stop acknowledgement missing or malformed");
     const providerAbort = agentProviderAbort(value.provider_abort);
-    return Object.freeze({ task: agentTask(value.task, receipt.namespace, receipt.tenant, taskId), futureStartsBlocked: true as const, ...(providerAbort ? { providerAbort } : {}) });
+    const task = agentTask(value.task, receipt.namespace, receipt.tenant, taskId);
+    if (value.cancellation_confirmed && (task.status as { state?: unknown } | undefined)?.state !== "canceled") throw new Error("agent service stop acknowledgement missing or malformed");
+    return Object.freeze({ task, futureStartsBlocked: true as const, cancellationConfirmed: value.cancellation_confirmed, ...(providerAbort ? { providerAbort } : {}) });
   }
 
   /** Observe one retained job; never starts work or changes global headers. */
@@ -585,6 +721,92 @@ export class ActeonClient {
   }
   async publishGovernancePermit(request: PublishGovernancePermitRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_publish_permit", { body: request }) as GovernanceChangeReceipt;
+  }
+  async publishFederationTrust(request: PublishFederationTrustRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("governance_publish_federation_trust", { body: request }) as GovernanceChangeReceipt;
+  }
+  async revokeFederationTrust(request: RevokeFederationTrustRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("governance_revoke_federation_trust", { body: request }) as GovernanceChangeReceipt;
+  }
+  /** List sanitized outbound delivery evidence under reconciliation authority. */
+  async federationDeliveryEvidence(namespace: string, tenant: string, after?: string, limit?: number): Promise<FederationDeliveryEvidencePage> {
+    const page = await this.platformRequest("governance_federation_delivery_evidence", {
+      query: { namespace, tenant, ...(after ? { after } : {}), ...(limit === undefined ? {} : { limit: String(limit) }) },
+    }) as FederationDeliveryEvidencePage;
+    if (!Array.isArray(page.deliveries) || page.deliveries.some((delivery) => !delivery.delivery_id || !delivery.parent_execution_id)) {
+      throw new Error("federation delivery evidence identity mismatch");
+    }
+    return page;
+  }
+  /** Stop local recovery without claiming peer success or rejection. */
+  async abandonFederationDelivery(deliveryId: string, request: AbandonFederationDeliveryRequest): Promise<FederationDeliveryEvidence> {
+    return await this.platformRequest("governance_abandon_federation_delivery", {
+      path: { delivery_id: deliveryId }, body: request,
+    }) as FederationDeliveryEvidence;
+  }
+  /** Obtain immutable correlation for the currently ambiguous peer stage. */
+  async federationFinalityCorrelation(namespace: string, tenant: string, deliveryId: string): Promise<FederationFinalityCorrelation> {
+    return await this.platformRequest("governance_federation_finality_correlation", {
+      path: { delivery_id: deliveryId }, query: { namespace, tenant },
+    }) as FederationFinalityCorrelation;
+  }
+  /** Accept qualified peer finality without sending or replaying the delivery. */
+  async reconcileFederationDelivery(deliveryId: string, request: ReconcileFederationDeliveryRequest): Promise<FederationDeliveryEvidence> {
+    return await this.platformRequest("governance_reconcile_federation_delivery", {
+      path: { delivery_id: deliveryId }, body: request,
+    }) as FederationDeliveryEvidence;
+  }
+  /** Authenticate as the configured peer and retain authority without starting execution. */
+  async federationCapabilities(namespace: string, tenant: string, agent: string): Promise<SignedFederationCapabilityCard> {
+    const card = await this.platformRequest("federation_capabilities", {
+      path: { namespace, tenant, agent },
+    }) as SignedFederationCapabilityCard;
+    if (!card.payload || card.signature.length !== 128) {
+      throw new Error("invalid signed federation capability card");
+    }
+    return card;
+  }
+
+  /** Authenticate as the configured peer and retain authority without starting execution. */
+  async importFederationEnvelope(namespace: string, tenant: string, envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {
+    const receipt = await this.platformRequest("federation_import_envelope", {
+      path: { namespace, tenant }, body: { envelope },
+    }) as FederationImportReceipt;
+    if (receipt.namespace !== namespace || receipt.tenant !== tenant || receipt.execution_started !== false) {
+      throw new Error("federation import receipt identity or execution state mismatch");
+    }
+    return receipt;
+  }
+  /** Execute or replay one exact message under signed imported federation authority. */
+  async invokeFederatedAgent(namespace: string, tenant: string, agent: string, invocation: SignedFederationInvocationDeclaration, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const task = await this.platformRequest("federation_invoke_agent", {
+      path: { namespace, tenant, agent }, body: { invocation, message },
+    }) as Record<string, unknown>;
+    if (task.namespace !== namespace || task.tenant !== tenant || typeof task.id !== "string" || task.id.length === 0) {
+      throw new Error("federated task receipt identity mismatch");
+    }
+    return task;
+  }
+  /** Submit one host-qualified cross-domain export from an accepted agent task. */
+  async exportFederatedMessage(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_export_message", namespace, tenant, agent, taskId, profile, message);
+  }
+  /** Observe retained delivery evidence without issuing network traffic. */
+  async observeFederatedExport(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_observe_export_message", namespace, tenant, agent, taskId, profile, message);
+  }
+  /** Explicitly replay the exact request through a qualified idempotent destination. */
+  async replayFederatedExport(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_replay_export_message", namespace, tenant, agent, taskId, profile, message);
+  }
+  private async federationExportRequest(operation: "federation_export_message" | "federation_observe_export_message" | "federation_replay_export_message", namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    const receipt = await this.platformRequest(operation, {
+      path: { namespace, tenant, agent, task_id: taskId, profile }, body: { message },
+    }) as FederationExportReceipt;
+    if (!receipt.attempt_id || !receipt.delivery_id || !["in_flight", "settled", "uncertain"].includes(receipt.attempt_status) || !receipt.delivery || typeof receipt.delivery.status !== "string") {
+      throw new Error("federation export receipt identity mismatch");
+    }
+    return receipt;
   }
   async interveneGovernance(request: GovernanceInterventionRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_intervene", { body: request }) as GovernanceChangeReceipt;
@@ -2570,6 +2792,89 @@ export class ActeonClient {
         }
       }
     } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /** POST one official JSON-RPC request and validate every SSE response frame. */
+  private async *connectAgentA2aSse(
+    path: string,
+    envelope: Record<string, unknown>,
+    requestId: string,
+    extraHeaders: Record<string, string>,
+    requireSource: boolean,
+  ): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+    const headers = { ...this.headers(), ...A2A_HEADERS, ...extraHeaders, Accept: "text/event-stream" };
+    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+      method: "POST",
+      headers,
+      redirect: "error",
+      body: JSON.stringify(envelope),
+    };
+    if (this.dispatcher) fetchOptions.dispatcher = this.dispatcher;
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, fetchOptions);
+    } catch (error) {
+      throw new ConnectionError(error instanceof Error ? error.message : "A2A stream connection failed");
+    }
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A stream version missing or unsupported");
+    if (!response.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream")) throw new Error("agent service did not return an A2A SSE stream");
+    if (!response.body) throw new ConnectionError("A2A SSE response body is null");
+    const sourceContext = requireSource ? agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)) : undefined;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let data: string[] = [];
+    let dataBytes = 0;
+    const parse = (): AgentServiceA2aFrame => {
+      let value: unknown;
+      try { value = JSON.parse(data.join("\n")); } catch { throw new Error("invalid A2A SSE frame"); }
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid A2A SSE frame");
+      const rpc = value as Record<string, unknown>;
+      if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("A2A SSE frame request identity mismatch");
+      if (rpc.error && typeof rpc.error === "object") {
+        const error = rpc.error as Record<string, unknown>;
+        throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "stream failed")}`);
+      }
+      if (!rpc.result || typeof rpc.result !== "object" || Array.isArray(rpc.result)) throw new Error("A2A SSE frame has no object result");
+      return Object.freeze({ result: rpc.result as Record<string, unknown>, ...(sourceContext ? { sourceContext } : {}) });
+    };
+    const consume = (raw: string): AgentServiceA2aFrame | undefined => {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (line === "") {
+        if (data.length === 0) return undefined;
+        const frame = parse();
+        data = [];
+        dataBytes = 0;
+        return frame;
+      }
+      if (line.startsWith("data:")) {
+        const value = line.slice(5).replace(/^ /, "");
+        dataBytes += new TextEncoder().encode(value).byteLength;
+        if (dataBytes > 2 * 1024 * 1024) throw new Error("A2A SSE frame exceeds 2 MiB");
+        data.push(value);
+      }
+      return undefined;
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const frame = consume(line);
+          if (frame) yield frame;
+        }
+        if (buffer.length > 2 * 1024 * 1024) throw new Error("A2A SSE line exceeds 2 MiB");
+        if (done) break;
+      }
+      if (buffer) consume(buffer);
+      if (data.length > 0) yield parse();
+    } finally {
+      await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
   }

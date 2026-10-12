@@ -4,7 +4,7 @@ Go client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 216 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 223 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
@@ -21,6 +21,17 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 ## Typed governance management
 
 Use `Governance`, `PublishGovernancePermit`, and `InterveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+
+Cross-domain execution uses `PublishFederationTrust`,
+`RevokeFederationTrust`, `FederationCapabilities`, `ImportFederationEnvelope`, and
+`InvokeFederatedAgent`. The import helper
+requires a configured peer credential, correlates the returned scope, and
+accepts only a receipt with `ExecutionStarted == false`. Import retains signed
+authority without dispatching work. Invocation sends the exact signed intent
+and message, validates the returned task scope and ID, and does not retry
+automatically. Accepted source tasks use `ExportFederatedMessage`,
+`ObserveFederatedExport`, and `ReplayFederatedExport`; the client returns a
+typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `FederationDeliveryEvidence` for typed sanitized pages and `AbandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 
@@ -442,6 +453,22 @@ if err != nil { return err }
 task, err := client.AgentServiceGetTask(ctx, receipt)
 ```
 
+Invoke and subscribe through the official exact-agent A2A stream. Cancel the
+context when the consumer stops early:
+
+```go
+frames, err := client.AgentServiceSendStreamingMessage(
+    ctx, "prod", "acme", "notifier", message)
+if err != nil { return err }
+for frame := range frames {
+    if frame.Err != nil { return frame.Err }
+    saveHostProvenance(frame.SourceContext)
+    render(frame.Result)
+}
+
+updates, err := client.AgentServiceSubscribeTask(ctx, receipt)
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```go
@@ -507,9 +534,45 @@ The helper sends that job's original identity and source context in one request:
 stopped, err := client.AgentServiceStopTask(ctx, receipt)
 if err != nil { return err }
 fmt.Println(stopped.FutureStartsBlocked, stopped.ProviderAbort, stopped.Task["status"])
+
+officialTask, err := client.AgentServiceCancelTask(ctx, receipt)
+if err != nil { return err }
+fmt.Println(officialTask["metadata"])
+
+page, err := client.AgentServiceListTasks(ctx, "prod", "acme", "notifier",
+    acteon.AgentServiceListOptions{PageSize: 25})
+if err != nil { return err }
+fmt.Println(len(page.Tasks), page.TotalSize, page.NextPageToken)
+// Set Source: receipt for an agent principal or to narrow to this exact job.
 ```
 
+Manage an official callback with an operations-management credential:
+
+```go
+push, err := client.AgentServiceCreatePushConfig(ctx, "prod", "acme", "notifier",
+    receipt.TaskID, acteon.AgentServicePushConfigInput{
+        ID: "incident-hook", URL: "https://hooks.example/a2a",
+        Token: &callbackToken,
+        Authentication: &acteon.AgentServicePushAuthentication{
+            Scheme: "Bearer", Credentials: &webhookSecret,
+        },
+    }, receipt)
+if err != nil { return err }
+configs, err := client.AgentServiceListPushConfigs(ctx, "prod", "acme", "notifier",
+    receipt.TaskID, acteon.AgentServicePushConfigListOptions{PageSize: 25, Source: receipt})
+if err != nil { return err }
+err = client.AgentServiceDeletePushConfig(ctx, "prod", "acme", "notifier",
+    receipt.TaskID, push.ID, receipt)
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context.
+
 The acknowledgement always confirms a durable restriction on future starts.
+`CancellationConfirmed` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `ProviderAbort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

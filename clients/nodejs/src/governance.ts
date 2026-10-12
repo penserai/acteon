@@ -12,6 +12,91 @@ export interface PublishGovernancePermitRequest {
   namespace: string; tenant: string; change_id: string; expected_revision: number;
   permit: GovernancePermitDeclaration; reason: string;
 }
+export interface FederationGrantCeilingDeclaration {
+  source: PrincipalIdentity; target: PrincipalIdentity; agent_resource: GovernanceResource;
+  binding_digest: string; skill: string; ingress_effect: GovernanceEffect;
+  effects: GovernanceEffect[]; limits: GovernanceLimits; max_depth: number;
+}
+export interface FederationTrustDeclaration {
+  id: string; revision: number; foreign_domain: string; local_audience: string;
+  key_id: string; verifying_key: string; minimum_issuer_epoch: number;
+  max_revocation_staleness_ms: number; max_clock_skew_ms: number;
+  valid_from_ms: number; deadline_ms: number; approved: FederationGrantCeilingDeclaration[];
+}
+export interface PublishFederationTrustRequest {
+  namespace: string; tenant: string; change_id: string; expected_revision: number;
+  trust: FederationTrustDeclaration; reason: string;
+}
+export interface RevokeFederationTrustRequest {
+  namespace: string; tenant: string; change_id: string; trust_id: string;
+  expected_revision: number; reason: string;
+}
+export interface SignedFederationEnvelopeDeclaration { payload: string; signature: string; }
+export interface SignedFederationCapabilityCard { payload: string; signature: string; }
+export interface SignedFederationInvocationDeclaration { payload: string; signature: string; }
+export interface FederationImportReceipt {
+  namespace: string; tenant: string; import_id: string; envelope_digest: string;
+  trust_id: string; trust_revision: number; issuer_domain: string;
+  source: PrincipalIdentity; target: PrincipalIdentity; agent_resource: GovernanceResource;
+  binding_digest: string; skill: string; root_id: string; expires_at_ms: number;
+  accepted_at_ms: number; execution_started: false;
+}
+export type FederationExportAttemptStatus = "in_flight" | "settled" | "uncertain";
+export type FederationExportDelivery =
+  | { status: "registered" | "import_uncertain" }
+  | { status: "imported" | "invoke_uncertain"; receipt: FederationImportReceipt }
+  | { status: "accepted"; receipt: FederationImportReceipt; task: Record<string, unknown> }
+  | { status: "rejected"; stage: "import" | "invoke"; code: string }
+  | { status: "abandoned"; stage: "import" | "invoke"; abandonment: FederationDeliveryAbandonment };
+export interface FederationExportReceipt {
+  attempt_id: string;
+  attempt_status: FederationExportAttemptStatus;
+  delivery_id: string;
+  delivery: FederationExportDelivery;
+}
+export type FederationDeliveryEvidenceStatus =
+  | { status: "registered" | "import_uncertain" | "imported" | "invoke_uncertain" | "accepted" }
+  | { status: "capability_negotiating" | "importing" | "invoking"; claim_expires_at_ms: number }
+  | { status: "rejected"; stage: "import" | "invoke"; code: string }
+  | { status: "abandoned"; stage: "import" | "invoke"; abandonment: FederationDeliveryAbandonment };
+export interface FederationDeliveryAbandonment {
+  disposition_id: string; operator: PrincipalIdentity; authority_incarnation: string;
+  authority_generation: number; reason: string; recorded_at_ms: number;
+}
+export interface AbandonFederationDeliveryRequest {
+  namespace: string; tenant: string; disposition_id: string; reason: string;
+}
+export interface ReconcileFederationDeliveryRequest {
+  namespace: string; tenant: string; proof_base64: string;
+}
+export interface FederationDeliveryFinalityEvidence {
+  stage: "import" | "invoke"; accepted: boolean; verifier_revision: string;
+  source_id: string; qualification_ref: string;
+  proof_digest: string; operator: PrincipalIdentity; authority_incarnation: string;
+  authority_generation: number; accepted_at_ms: number;
+}
+export interface FederationFinalityCorrelation {
+  delivery_id: string; stage: "import" | "invoke"; parent_execution_id: string;
+  source: PrincipalIdentity; adapter_revision: string; binding_digest: string;
+  envelope_digest: string; invocation_digest: string; import_id: string;
+  invocation_nonce: string; agent_id: string; message_id: string;
+}
+export interface FederationCapabilityEvidence {
+  card_digest: string; key_id: string; issuer_epoch: number; expires_at_ms: number;
+  protocol_revision: string; authentication_scheme: string; credential_revision: string;
+}
+export interface FederationDeliveryEvidence {
+  delivery_id: string; parent_execution_id: string; source: PrincipalIdentity;
+  agent_id: string; message_id: string; trust_id: string; trust_revision: number;
+  key_id: string; issuer_epoch: number; created_at_ms: number; expires_at_ms: number;
+  expired: boolean; exact_replay_idempotent: boolean; status: FederationDeliveryEvidenceStatus;
+  capability: FederationCapabilityEvidence | null;
+  reconciliations: FederationDeliveryFinalityEvidence[];
+}
+export interface FederationDeliveryEvidencePage {
+  deliveries: FederationDeliveryEvidence[];
+  next_cursor: string | null;
+}
 export type GovernanceIntervention =
   | { kind: "close_resource" | "reopen_resource"; resource: GovernanceResource }
   | { kind: "revoke_subject"; subject: PrincipalIdentity }
@@ -34,6 +119,8 @@ export interface GovernanceManagementBounds {
   can_read_history?: boolean;
   /** Independent qualified finality acceptance; absent means denied. */
   can_reconcile?: boolean;
+  /** Independent configured federation trust-management right; absent means denied. */
+  can_manage_federation?: boolean;
   valid_from_ms: number; limits: GovernanceLimits;
 }
 export interface GovernanceScopeView {
@@ -41,6 +128,7 @@ export interface GovernanceScopeView {
   namespace: string; tenant: string; incarnation: string; generation: number;
   routes: GovernanceRouteView[]; permits: GovernancePermitView[];
   closed_resources: GovernanceResource[]; revoked_subjects: string[];
+  federation_trusts?: Array<{ trust: FederationTrustDeclaration; revoked: boolean }>;
 }
 
 /** Verified retained evidence. Reading it never admits or resumes execution. */

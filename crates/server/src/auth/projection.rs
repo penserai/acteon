@@ -235,6 +235,13 @@ pub struct CredentialPolicyProjector {
             Vec<acteon_core::PrincipalIdentity>,
         ),
     >,
+    federation_export_subjects: BTreeMap<
+        String,
+        (
+            acteon_governance::context::AcceptedEffect,
+            Vec<acteon_core::PrincipalIdentity>,
+        ),
+    >,
     chain_subjects: BTreeMap<String, Vec<acteon_core::PrincipalIdentity>>,
 }
 
@@ -323,6 +330,7 @@ impl CredentialPolicyProjector {
             limits,
             deployment_policy_fingerprint: None,
             agent_subjects: BTreeMap::new(),
+            federation_export_subjects: BTreeMap::new(),
             chain_subjects: BTreeMap::new(),
         })
     }
@@ -400,6 +408,66 @@ impl CredentialPolicyProjector {
         Ok(self)
     }
 
+    /// Independently declared outbound federation rights. A credential gains
+    /// one only through the exact `federation.<profile>/export` auth grant.
+    pub(crate) fn with_federation_export_admission_bounds(
+        mut self,
+        bounds: BTreeMap<
+            String,
+            (
+                acteon_governance::context::AcceptedEffect,
+                Vec<acteon_core::PrincipalIdentity>,
+            ),
+        >,
+    ) -> Result<Self, String> {
+        if bounds.len() > 128 {
+            return Err("too many federation export admission bounds".into());
+        }
+        for (profile, (effect, subjects)) in &bounds {
+            if effect.operation != "federation.export"
+                || subjects.is_empty()
+                || subjects.len() > 16
+                || !self.issuance.effects.contains(effect)
+                || effect.resources.len() != 1
+                || !effect.resources.iter().any(|resource| {
+                    resource.kind() == acteon_core::ResourceKind::ExternalService
+                        && resource.id() == profile.as_str()
+                })
+                || subjects
+                    .iter()
+                    .any(|subject| !self.issuance.subjects.contains(subject))
+            {
+                return Err(
+                    "federation export admission exceeds independent publication bounds".into(),
+                );
+            }
+        }
+        self.federation_export_subjects = bounds;
+        Ok(self)
+    }
+
+    fn federation_export_effects(
+        &self,
+        principal: &acteon_core::PrincipalIdentity,
+        grants: &[super::config::Grant],
+    ) -> Vec<acteon_governance::context::AcceptedEffect> {
+        self.federation_export_subjects
+            .iter()
+            .filter(|(profile, (_, subjects))| {
+                subjects.contains(principal)
+                    && grants.iter().any(|grant| {
+                        grant.matches(
+                            &self.tenant,
+                            &self.namespace,
+                            &format!("federation.{profile}"),
+                            "export",
+                        )
+                    })
+            })
+            .map(|(_, (effect, _))| effect.clone())
+            .collect()
+    }
+
     fn agent_effects(
         &self,
         principal: &acteon_core::PrincipalIdentity,
@@ -461,6 +529,34 @@ impl CredentialPolicyProjector {
             .collect()
     }
 
+    fn configuration_fingerprint(&self, auth_fingerprint: &str) -> Result<String, String> {
+        let mut fingerprint = json!({
+            "format": "acteon.auth.execution_projection.v1",
+            "auth_fingerprint": auth_fingerprint,
+            "namespace": self.namespace, "tenant": self.tenant,
+            "catalog": self.catalog.fingerprint(),
+            "issuer": self.issuance.issuer,
+            "valid_from_ms": self.valid_from_ms, "limits": self.limits,
+        });
+        if !self.chain_subjects.is_empty() {
+            fingerprint["chain_subjects"] = json!(self.chain_subjects);
+        }
+        if !self.agent_subjects.is_empty() {
+            fingerprint["agent_subjects"] = json!(self.agent_subjects);
+        }
+        if !self.federation_export_subjects.is_empty() {
+            fingerprint["federation_export_subjects"] = json!(self.federation_export_subjects);
+        }
+        if let Some(policy) = &self.deployment_policy_fingerprint {
+            fingerprint
+                .as_object_mut()
+                .ok_or("invalid execution projection")?
+                .insert("deployment_policy".into(), json!(policy));
+        }
+        let bytes = serde_json::to_vec(&fingerprint).map_err(|_| "invalid execution projection")?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
     /// Resolve each logical credential separately. The complete configuration
     /// fingerprint includes non-execution grants and rotation through the auth
     /// source, plus qualification and fixed per-root limits through this scope.
@@ -518,6 +614,7 @@ impl CredentialPolicyProjector {
             if role.has_permission(Permission::Dispatch) {
                 effects.extend(self.chain_effects(principal, grants)?);
                 effects.extend(self.agent_effects(principal, grants));
+                effects.extend(self.federation_export_effects(principal, grants));
             }
             if !self.issuance.subjects.contains(principal) {
                 if effects.is_empty() {
@@ -543,28 +640,11 @@ impl CredentialPolicyProjector {
             credential.execution_enabled = !credential.ceiling.effects.is_empty();
             credentials.entry(id.to_owned()).or_insert(credential);
         }
-        let mut fingerprint = json!({
-            "format": "acteon.auth.execution_projection.v1",
-            "auth_fingerprint": source.configuration_fingerprint,
-            "namespace": self.namespace, "tenant": self.tenant,
-            "catalog": self.catalog.fingerprint(),
-            "issuer": self.issuance.issuer,
-            "valid_from_ms": self.valid_from_ms, "limits": self.limits,
-        });
-        if !self.chain_subjects.is_empty() {
-            fingerprint["chain_subjects"] = json!(self.chain_subjects);
-        }
-        if let Some(policy) = &self.deployment_policy_fingerprint {
-            fingerprint
-                .as_object_mut()
-                .ok_or("invalid execution projection")?
-                .insert("deployment_policy".into(), json!(policy));
-        }
-        let bytes = serde_json::to_vec(&fingerprint).map_err(|_| "invalid execution projection")?;
         Ok(CredentialConfiguration {
             source_id: source.source_id,
             revision: source.revision,
-            configuration_fingerprint: format!("{:x}", Sha256::digest(bytes)),
+            configuration_fingerprint: self
+                .configuration_fingerprint(&source.configuration_fingerprint)?,
             credentials: credentials.into_values().collect(),
         })
     }
@@ -615,5 +695,156 @@ impl CredentialPolicyProjector {
             .await
             .map_err(|_| "scope publication refused; reconcile security revision")?;
         Ok(reference)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
+    use acteon_executor::{catalog::QualifiedProviderCatalog, governed::BoundProvider};
+    use acteon_governance::{
+        AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits, context::AcceptedEffect,
+        permit::PermitIssuanceCeiling,
+    };
+    use acteon_state::StateStore;
+    use acteon_state_memory::MemoryStateStore;
+
+    use super::CredentialPolicyProjector;
+    use crate::{
+        auth::{
+            api_key::hash_api_key,
+            authority::AuthAuthority,
+            config::{ApiKeyConfig, AuthFileConfig, AuthSettings, Grant},
+            crypto::SecretString,
+        },
+        config::AuthAuthorityConfig,
+    };
+
+    #[tokio::test]
+    async fn federation_export_projection_requires_exact_profile_grant() {
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let control = AuthorityCoordinator::initialize(
+            state.clone(),
+            "auth-control",
+            "deployment",
+            CoordinatorLimits::default(),
+        )
+        .await
+        .unwrap();
+        let scope =
+            AuthorityCoordinator::initialize(state, "prod", "acme", CoordinatorLimits::default())
+                .await
+                .unwrap();
+        let authority = AuthAuthority::new(
+            control,
+            &AuthAuthorityConfig {
+                namespace: "auth-control".into(),
+                tenant: "deployment".into(),
+                source_id: "auth".into(),
+                bootstrap: false,
+            },
+            SecretString::new("projection-test-key-at-least-32-bytes".into()),
+        )
+        .unwrap();
+        let principal = PrincipalIdentity::new("agent/notifier", PrincipalKind::Agent).unwrap();
+        let provider: Arc<dyn acteon_provider::DynProvider> =
+            Arc::new(acteon_provider::LogProvider::new("incident"));
+        let bound = BoundProvider::new_trusted(
+            provider,
+            &ResourceRef::new(ResourceKind::Endpoint, "prod", "acme", "incident").unwrap(),
+            "execute",
+            "opaque-v1",
+            vec![],
+        )
+        .unwrap();
+        let catalog = QualifiedProviderCatalog::new_trusted(vec![bound]).unwrap();
+        let provider_effect = catalog.definitions("prod", "acme")[0].effect.clone();
+        let export_effect = AcceptedEffect {
+            operation: "federation.export".into(),
+            resources: vec![
+                ResourceRef::new(
+                    ResourceKind::ExternalService,
+                    "prod",
+                    "acme",
+                    "remote-triage",
+                )
+                .unwrap(),
+            ],
+        };
+        let limits = RootBudgetLimits {
+            max_units: 5,
+            max_concurrent: 2,
+            deadline_ms: 4_102_444_800_000,
+        };
+        let projector = CredentialPolicyProjector::new_trusted(
+            scope,
+            catalog,
+            PermitIssuanceCeiling {
+                issuer: PrincipalIdentity::new("publisher", PrincipalKind::System).unwrap(),
+                subjects: vec![principal.clone()],
+                effects: vec![provider_effect, export_effect.clone()],
+                valid_from_ms: 0,
+                limits: limits.clone(),
+            },
+            0,
+            limits,
+        )
+        .await
+        .unwrap()
+        .with_federation_export_admission_bounds(BTreeMap::from([(
+            "remote-triage".into(),
+            (export_effect.clone(), vec![principal.clone()]),
+        )]))
+        .unwrap();
+        let mut config = AuthFileConfig {
+            authority_revision: Some(1),
+            settings: AuthSettings {
+                jwt_secret: SecretString::new("jwt-projection-secret-at-least-32-bytes".into()),
+                jwt_expiry_seconds: 3600,
+            },
+            users: vec![],
+            api_keys: vec![ApiKeyConfig {
+                authority_id: Some("credential/notifier".into()),
+                name: "notifier".into(),
+                principal: Some(principal),
+                key_hash: SecretString::new(hash_api_key("notifier-secret").into()),
+                role: "operator".into(),
+                grants: vec![
+                    Grant {
+                        namespaces: vec!["prod".into()],
+                        tenants: vec!["acme".into()],
+                        providers: vec!["incident".into()],
+                        actions: vec!["execute".into()],
+                        agent_id: None,
+                    },
+                    Grant {
+                        namespaces: vec!["prod".into()],
+                        tenants: vec!["acme".into()],
+                        providers: vec!["federation.remote-triage".into()],
+                        actions: vec!["export".into()],
+                        agent_id: None,
+                    },
+                ],
+            }],
+        };
+
+        let projected = projector.project(&authority, &config).unwrap();
+        assert!(
+            projected.credentials[0]
+                .ceiling
+                .effects
+                .contains(&export_effect)
+        );
+
+        config.api_keys[0].grants.pop();
+        let projected = projector.project(&authority, &config).unwrap();
+        assert!(
+            !projected.credentials[0]
+                .ceiling
+                .effects
+                .contains(&export_effect)
+        );
     }
 }

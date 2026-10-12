@@ -45,8 +45,8 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
-| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, and authenticated remote auth handoff implemented | Federation trust/revocation and broader recovery proof |
-| 5: Production/federation | Audience-bound federation trust kernel implemented on the current branch | Runtime/management integration, credential exchange, verified peer capability matrix and external failure tests |
+| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, authenticated remote auth handoff, and inbound federated execution implemented | Broader recovery and cross-domain qualification proof |
+| 5: Production/federation | Audience-bound trust kernel, configured peer identity binding, authenticated trust management, inert inbound import admission, and exact current-identity agent dispatch/replay implemented on the current branch | Outbound transport, credential exchange, verified peer capability matrix and external failure tests |
 
 Next work should integrate trusted execution context into deferred paths and
 complete coordinator/accounting prerequisites before per-effect enforcement. Do
@@ -1985,7 +1985,7 @@ restart, and recovery with exactly one verifier call for the successful
 challenge. Federation trust and cross-domain revocation remain the next Phase 4
 boundary.
 
-### Federation trust kernel (in progress, unpublished)
+### Federation trust, authenticated import and agent dispatch (in progress, unpublished)
 
 The governance coordinator now has an explicit asymmetric cross-domain trust
 boundary. Locally reviewed trust records bind one foreign domain and Ed25519 key
@@ -2008,7 +2008,309 @@ record tampering and reviewed cutover. CI now explicitly runs the same
 cross-replica publish/import/start/revoke contract on Redis, PostgreSQL and
 DynamoDB. See [Federation trust kernel](federation-trust-kernel.md).
 
-This is the trust and accounting substrate, not a public federation release.
-Configured runtime bindings, authenticated management, credential exchange,
-capability negotiation, qualified wire transport, partition/reconciliation
-operations and named external implementation conformance remain Phase 5 gates.
+The server integration now adds deployment-owned local audience, exact trust
+revisions, and a one-to-one binding from each foreign domain to a current local
+authentication principal. Managers need an independent federation permission
+and exact trust-ID footprint. Trust publication can only select a declaration
+inside that prepared ceiling; terminal revocation uses the same bound.
+
+The protected import route authenticates the configured peer, verifies its
+signed envelope, and requires an exact match to the prepared recipient service,
+skill, agent resource, binding digest, ingress effect and direct effects. It
+returns a typed receipt with `execution_started: false`. The runtime creates no
+task, accepted execution context, effect attempt or outbound call. Operator
+credentials cannot impersonate the peer, and a revoked trust rejects subsequent
+imports. All five SDKs share one typed fixture for trust publication,
+revocation, and envelope admission.
+
+The separate protected dispatch route accepts an exact signed invocation and
+its A2A message. It binds the current peer principal to the retained import,
+agent and qualified service, requires the body message to equal the message
+inside the signed payload before persistence, independently seals the prepared
+provider input, and repeats signed authority and
+root-budget checks in the provider-start transaction. Generic recovery cannot
+run a federated acceptance. Authenticated concurrent replay converges on one
+provider call, and an exact completed replay remains observable after trust
+revocation without starting another effect. Rust, Python, TypeScript, Go and
+Java expose the typed operation.
+
+This remains an incomplete federation release. Outbound production
+qualification, brokered credential exchange and rotation,
+partition/reconciliation operations, operational expiry views and named
+external-implementation conformance remain Phase 5 gates.
+
+### Durable outbound federation delivery (in progress, unpublished)
+
+The executor now has a backend-neutral outbound federation journal over the
+configured `StateStore`. It persists the exact parent, remote origin, signed
+envelope, signed invocation, and typed message before networking. Import and
+invocation use separate compare-and-swap claims and checkpoints. A lost or
+malformed response stays uncertain, a normal repeat never resends it, and an
+explicit replay can reclaim it only through an adapter qualified for exact
+idempotent replay. Signed validity and claim timeouts use the shared Acteon
+clock; terminal evidence remains observable after expiry.
+
+Registration is separately callable from network delivery so the trusted host
+can persist the exact signed intent, reserve current local permit and budget
+authority, and only then cross the network boundary. Delivery without the
+matching retained intent conflicts before invoking the adapter.
+
+The first concrete adapter uses the guarded outbound client, one host-owned
+credential, disabled redirects and proxies, bounded response reads, and exact
+Acteon federation routes derived from the signed remote scope. Credentials do
+not enter durable state. Import receipts and returned tasks are correlated to
+the full signed intent before their acceptance is persisted. See
+[Durable outbound federation transport](durable-federation-transport.md).
+
+Focused memory contracts cover concurrent ownership, crash-visible claims,
+import and invocation ambiguity, qualified recovery, expiry, exact replay,
+message substitution, and retained-state tampering. The adapter route contract
+compiles locally; its loopback execution requires a socket-enabled test
+environment.
+
+This transport is consumed by the governed export runtime described below.
+Operator reconciliation, capability and credential rotation, and two-server
+production-backend qualification remain open.
+
+### Governed federation export authority (in progress, unpublished)
+
+The source-side exporter now owns signature construction behind an immutable
+qualified profile. The profile pins the remote origin, audience, trust and key
+revision, expected signing public key, target principal, agent binding, exact
+remote effect ceiling, limits, depth, lifetime, and one local
+`federation.export` effect. It has no deserializer, and the exporter refuses a
+private signing key that does not match the pinned public key.
+
+For one stable export ID, invocation nonce, message and validity interval, the
+exporter persists deterministic signed bytes before registering a local
+permitted attempt. That attempt charges the entire delegated remote unit ceiling
+against the source root, so overlapping exports cannot promise the same units.
+Only then may the durable transport call the remote import and invocation
+routes. Known acceptance or rejection releases source concurrency; ambiguity
+remains uncertain and retains it.
+
+Authorization and delivery are separate. A current source credential, permit,
+representation/delegation lineage, closure state, local export effect and budget
+are checked at reservation. Any still-unused registered/imported stage is
+rechecked immediately before network delivery. Definitive revocation becomes a
+durable local rejection without an adapter call. Explicit exact replay also
+requires current authority, while observation can repair accounting without
+granting new work. Focused contracts prove exact replay spends once, revocation
+blocks both undelivered work and ambiguous replay, and uncertainty retains local
+capacity.
+
+### Deployment-managed federation export runtime (in progress, unpublished)
+
+Execution-scope configuration now declares exact outbound profiles and requires
+each profile to name a current source agent service and an independent source
+permit. Preparation adds only the profile's `federation.export` effect to that
+service plan and to the deployment issuance ceiling. Permit publication adds
+only explicitly listed `federation_exports`. Outbound-only domains may omit
+inbound trusts and peer bindings.
+
+Runtime installation resolves the signer and peer credential from environment
+references, proves the signer matches the configured public key, binds the
+complete profile and TLS qualification into the guarded HTTP adapter, and
+builds the exporter over the configured `StateStore`, shared clock and optional
+encryptor. A missing or inconsistent secret prevents startup.
+
+The authenticated source API accepts only an export profile name and message
+under an accepted local agent task. It recovers the source execution context,
+matches current private authentication, verifies the qualified service binding,
+and checks the exact `federation.<profile>/export` authentication grant plus
+current export permit authority. Credential projection independently maps that
+grant to the profile's local `federation.export` effect, and deployment preflight
+requires the source credential to cover every direct effect in its immutable
+service plan. A compare-and-swap issuance record retains
+stable export and nonce IDs, issue time, expiry, message digest, profile digest
+and attenuated limits before signed delivery. Retries after restart therefore
+reconstruct the same signed request; changed content or configuration conflicts.
+Separate send, observation and explicit replay routes preserve the transport's
+uncertainty rules. All five SDK catalogs and typed helpers include the three
+operations.
+
+Outbound profiles now use a bounded rotation keyring. New work selects the
+highest declared active epoch; retained work selects the exact epoch recorded
+at issuance. Each epoch owns its signer, credential, trust/key revision and
+reviewed remote agent card, so overlapping rotations preserve old signed bytes
+and adapter bindings without allowing active-epoch rollback.
+
+Federation managers with independent reconciliation authority can now page
+through sanitized delivery evidence across all retained epochs. The state-backed
+view is filtered to their declared source principals, classifies active,
+uncertain, terminal and expired work, omits payloads and secrets, and rechecks
+authority after reading storage. Rust, Python, TypeScript, Go and Java expose
+the typed operation.
+
+Reconciliation managers can also abandon an ambiguous or expired claimed
+delivery. The durable disposition names the authenticated operator, authority
+generation, reason, timestamp and stable idempotency ID, preserves the unknown
+peer outcome, blocks replay, and settles the retained local export reservation.
+It cannot assert remote success or rejection and contains no network operation.
+
+The state substrate now exposes ordered, cursor-based, bounded scope/kind pages.
+Federation evidence consumes that generic contract. PostgreSQL uses an ordered
+range query and DynamoDB uses its partition/sort-key `Query`; memory establishes
+the reference semantics. Custom stores remain source compatible through the
+correct scan-and-sort default. Redis maintains an ordered scope/kind sorted-set
+index on writes, repairs it on reads and CAS conflicts, prunes stale TTL members,
+and lazily backfills records created before the index existed.
+The shared state-store conformance suite covers ordering, continuation and
+prefix isolation; backend integration jobs are responsible for executing it
+against their actual services.
+
+Qualified peer-finality acceptance is now implemented as a host-installed,
+profile-epoch-bound verifier. It exposes payload-free correlation, accepts only
+opaque proof bytes under current independent reconciliation authority, preserves
+an append-only stage audit with its reviewed source and qualification contract,
+and settles source accounting only after the delivery journal commits. The
+delivery retains its local export resource, and every evidence read or mutation
+must fit the manager's principal and resource ceilings. Import acceptance can
+safely resume at invocation; terminal proof replay reverifies the original
+evidence and repairs a lost settlement acknowledgement without peer traffic.
+Rust, Python, TypeScript, Go and Java expose the typed operations.
+
+The integration matrix now runs one federation-specific contract through
+independent Redis, PostgreSQL and DynamoDB clients. It persists an invocation
+with a lost response, crosses a simulated process boundary, accepts exact
+qualified peer finality, pages sanitized evidence through the generic state
+API, and proves a restarted transport performs zero additional imports or
+invocations. A separate Redis integration now starts real source and destination
+Acteon server processes over HTTP. It negotiates a signed capability card,
+commits an import and invocation, loses the first invocation response, preserves
+the ambiguity across both process restarts, then uses explicit exact replay to
+recover the original remote task while proving the provider ran once. Full A2A
+TCK conformance remains required for the federation release gate.
+
+An interoperability audit against the ratified A2A 1.0 specification found that
+the original public surface still used pre-1.0 discovery and JSON-RPC shapes
+despite carrying a `1.0` version header. The server now has a schema-closed
+`agent-card.json` projection, PascalCase `SendMessage`, `GetTask`, `CancelTask`
+and `GetExtendedAgentCard` methods, ProtoJSON roles and task states, the v1
+`SendMessageResponse` oneof wrapper, and the canonical version error code. The
+legacy stored card and slash-separated methods remain compatibility surfaces.
+The Redis integration job installs the independently released official Python
+`a2a-sdk` 1.2.2 and drives send, get, paginated list, cancel and terminal
+observation against a real Acteon process before running the two-server
+federation loss/restart proof. `SendMessage` now honors the v1 blocking default
+and returns early only when `configuration.returnImmediately` is true.
+`ListTasks` binds opaque cursors to its filters,
+supports the v1 time, status, context, history and artifact selectors, and keeps
+task ownership fields off the wire. The four v1
+push-notification methods now adapt the protocol's
+single authentication scheme to Acteon's durable push configuration, provide
+filter-safe pagination, bind inline `SendMessage` configurations to the trusted
+resulting task, and are exercised through the official client. The
+public card advertises push only when the durable card enables it.
+Capability-gated calls now return the canonical A2A error codes with typed
+`google.rpc.ErrorInfo` details; undeclared push and extended-card features fail
+closed, and streaming calls return `UnsupportedOperation` while streaming is
+unadvertised.
+Every push configuration operation, including secret-bearing reads and inline
+`SendMessage` registration, requires management permission so an execution-only
+agent cannot install an exfiltration webhook or recover its credentials.
+HTTP+JSON is deliberately not advertised until its v1 wire adapter passes the
+same external gate.
+
+The official JSON-RPC streaming adapter now implements `SendStreamingMessage`
+and `SubscribeToTask` over SSE. Every frame retains the request ID and contains
+one schema-closed ProtoJSON `StreamResponse`; each stream starts with the
+durable Task snapshot and then maps ordered status and artifact events.
+Broadcast lag produces a fresh Task snapshot. Send streams close on an
+interrupt or terminal state, while subscriptions remain open through an
+interrupt and close at terminal state. Tenant-scoped connection quotas, current
+card capability checks, lifecycle suspension, tenant routing and inline-push
+management apply before streaming. Discovery advertises streaming only for a
+card that enables it. The official Python SDK integration now invokes both
+streaming methods before exercising task and push lifecycle operations. A full
+official TCK run remains the external release gate.
+
+An exact-agent official JSON-RPC adapter now connects inbound A2A work to the
+governed agent-service runtime at
+`/a2a/{namespace}/{tenant}/agents/{agent}`. `SendMessage` uses the installed
+service binding, current private caller authentication, source grant, permits,
+registry qualification, destination authentication and bounded execution
+contexts before durable acceptance. `GetTask` revalidates the original source,
+and agent principals must return the opaque source-context receipt issued at
+admission so a shared identity cannot join another job. Input continuation
+uses the same boundary. Trusted hosts may pair a private parent-context header
+with its exact permit references to preserve descendant accounting; neither
+can be supplied through model-controlled message content. The adapter projects
+schema-closed A2A 1.0 Tasks and resolves the exact durable card for
+`GetExtendedAgentCard`; it never chooses a destination from an aggregate tenant
+card. The same endpoint now implements official `SendStreamingMessage` and
+`SubscribeToTask`. It subscribes before admission or observation, shares the
+tenant connection quota, and revalidates current authentication plus original
+source provenance before every emitted update. Recovery snapshots also remove
+the private governed execution binding. Exact-agent `ListTasks` now walks the
+configured state backend in bounded pages, verifies the installed agent binding
+and original source for every acceptance, rechecks authentication after the
+scan, and returns exact totals in required last-update-descending order. Its
+opaque cursor binds the caller, optional source receipt and complete filters.
+Agent principals see no task without an exact job receipt, preventing shared
+credentials from enumerating sibling jobs. Human, service and system sources
+can page all of their own Tasks. All five SDKs and the browser expose the same
+schema-validated page.
+
+Exact-agent push configuration now uses that same task authority and adds an
+operations-management check for create, secret-bearing get/list, delete, and
+inline registration. Inline replay derives a stable configuration identity.
+Stored rows are schema, identity, and URL validated again when read or delivered.
+Callbacks carry official A2A `StreamResponse` bodies, `application/a2a+json`,
+protocol version, notification token, and the configured authentication scheme.
+Rust, Python, TypeScript, Go, and Java expose typed, task-bound CRUD helpers.
+Task mutations now append the callback payload in the same state-backend CAS;
+per-configuration cursors, fenced leases, persisted retry deadlines, and bounded
+dead letters provide ordered at-least-once delivery across lag, restart, and
+concurrent replicas. The live broadcast is only a fast wake-up, while bounded
+cross-scope Task pages repair missed work. A state-backend ready-work index
+normally schedules only Tasks with due callbacks and is itself rebuilt from the
+authoritative Task envelope. Configuration mutations emit sanitized audit
+receipts. Secret-provider references or encrypted state values remain the
+credential-custody follow-up; credentials must not enter audit payloads, model
+context, or ordinary operator projections.
+
+Exact-agent `CancelTask` now commits the coordinator's execution-subtree fence
+before returning. A task with no registered attempt is projected `Canceled`, as
+is an in-flight attempt only after the installed reconciliation verifier accepts
+a provider proof of no effect. An unsupported or uncertain abort leaves the
+actual task nonterminal and publishes `metadata.acteonCancellation` as
+`requested`; a late known provider completion remains authoritative. Repeated
+cancellation of a confirmed canceled task is idempotent, while completed,
+failed and rejected tasks return canonical `TaskNotCancelable`. Native stop
+receipts add `cancellation_confirmed`, and Rust, Python, TypeScript, Go and Java
+provide receipt-aware official cancellation helpers. Runtime contracts cover
+restart, concurrent stops, local non-start, uncertain work and qualified
+no-effect finality. Real-server HTTP contracts compile, but this managed session
+cannot execute their loopback listeners; final-head CI remains the external
+network gate.
+
+### Signed federation capability negotiation
+
+Federation capability negotiation now has a schema-closed governance contract.
+A host-only Ed25519 signer produces a short-lived card for one destination
+domain and one source audience. The card binds its key and revocation epoch,
+the exact agent resource and service digest, ordered skills, protocol revision,
+replay and finality guarantees, and accepted authentication schemes. The source
+verifier authenticates the original bytes with a separately pinned public key,
+then intersects them with an exact local requirement including a minimum peer
+epoch. Wrong audiences, stale epochs, changed bindings, missing skills,
+downgraded guarantees, unsupported authentication, tampering, future cards and
+expired cards fail closed.
+
+The protected destination route now derives the card audience from current peer
+authentication and signs the current service binding on demand. The outbound
+HTTP adapter fetches and verifies the card before import. A separate read-only
+claim makes discovery outage ordinarily retryable without creating remote
+effect ambiguity, and the delivery journal retains sanitized card digest,
+key/epoch, expiry, protocol, authentication scheme and credential-provider
+revision before import. Managers see that sanitized evidence through every SDK.
+
+Outbound profiles may retain a static bearer secret or install a qualified
+OAuth 2 client-credentials exchange. The broker pins its endpoint, client ID,
+audience, canonical scopes, outbound network policy, timeout, refresh skew and
+revision into the immutable export epoch. It validates bounded Bearer tokens,
+coalesces refreshes, holds tokens only in zeroized process memory, and returns a
+proven-not-sent disposition when acquisition fails before an effect request.
+The credential timeout must finish before the durable transport claim timeout,
+so acquisition failure does not manufacture remote-effect ambiguity.

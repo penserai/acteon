@@ -12,11 +12,15 @@ use crate::{
         },
     },
 };
-use acteon_core::{ExecutionContextReference, PrincipalKind, Task, TaskMessage};
+use acteon_core::{
+    AgentCard, ExecutionContextReference, PrincipalKind, PushAuthentication, Task, TaskMessage,
+    TaskPushNotificationConfig,
+};
 use acteon_executor::governed::governed_provider_input_digest;
 use acteon_gateway::agent_runtime::{
     ACCEPTANCE_KIND, AgentProviderRuntime, AgentTaskStopReceipt, accepted_agent_binding_digest,
 };
+use acteon_gateway::task_engine::{TaskEngine, TaskScope};
 use acteon_governance::{
     AuthorityCoordinator, RootBudgetLimits,
     context::{
@@ -32,6 +36,7 @@ use acteon_governance::{
 };
 use acteon_state::{KeyKind, StateKey};
 use acteon_time::Clock;
+use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
 /// Original private middleware proof and actual message. No deserializer.
@@ -43,6 +48,43 @@ pub struct AgentServiceRequest<'a> {
     pub authentication: &'a AuthenticatedExecutionConfiguration,
     pub auth_provider: &'a AuthProvider,
     pub parent: Option<AgentServiceParent<'a>>,
+    pub initial_push_configs: &'a [AgentServiceInitialPushConfig],
+}
+
+/// Validated callback input carried into governed task admission. The runtime
+/// binds it to the accepted execution ID and persists it atomically with the
+/// Task projection.
+pub struct AgentServiceInitialPushConfig {
+    pub id: Option<String>,
+    pub url: String,
+    pub token: Option<String>,
+    pub authentication: Option<PushAuthentication>,
+}
+
+fn materialize_initial_push_configs(
+    request: &AgentServiceRequest<'_>,
+    task_id: uuid::Uuid,
+    namespace: &str,
+    tenant: &str,
+    now: DateTime<Utc>,
+) -> Vec<TaskPushNotificationConfig> {
+    request
+        .initial_push_configs
+        .iter()
+        .map(|input| TaskPushNotificationConfig {
+            id: input.id.clone().unwrap_or_else(|| {
+                uuid::Uuid::new_v5(&task_id, b"acteon:a2a:inline-push").to_string()
+            }),
+            task_id: task_id.to_string(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            url: input.url.clone(),
+            token: input.token.clone(),
+            authentication: input.authentication.clone(),
+            created_at: now,
+            updated_at: now,
+        })
+        .collect()
 }
 /// Transport receipt; the host retains source provenance separately from model data.
 pub struct AgentServiceAcceptance {
@@ -54,6 +96,37 @@ pub struct AgentServiceAcceptance {
 pub struct AgentServiceTaskObservation {
     pub task: Task,
     pub task_version: u64,
+    pub future_starts_blocked: bool,
+}
+
+/// Stable position in the protocol's required last-update-descending order.
+/// The task ID is the deterministic tie breaker for equal timestamps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentServiceListPosition {
+    pub updated_at: DateTime<Utc>,
+    pub task_id: String,
+}
+
+/// Authenticated, exact-agent task query. The source context narrows visibility
+/// to one accepted job and is mandatory for agent principals, preserving the
+/// same per-job isolation as direct observation.
+pub struct AgentServiceListRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+    pub source_context: Option<&'a ExecutionContextReference>,
+    pub context_id: Option<&'a str>,
+    pub status: Option<acteon_core::TaskState>,
+    pub status_timestamp_after: Option<DateTime<Utc>>,
+    pub after: Option<&'a AgentServiceListPosition>,
+    pub page_size: usize,
+}
+
+pub struct AgentServiceListPage {
+    pub tasks: Vec<AgentServiceTaskObservation>,
+    pub total_size: usize,
+    pub has_more: bool,
 }
 
 pub struct AgentServiceObservation<'a> {
@@ -98,6 +171,18 @@ pub struct AgentServiceParent<'a> {
 }
 
 impl ExecutionAuthorityRuntime {
+    /// Return the exact operator-qualified card installed with this service.
+    /// Generic bus publication cannot replace or widen this capability source.
+    pub fn agent_service_card(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+    ) -> Result<AgentCard, AgentServiceError> {
+        let (_, agent, _) = self.service(namespace, tenant, agent_id)?;
+        Ok(agent.declaration.card.clone())
+    }
+
     // Preflight all services before any deployment permit or grant is published.
     // Private authentication enrollment may exist already; it is never a permit.
     pub(super) async fn validate_agent_credentials(
@@ -161,13 +246,19 @@ impl ExecutionAuthorityRuntime {
             .credentials
             .get(&binding.credential_reference().id)
             .ok_or(AgentServiceError::Unavailable)?;
-        if !credential
-            .authority
-            .ceiling
-            .effects
-            .iter()
-            .any(|effect| acteon_governance::permit::matches_effect(effect, agent.bound.effect()))
-        {
+        let direct_effects = agent
+            .binding
+            .service_plan()
+            .ok_or(AgentServiceError::Unavailable)?
+            .direct_effects();
+        if direct_effects.iter().any(|required| {
+            !credential
+                .authority
+                .ceiling
+                .effects
+                .iter()
+                .any(|accepted| acteon_governance::permit::matches_effect(accepted, required))
+        }) {
             return Err(AgentServiceError::Unavailable);
         }
         Ok(binding)
@@ -333,9 +424,8 @@ impl ExecutionAuthorityRuntime {
             .scope(request.namespace, request.tenant)
             .map_err(|_| AgentServiceError::Forbidden)?;
         let actor = source.authentication_source().principal();
-        if let Some(replayed) = self
-            .replay_accepted_agent_service(scope, &request, &source)
-            .await?
+        if let Some(replayed) =
+            Box::pin(self.replay_accepted_agent_service(scope, &request, &source)).await?
         {
             return Ok(replayed);
         }
@@ -567,11 +657,19 @@ impl ExecutionAuthorityRuntime {
             })
             .await
             .map_err(AgentServiceError::from)?;
+        let initial_push_configs = materialize_initial_push_configs(
+            &request,
+            child.execution_id(),
+            request.namespace,
+            request.tenant,
+            self.clock.now(),
+        );
         let task = runtime
-            .accept(
+            .accept_with_push_configs(
                 &child,
                 &agent.declaration.recipient_permits,
                 request.message,
+                initial_push_configs,
             )
             .await
             .map_err(AgentServiceError::from)?;
@@ -629,6 +727,9 @@ impl ExecutionAuthorityRuntime {
             && source.auth_method() == caller.authentication_source().auth_method()
     }
 
+    // Keep authentication, original-source binding, provider-input binding,
+    // and immutable callback replay checks visible in their required order.
+    #[allow(clippy::too_many_lines)]
     async fn replay_accepted_agent_service(
         &self,
         scope: &InstalledScope,
@@ -712,15 +813,22 @@ impl ExecutionAuthorityRuntime {
                 return Err(AgentServiceError::Conflict);
             }
         }
-        let observed = runtime
-            .observe(child.execution_id())
+        let initial_push_configs = materialize_initial_push_configs(
+            request,
+            child.execution_id(),
+            request.namespace,
+            request.tenant,
+            self.clock.now(),
+        );
+        let task = runtime
+            .replay_acceptance(&child, request.message, initial_push_configs)
             .await
-            .map_err(AgentServiceError::observation)?;
+            .map_err(AgentServiceError::from)?;
         self.accepted_service_snapshot(
             request.namespace,
             request.tenant,
             child.execution_id(),
-            &observed.task,
+            &task,
             source
                 .reference()
                 .map_err(|_| AgentServiceError::Unavailable)?,
@@ -738,7 +846,7 @@ impl ExecutionAuthorityRuntime {
         source_context: ExecutionContextReference,
     ) -> Result<AgentServiceAcceptance, AgentServiceError> {
         let versioned = self
-            .load_versioned_service_task(namespace, tenant, task_id, observed)
+            .load_versioned_service_task(namespace, tenant, task_id, observed, false)
             .await?;
         Ok(AgentServiceAcceptance {
             task: versioned.task,
@@ -764,8 +872,170 @@ impl ExecutionAuthorityRuntime {
             &observed.task.tenant,
             task_id,
             &observed.task,
+            observed.future_starts_blocked,
         )
         .await
+    }
+
+    /// List only governed acceptances for one exact installed agent and the
+    /// current authenticated source. Storage is consumed in bounded backend
+    /// pages. Exact protocol `totalSize` still requires visiting the complete
+    /// acceptance set, but memory remains bounded by the requested page.
+    #[allow(clippy::too_many_lines)] // Authority checks remain adjacent to each scanned acceptance.
+    pub async fn list_agent_services(
+        &self,
+        request: AgentServiceListRequest<'_>,
+    ) -> Result<AgentServiceListPage, AgentServiceError> {
+        if !(1..=100).contains(&request.page_size) {
+            return Err(AgentServiceError::Invalid);
+        }
+        request
+            .authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|error| AgentServiceError::authentication(&error))?;
+        let caller = request
+            .authentication
+            .scope(request.namespace, request.tenant)
+            .map_err(|_| AgentServiceError::Forbidden)?;
+        let actor = caller.authentication_source().principal();
+
+        // An agent credential can represent many independent jobs. Without the
+        // host-retained receipt, none of those jobs is visible to the caller.
+        if actor.kind() == PrincipalKind::Agent && request.source_context.is_none() {
+            return Ok(AgentServiceListPage {
+                tasks: Vec::new(),
+                total_size: 0,
+                has_more: false,
+            });
+        }
+
+        let scope = self
+            .scopes
+            .get(&(request.namespace.into(), request.tenant.into()))
+            .ok_or(AgentServiceError::NotFound)?;
+        let mut candidates = Vec::with_capacity(request.page_size + 1);
+        let mut total_size = 0usize;
+        let mut state_cursor = None;
+
+        loop {
+            let page = self
+                .state
+                .scan_keys_page(
+                    request.namespace,
+                    request.tenant,
+                    KeyKind::Custom(ACCEPTANCE_KIND.into()),
+                    None,
+                    state_cursor.as_deref(),
+                    256,
+                )
+                .await
+                .map_err(|_| AgentServiceError::Unavailable)?;
+            for (key, raw) in page.entries {
+                let digest =
+                    accepted_agent_binding_digest(&raw).map_err(AgentServiceError::observation)?;
+                let Some(runtime) = scope
+                    .agent_bindings
+                    .get(&(request.agent_id.to_owned(), digest))
+                    .map(AsRef::as_ref)
+                else {
+                    continue;
+                };
+                let task_id = runtime
+                    .acceptance_task_id(&raw)
+                    .map_err(AgentServiceError::observation)?;
+                if key
+                    != StateKey::new(
+                        request.namespace,
+                        request.tenant,
+                        KeyKind::Custom(ACCEPTANCE_KIND.into()),
+                        task_id.to_string(),
+                    )
+                    .canonical()
+                {
+                    return Err(AgentServiceError::Conflict);
+                }
+                let source = runtime
+                    .source_context(task_id)
+                    .await
+                    .map_err(AgentServiceError::observation)?;
+                let source_reference = source
+                    .reference()
+                    .map_err(|_| AgentServiceError::Conflict)?;
+                if source.principal() != actor
+                    || source.credential_authority().map(|value| value.id.as_str())
+                        != Some(caller.credential_reference().id.as_str())
+                    || source.auth_method() != caller.authentication_source().auth_method()
+                    || request
+                        .source_context
+                        .is_some_and(|expected| expected != &source_reference)
+                {
+                    continue;
+                }
+                let observed = runtime
+                    .observe(task_id)
+                    .await
+                    .map_err(AgentServiceError::observation)?;
+                let observation = self
+                    .load_versioned_service_task(
+                        request.namespace,
+                        request.tenant,
+                        task_id,
+                        &observed.task,
+                        observed.future_starts_blocked,
+                    )
+                    .await?;
+                if request
+                    .context_id
+                    .is_some_and(|context| observation.task.context_id.as_deref() != Some(context))
+                    || request
+                        .status
+                        .is_some_and(|status| observation.task.status.state != status)
+                    || request
+                        .status_timestamp_after
+                        .is_some_and(|after| observation.task.status.timestamp < after)
+                {
+                    continue;
+                }
+                total_size = total_size
+                    .checked_add(1)
+                    .ok_or(AgentServiceError::Unavailable)?;
+                if request.after.is_some_and(|after| {
+                    observation.task.updated_at > after.updated_at
+                        || (observation.task.updated_at == after.updated_at
+                            && observation.task.id <= after.task_id)
+                }) {
+                    continue;
+                }
+                candidates.push(observation);
+                candidates.sort_by(|left, right| {
+                    right
+                        .task
+                        .updated_at
+                        .cmp(&left.task.updated_at)
+                        .then_with(|| left.task.id.cmp(&right.task.id))
+                });
+                candidates.truncate(request.page_size + 1);
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            state_cursor = Some(next);
+        }
+
+        // A revocation during the scan must dominate the accumulated result.
+        request
+            .authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|error| AgentServiceError::authentication(&error))?;
+        let has_more = candidates.len() > request.page_size;
+        candidates.truncate(request.page_size);
+        Ok(AgentServiceListPage {
+            tasks: candidates,
+            total_size,
+            has_more,
+        })
     }
 
     /// Resume an accepted agent service with a durable, separately governed
@@ -787,6 +1057,7 @@ impl ExecutionAuthorityRuntime {
             &continued.task.tenant,
             task_id,
             &continued.task,
+            continued.future_starts_blocked,
         )
         .await
     }
@@ -836,8 +1107,14 @@ impl ExecutionAuthorityRuntime {
             )
             .await
             .map_err(AgentServiceError::from)?;
-        self.load_versioned_service_task(request.namespace, request.tenant, request.task_id, &task)
-            .await
+        self.load_versioned_service_task(
+            request.namespace,
+            request.tenant,
+            request.task_id,
+            &task,
+            false,
+        )
+        .await
     }
 
     pub async fn resolve_agent_service_authorization(
@@ -865,7 +1142,7 @@ impl ExecutionAuthorityRuntime {
             .resolve_authorization(task_id, request.challenge_id, &source, verifier.as_ref())
             .await
             .map_err(AgentServiceError::from)?;
-        self.load_versioned_service_task(namespace, tenant, task_id, &task)
+        self.load_versioned_service_task(namespace, tenant, task_id, &task, false)
             .await
     }
 
@@ -959,15 +1236,14 @@ impl ExecutionAuthorityRuntime {
         tenant: &str,
         task_id: uuid::Uuid,
         observed: &Task,
+        future_starts_blocked: bool,
     ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
-        let key = StateKey::new(namespace, tenant, KeyKind::A2aTask, task_id.to_string());
-        let (raw, task_version) = self
-            .state
-            .get_versioned(&key)
+        let scope = TaskScope::new(namespace, tenant);
+        let (task, task_version) = TaskEngine::new(self.state.clone())
+            .get_task_versioned(&scope, &task_id.to_string())
             .await
             .map_err(|_| AgentServiceError::Unavailable)?
             .ok_or(AgentServiceError::NotFound)?;
-        let task: Task = serde_json::from_str(&raw).map_err(|_| AgentServiceError::Unavailable)?;
         if task.validate().is_err()
             || task.id != task_id.to_string()
             || task.namespace != namespace
@@ -976,7 +1252,11 @@ impl ExecutionAuthorityRuntime {
         {
             return Err(AgentServiceError::Conflict);
         }
-        Ok(AgentServiceTaskObservation { task, task_version })
+        Ok(AgentServiceTaskObservation {
+            task,
+            task_version,
+            future_starts_blocked,
+        })
     }
 
     /// Stop only the original accepted recipient subtree. Current private
@@ -987,8 +1267,7 @@ impl ExecutionAuthorityRuntime {
     ) -> Result<AgentTaskStopReceipt, AgentServiceError> {
         let task_id = request.task_id;
         let (runtime, source) = self.authorize_service_observation(request).await?;
-        runtime
-            .stop(task_id, &source)
+        Box::pin(runtime.stop(task_id, &source))
             .await
             .map_err(AgentServiceError::from)
     }

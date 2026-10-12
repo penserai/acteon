@@ -1957,12 +1957,12 @@ mod tests {
 
         // The zombie was transitioned to Failed.
         let raw = state.get(&zombie_key).await.unwrap().unwrap();
-        let reaped: acteon_core::Task = serde_json::from_str(&raw).unwrap();
+        let reaped = crate::task_engine::decode_persisted_task(&raw).unwrap();
         assert_eq!(reaped.status.state, acteon_core::TaskState::Failed);
 
         // The fresh task was left untouched.
         let raw = state.get(&fresh_key).await.unwrap().unwrap();
-        let kept: acteon_core::Task = serde_json::from_str(&raw).unwrap();
+        let kept = crate::task_engine::decode_persisted_task(&raw).unwrap();
         assert_eq!(kept.status.state, acteon_core::TaskState::Submitted);
 
         let snap = metrics.snapshot();

@@ -16,6 +16,18 @@ export interface ServiceReceipt {
   readonly sourceContext: string
   readonly task: ServiceTask
 }
+export interface ListedServiceTask {
+  readonly id: string
+  readonly status: { state: string }
+  readonly artifacts?: unknown[]
+  readonly metadata?: Record<string, unknown>
+}
+export interface ServiceTaskPage {
+  readonly tasks: readonly ListedServiceTask[]
+  readonly nextPageToken: string
+  readonly pageSize: number
+  readonly totalSize: number
+}
 export type ServiceProviderAbort =
   | { state: 'restricted_only' }
   | { state: 'uncertain'; attemptId: string }
@@ -64,15 +76,50 @@ export async function observeServiceTask(receipt: ServiceReceipt): Promise<Servi
   return task(response, receipt.namespace, receipt.tenant, receipt.taskId)
 }
 
-export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true; providerAbort?: ServiceProviderAbort }> {
+export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true; cancellationConfirmed: boolean; providerAbort?: ServiceProviderAbort }> {
   const response = await apiResponse(base(receipt.namespace, receipt.tenant, receipt.agent) + '/tasks/' + segment(receipt.taskId) + '/stop', {
     method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0', [SOURCE_HEADER]: source(receipt.sourceContext) },
   })
   if (response.headers.get('a2a-version') !== '1.0') throw new Error('Unsupported agent service response')
-  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown; provider_abort?: unknown } | null
-  if (!value || value.future_starts_blocked !== true) throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
+  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown; cancellation_confirmed?: unknown; provider_abort?: unknown } | null
+  if (!value || value.future_starts_blocked !== true || typeof value.cancellation_confirmed !== 'boolean') throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
   const stopped = value.task
   if (!stopped || stopped.id !== receipt.taskId || stopped.namespace !== receipt.namespace || stopped.tenant !== receipt.tenant) throw new Error('Agent service task identity mismatch')
+  if (value.cancellation_confirmed && stopped.status?.state !== 'canceled') throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
   const abort = providerAbort(value.provider_abort)
-  return { task: stopped, futureStartsBlocked: true, ...(abort ? { providerAbort: abort } : {}) }
+  return { task: stopped, futureStartsBlocked: true, cancellationConfirmed: value.cancellation_confirmed, ...(abort ? { providerAbort: abort } : {}) }
+}
+
+export async function listServiceTasks(namespace: string, tenant: string, agent: string, pageToken = ''): Promise<ServiceTaskPage> {
+  if (pageToken.length > 8192) throw new Error('Task page token is too large')
+  const requestId = `list:${agent}`
+  const response = await apiResponse(`/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}`, {
+    method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: requestId, method: 'ListTasks',
+      params: { pageSize: 25, ...(pageToken ? { pageToken } : {}) },
+    }),
+  })
+  if (response.headers.get('a2a-version') !== '1.0') throw new Error('Unsupported agent service response')
+  const rpc = await response.json() as Record<string, unknown>
+  if (!rpc || rpc.jsonrpc !== '2.0' || rpc.id !== requestId || !rpc.result || typeof rpc.result !== 'object' || Array.isArray(rpc.result)) throw new Error('Agent service task page identity mismatch')
+  const page = rpc.result as Record<string, unknown>
+  if (Object.keys(page).sort().join(',') !== 'nextPageToken,pageSize,tasks,totalSize'
+    || !Array.isArray(page.tasks) || typeof page.nextPageToken !== 'string' || page.nextPageToken.length > 8192
+    || page.pageSize !== 25 || typeof page.totalSize !== 'number' || !Number.isSafeInteger(page.totalSize)
+    || page.totalSize < page.tasks.length || page.tasks.length > 25) throw new Error('Agent service task page is malformed')
+  const tasks = page.tasks.map(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Agent service task projection is malformed')
+    const listed = value as Record<string, unknown>
+    const state = listed.status && typeof listed.status === 'object' && !Array.isArray(listed.status)
+      ? (listed.status as Record<string, unknown>).state : undefined
+    if (typeof listed.id !== 'string' || listed.id.length === 0 || typeof state !== 'string' || ![
+      'TASK_STATE_SUBMITTED', 'TASK_STATE_WORKING', 'TASK_STATE_COMPLETED', 'TASK_STATE_FAILED',
+      'TASK_STATE_CANCELED', 'TASK_STATE_INPUT_REQUIRED', 'TASK_STATE_AUTH_REQUIRED', 'TASK_STATE_REJECTED',
+    ].includes(state)
+      || 'namespace' in listed || 'tenant' in listed
+      || (listed.metadata && typeof listed.metadata === 'object' && !Array.isArray(listed.metadata) && 'acteon_governed_execution' in listed.metadata)) throw new Error('Agent service task projection is malformed')
+    return listed as unknown as ListedServiceTask
+  })
+  return Object.freeze({ tasks: Object.freeze(tasks), nextPageToken: page.nextPageToken, pageSize: 25, totalSize: page.totalSize })
 }

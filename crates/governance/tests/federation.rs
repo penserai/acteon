@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
-use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
+use acteon_core::{
+    PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, TaskMessage, TaskRole,
+};
 use acteon_governance::{
-    AttemptRequest, AuthorityChange, AuthorityCoordinator, CoordinationError, CoordinatorLimits,
-    RootBudgetLimits, RootReservation, ScopePurpose, StartRegistration,
+    AttemptRequest, AttemptStatus, AuthorityChange, AuthorityCoordinator, CoordinationError,
+    CoordinatorLimits, RootBudgetLimits, RootReservation, ScopePurpose, StartRegistration,
     context::AcceptedEffect,
     federation::{
         EvaluatedFederationTrustPublication, FederatedAttempt, FederatedDelegationImport,
+        FederationCapabilityCard, FederationCapabilityRequirement, FederationCapabilitySigner,
         FederationEnvelope, FederationEnvelopeSigner, FederationGrantCeiling,
-        FederationImportReference, FederationTrust, FederationTrustIssuanceCeiling,
+        FederationImportReference, FederationInvocation, FederationTrust,
+        FederationTrustIssuanceCeiling, SignedFederationInvocation,
+        verify_federation_capability_card,
     },
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -99,6 +104,158 @@ fn envelope() -> FederationEnvelope {
     )
 }
 
+fn invocation(
+    signer: &FederationEnvelopeSigner,
+    import: &FederationImportReference,
+    nonce: &str,
+    digest_byte: char,
+) -> SignedFederationInvocation {
+    signer
+        .sign_invocation(&FederationInvocation::new(
+            nonce,
+            import.clone(),
+            TaskMessage::text(
+                format!("message-{nonce}"),
+                TaskRole::User,
+                digest_byte.to_string().repeat(64),
+            ),
+            100,
+            480,
+        ))
+        .unwrap()
+}
+
+fn capability_requirement() -> FederationCapabilityRequirement {
+    FederationCapabilityRequirement {
+        issuer_domain: "acteon.city.example".into(),
+        audience: "partner-a.example".into(),
+        minimum_issuer_epoch: 9,
+        agent_resource: agent(),
+        binding_digest: "a".repeat(64),
+        skill: "diagnose".into(),
+        protocol_revision: "acteon-federation-v1".into(),
+        require_exact_replay: true,
+        require_peer_finality: true,
+        authentication_scheme: "bearer".into(),
+    }
+}
+
+fn capability_card() -> FederationCapabilityCard {
+    let requirement = capability_requirement();
+    FederationCapabilityCard::new(
+        &requirement.issuer_domain,
+        &requirement.audience,
+        "city-capability-key-1",
+        9,
+        100,
+        500,
+        requirement.agent_resource,
+        requirement.binding_digest,
+        vec!["diagnose".into(), "observe".into()],
+        requirement.protocol_revision,
+        true,
+        true,
+        vec!["bearer".into(), "mtls".into()],
+    )
+}
+
+#[test]
+fn signed_capability_card_negotiates_an_exact_peer_contract() {
+    let signer = FederationCapabilitySigner::from_secret([22; 32]);
+    let signed = signer.sign(&capability_card()).unwrap();
+    let verified = verify_federation_capability_card(
+        &signed,
+        "city-capability-key-1",
+        &signer.verifying_key_hex(),
+        200,
+        10,
+        &capability_requirement(),
+    )
+    .unwrap();
+
+    assert_eq!(verified.agent_resource, agent());
+    assert!(verified.exact_replay_idempotent);
+    assert!(verified.peer_finality);
+    assert_eq!(signed, signer.sign(&verified).unwrap());
+    assert_eq!(signed.digest().unwrap().len(), 64);
+}
+
+#[test]
+fn capability_card_rejects_tampering_replay_and_missing_guarantees() {
+    let signer = FederationCapabilitySigner::from_secret([23; 32]);
+    let mut signed = signer.sign(&capability_card()).unwrap();
+    signed.payload.push(' ');
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut card = capability_card();
+    card.audience = "another-source.example".into();
+    let signed = signer.sign(&card).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut card = capability_card();
+    card.peer_finality = false;
+    let signed = signer.sign(&card).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut card = capability_card();
+    card.issuer_epoch = 8;
+    let signed = signer.sign(&card).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let signed = signer.sign(&capability_card()).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            500,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+}
+
 async fn fixture() -> (
     Arc<MemoryStateStore>,
     AuthorityCoordinator,
@@ -142,6 +299,104 @@ async fn fixture() -> (
     (store, coordinator, signer, clock)
 }
 
+async fn assert_generic_bypass_closed(
+    coordinator: &AuthorityCoordinator,
+    imported: &acteon_governance::federation::FederationImportRecord,
+) {
+    assert!(matches!(
+        coordinator
+            .register_attempt(AttemptRequest {
+                id: "generic-bypass",
+                subject: imported.target.id(),
+                resources: &effect("telemetry.read").resources,
+                request_digest: &"f".repeat(64),
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                reservation: Some(RootReservation {
+                    root_id: imported.root_id.clone(),
+                    units: 1,
+                }),
+                now_ms: 100,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+}
+
+async fn assert_invalid_invocations_denied(
+    coordinator: &AuthorityCoordinator,
+    signer: &FederationEnvelopeSigner,
+    reference: &FederationImportReference,
+    clock: &ManualClock,
+) {
+    let mut tampered = invocation(signer, reference, "tampered", 'b');
+    tampered.payload = tampered.payload.replace(&"b".repeat(64), &"c".repeat(64));
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &tampered,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+    let expired = signer
+        .sign_invocation(&FederationInvocation::new(
+            "expired",
+            reference.clone(),
+            TaskMessage::text("message-expired", TaskRole::User, "expired"),
+            90,
+            100,
+        ))
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &expired,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+}
+
+async fn assert_preflight_does_not_spend(
+    coordinator: &AuthorityCoordinator,
+    invocation: &SignedFederationInvocation,
+    imported: &acteon_governance::federation::FederationImportRecord,
+    clock: &ManualClock,
+) {
+    let before = coordinator.snapshot().await.unwrap();
+    coordinator
+        .check_federated_attempt(FederatedAttempt {
+            invocation,
+            effect: &effect("telemetry.read"),
+            request_digest: &"b".repeat(64),
+            ordinal: 0,
+            units: 1,
+            expected_authority: &before.stamp(),
+            clock,
+        })
+        .await
+        .unwrap();
+    let after = coordinator.snapshot().await.unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.starts, before.starts);
+    assert_eq!(
+        after.roots[&imported.root_id].spent_units,
+        before.roots[&imported.root_id].spent_units
+    );
+}
+
 #[tokio::test]
 async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed() {
     let (_, coordinator, signer, clock) = fixture().await;
@@ -177,36 +432,68 @@ async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed
         .check_federation_import(&reference, &clock)
         .await
         .unwrap();
-    assert!(matches!(
-        coordinator
-            .register_attempt(AttemptRequest {
-                id: "generic-bypass",
-                subject: imported.target.id(),
-                resources: &effect("telemetry.read").resources,
-                request_digest: &"f".repeat(64),
-                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
-                reservation: Some(RootReservation {
-                    root_id: imported.root_id.clone(),
-                    units: 1,
-                }),
-                now_ms: 100,
-            })
-            .await,
-        Err(CoordinationError::Restricted)
-    ));
+    assert_generic_bypass_closed(&coordinator, &imported).await;
+    let signed_invocation = invocation(&signer, &reference, "foreign-effect-1", 'b');
+    assert_preflight_does_not_spend(&coordinator, &signed_invocation, &imported, &clock).await;
     let started = coordinator
         .register_federated_attempt(FederatedAttempt {
-            id: "foreign-effect-1",
-            import: &reference,
+            invocation: &signed_invocation,
             effect: &effect("telemetry.read"),
             request_digest: &"b".repeat(64),
+            ordinal: 0,
             units: 1,
             expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
             clock: &clock,
         })
         .await
         .unwrap();
-    assert!(matches!(started, StartRegistration::New(_)));
+    let StartRegistration::New(started) = started else {
+        panic!("first signed invocation must register a new attempt");
+    };
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &signed_invocation,
+                effect: &effect("telemetry.read"),
+                request_digest: &"b".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await
+            .unwrap(),
+        StartRegistration::Existing(_)
+    ));
+
+    assert_invalid_invocations_denied(&coordinator, &signer, &reference, &clock).await;
+    assert_ne!(
+        signed_invocation.attempt_id(0).unwrap(),
+        signed_invocation.attempt_id(1).unwrap()
+    );
+    coordinator
+        .settle(
+            &signed_invocation.attempt_id(0).unwrap(),
+            &started.token,
+            AttemptStatus::Settled,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &signed_invocation,
+                effect: &effect("telemetry.read"),
+                request_digest: &"b".repeat(64),
+                ordinal: 1,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await
+            .unwrap(),
+        StartRegistration::New(_)
+    ));
 }
 
 #[tokio::test]
@@ -225,12 +512,13 @@ async fn revocation_blocks_new_effects_but_preserves_exact_start_observation() {
         id: imported.id,
         envelope_digest: imported.envelope_digest,
     };
+    let first_invocation = invocation(&signer, &reference, "foreign-effect-1", 'b');
     coordinator
         .register_federated_attempt(FederatedAttempt {
-            id: "foreign-effect-1",
-            import: &reference,
+            invocation: &first_invocation,
             effect: &effect("telemetry.read"),
             request_digest: &"b".repeat(64),
+            ordinal: 0,
             units: 1,
             expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
             clock: &clock,
@@ -266,10 +554,10 @@ async fn revocation_blocks_new_effects_but_preserves_exact_start_observation() {
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "foreign-effect-2",
-                import: &reference,
+                invocation: &invocation(&signer, &reference, "foreign-effect-2", 'c'),
                 effect: &effect("telemetry.read"),
                 request_digest: &"c".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
@@ -280,10 +568,10 @@ async fn revocation_blocks_new_effects_but_preserves_exact_start_observation() {
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "foreign-effect-1",
-                import: &reference,
+                invocation: &first_invocation,
                 effect: &effect("telemetry.read"),
                 request_digest: &"b".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
@@ -748,13 +1036,14 @@ async fn federation_backend_contract(first: Arc<dyn StateStore>, second: Arc<dyn
         id: imported.id,
         envelope_digest: imported.envelope_digest,
     };
+    let cross_replica = invocation(&signer, &reference, "cross-replica-effect", 'd');
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "cross-replica-effect",
-                import: &reference,
+                invocation: &cross_replica,
                 effect: &effect("telemetry.read"),
                 request_digest: &"d".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
@@ -778,10 +1067,10 @@ async fn federation_backend_contract(first: Arc<dyn StateStore>, second: Arc<dyn
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "blocked-after-revocation",
-                import: &reference,
+                invocation: &invocation(&signer, &reference, "blocked-after-revocation", 'e'),
                 effect: &effect("telemetry.read"),
                 request_digest: &"e".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,

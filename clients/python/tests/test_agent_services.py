@@ -10,7 +10,10 @@ import pytest
 from acteon_client import (
     ActeonClient,
     AgentPeerSendReceipt,
+    AgentServiceA2aFrame,
     AgentServiceParent,
+    AgentServicePushAuthentication,
+    AgentServicePushConfigInput,
     AgentServiceReceipt,
     AsyncActeonClient,
     PermitReference,
@@ -25,6 +28,251 @@ from acteon_client.errors import ActeonError, HttpError
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/agent-services.json").read_text()
 )
+
+
+def _stream_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.headers["accept"] == "text/event-stream"
+    assert request.headers["a2a-version"] == "1.0"
+    if body["method"] == "SubscribeToTask":
+        assert body["params"] == {"id": "job-1"}
+        assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+        source_headers = {}
+    else:
+        assert body["method"] == "SendStreamingMessage"
+        assert body["params"]["message"]["messageId"] == "m1"
+        assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        source_headers = {AGENT_SOURCE_CONTEXT_HEADER: FIXTURE["jobs"][0]["source_context"]}
+    frame = {
+        "jsonrpc": "2.0",
+        "id": body["id"],
+        "result": {"task": {"id": "job-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+    }
+    return httpx.Response(
+        200,
+        text=f": keepalive\n\ndata: {json.dumps(frame)}\n\n",
+        headers={"a2a-version": "1.0", "content-type": "text/event-stream", **source_headers},
+    )
+
+
+def test_official_agent_streams_preserve_identity_and_source_out_of_band():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = ActeonClient("http://acteon", api_key="caller-key")
+    client._client = httpx.Client(transport=httpx.MockTransport(_stream_response))
+    try:
+        sent = list(
+            client.agent_service_send_streaming_message(
+                "prod", "acme", "notifier", {"messageId": "m1"}
+            )
+        )
+        subscribed = list(client.agent_service_subscribe_task(receipt))
+        assert sent == [AgentServiceA2aFrame(sent[0].result, job["source_context"])]
+        assert sent[0].result["task"]["id"] == "job-1"
+        assert job["source_context"] not in repr(sent[0])
+        assert subscribed[0].result["task"]["id"] == "job-1"
+        assert subscribed[0].source_context is None
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_official_agent_streams_use_the_same_contract():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = AsyncActeonClient("http://acteon", api_key="caller-key")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(_stream_response))
+    try:
+        sent = [
+            frame
+            async for frame in client.agent_service_send_streaming_message(
+                "prod", "acme", "notifier", {"messageId": "m1"}
+            )
+        ]
+        subscribed = [frame async for frame in client.agent_service_subscribe_task(receipt)]
+        assert sent[0].source_context == job["source_context"]
+        assert subscribed[0].result["task"]["id"] == "job-1"
+    finally:
+        await client.close()
+
+
+def _cancel_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert body == {
+        "jsonrpc": "2.0",
+        "id": "cancel:job-1",
+        "method": "CancelTask",
+        "params": {"id": "job-1"},
+    }
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {
+                "id": "job-1",
+                "status": {"state": "TASK_STATE_CANCELED"},
+                "metadata": {"acteonCancellation": {"state": "confirmed"}},
+            },
+        },
+        headers={"a2a-version": "1.0"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_cancel_task_has_sync_and_async_parity():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    sync = ActeonClient("http://acteon")
+    sync._client = httpx.Client(transport=httpx.MockTransport(_cancel_response))
+    async_client = AsyncActeonClient("http://acteon")
+    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_cancel_response))
+    try:
+        assert sync.agent_service_cancel_task(receipt)["status"]["state"] == "TASK_STATE_CANCELED"
+        assert (await async_client.agent_service_cancel_task(receipt))["id"] == "job-1"
+    finally:
+        sync.close()
+        await async_client.close()
+
+
+def _list_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert body == {
+        "jsonrpc": "2.0",
+        "id": "list:notifier",
+        "method": "ListTasks",
+        "params": {"status": "TASK_STATE_WORKING", "pageSize": 1},
+    }
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {
+                "tasks": [{"id": "job-1", "status": {"state": "TASK_STATE_WORKING"}}],
+                "nextPageToken": "next-1",
+                "pageSize": 1,
+                "totalSize": 2,
+            },
+        },
+        headers={"a2a-version": "1.0"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_list_tasks_has_typed_sync_and_async_parity():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    sync = ActeonClient("http://acteon")
+    sync._client = httpx.Client(transport=httpx.MockTransport(_list_response))
+    async_client = AsyncActeonClient("http://acteon")
+    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_list_response))
+    try:
+        page = sync.agent_service_list_tasks(
+            "prod",
+            "acme",
+            "notifier",
+            source=receipt,
+            status="TASK_STATE_WORKING",
+            page_size=1,
+        )
+        async_page = await async_client.agent_service_list_tasks(
+            "prod",
+            "acme",
+            "notifier",
+            source=receipt,
+            status="TASK_STATE_WORKING",
+            page_size=1,
+        )
+        assert page.tasks[0]["id"] == "job-1"
+        assert page.total_size == async_page.total_size == 2
+        assert page.next_page_token == "next-1"
+    finally:
+        sync.close()
+        await async_client.close()
+
+
+def _push_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+    method = body["method"]
+    params = body["params"]
+    assert params["taskId"] == "job-1"
+    config = {
+        "id": "cfg-1",
+        "taskId": "job-1",
+        "url": "https://hooks.example/a2a",
+        "token": "notification-token",
+        "authentication": {"scheme": "Bearer", "credentials": "webhook-secret"},
+    }
+    if method == "CreateTaskPushNotificationConfig":
+        assert params == config
+        result = config
+    elif method == "GetTaskPushNotificationConfig":
+        assert params["id"] == "cfg-1"
+        result = config
+    elif method == "ListTaskPushNotificationConfigs":
+        assert params["pageSize"] == 1
+        result = {"configs": [config], "nextPageToken": ""}
+    else:
+        assert method == "DeleteTaskPushNotificationConfig"
+        assert params["id"] == "cfg-1"
+        result = {}
+    return httpx.Response(
+        200,
+        json={"jsonrpc": "2.0", "id": body["id"], "result": result},
+        headers={"a2a-version": "1.0"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_push_configs_have_typed_sync_and_async_parity():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    config = AgentServicePushConfigInput(
+        "https://hooks.example/a2a",
+        "cfg-1",
+        "notification-token",
+        AgentServicePushAuthentication("Bearer", "webhook-secret"),
+    )
+    sync = ActeonClient("http://acteon")
+    sync._client = httpx.Client(transport=httpx.MockTransport(_push_response))
+    async_client = AsyncActeonClient("http://acteon")
+    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_push_response))
+    try:
+        created = sync.agent_service_create_push_config(
+            "prod", "acme", "notifier", "job-1", config, source=receipt
+        )
+        fetched = await async_client.agent_service_get_push_config(
+            "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
+        )
+        listed = sync.agent_service_list_push_configs(
+            "prod", "acme", "notifier", "job-1", page_size=1, source=receipt
+        )
+        await async_client.agent_service_delete_push_config(
+            "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
+        )
+        assert created == fetched == listed.configs[0]
+        assert "webhook-secret" not in repr(created)
+    finally:
+        sync.close()
+        await async_client.close()
 
 
 def test_parent_context_and_permits_are_request_local():
@@ -498,6 +746,7 @@ def test_stop_rejects_malformed_provider_abort_with_one_request():
             json={
                 "task": FIXTURE["jobs"][0]["task"],
                 "future_starts_blocked": True,
+                "cancellation_confirmed": False,
                 "provider_abort": {"state": "reconciled", "proof_digest": "bad"},
             },
             headers={"a2a-version": "1.0"},
@@ -566,7 +815,13 @@ def test_stop_rejects_foreign_task_identity(field, value):
         calls.append(request)
         task = {**job["task"], field: value}
         return httpx.Response(
-            200, json={"task": task, "future_starts_blocked": True}, headers={"a2a-version": "1.0"}
+            200,
+            json={
+                "task": task,
+                "future_starts_blocked": True,
+                "cancellation_confirmed": False,
+            },
+            headers={"a2a-version": "1.0"},
         )
 
     client = ActeonClient("http://acteon")

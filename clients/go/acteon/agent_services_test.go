@@ -1,8 +1,11 @@
 package acteon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +14,181 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+type agentRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip agentRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	var calls atomic.Int32
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get("Accept") != "text/event-stream" || r.Header.Get(A2AVersionHeader) != A2AProtocolVersion {
+			t.Errorf("unexpected stream request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request struct {
+			JSONRPC string         `json:"jsonrpc"`
+			ID      string         `json:"id"`
+			Method  string         `json:"method"`
+			Params  map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.Method == "SubscribeToTask" {
+			if request.Params["id"] != "job-1" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+				t.Error("retained source identity missing")
+			}
+		} else if request.Method != "SendStreamingMessage" || r.Header.Get(AgentSourceContextHeader) != "" {
+			t.Error("invalid streaming admission")
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		headers.Set("Content-Type", "text/event-stream")
+		if request.Method == "SendStreamingMessage" {
+			headers.Set(AgentSourceContextHeader, "host-only")
+		}
+		body := fmt.Sprintf(": keepalive\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":%q,\"result\":{\"task\":{\"id\":\"job-1\"}}}\n\n", request.ID)
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithAPIKey("caller-key"), WithHTTPClient(&http.Client{Transport: transport}))
+	sent, err := client.AgentServiceSendStreamingMessage(context.Background(), "prod", "acme", "notifier", map[string]any{"messageId": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := <-sent
+	if frame.Err != nil || frame.SourceContext != "host-only" || frame.Result["task"].(map[string]any)["id"] != "job-1" {
+		t.Fatalf("unexpected send frame: %#v", frame)
+	}
+	subscribed, err := client.AgentServiceSubscribeTask(context.Background(), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame = <-subscribed
+	if frame.Err != nil || frame.SourceContext != "" || frame.Result["task"].(map[string]any)["id"] != "job-1" {
+		t.Fatalf("unexpected subscribe frame: %#v", frame)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
+func TestOfficialAgentServiceCancelPreservesIdentityAndSource(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unexpected cancellation request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request["method"] != "CancelTask" || request["id"] != "cancel:job-1" {
+			t.Fatalf("unexpected envelope: %#v", request)
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		body := `{"jsonrpc":"2.0","id":"cancel:job-1","result":{"id":"job-1","status":{"state":"TASK_STATE_CANCELED"},"metadata":{"acteonCancellation":{"state":"confirmed"}}}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
+	task, err := client.AgentServiceCancelTask(context.Background(), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task["id"] != "job-1" {
+		t.Fatalf("unexpected task: %#v", task)
+	}
+}
+
+func TestOfficialAgentServiceListReturnsTypedPage(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unexpected list request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		params := request["params"].(map[string]any)
+		if request["method"] != "ListTasks" || request["id"] != "list:notifier" || params["status"] != "TASK_STATE_WORKING" || params["pageSize"] != float64(1) {
+			t.Fatalf("unexpected envelope: %#v", request)
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		body := `{"jsonrpc":"2.0","id":"list:notifier","result":{"tasks":[{"id":"job-1","status":{"state":"TASK_STATE_WORKING"}}],"nextPageToken":"next-1","pageSize":1,"totalSize":2}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
+	page, err := client.AgentServiceListTasks(context.Background(), "prod", "acme", "notifier", AgentServiceListOptions{
+		Source: receipt, Status: "TASK_STATE_WORKING", PageSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.TotalSize != 2 || page.NextPageToken != "next-1" || page.Tasks[0]["id"] != "job-1" {
+		t.Fatalf("unexpected page: %#v", page)
+	}
+}
+
+func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	methods := []string{}
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unexpected push request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		method := request["method"].(string)
+		methods = append(methods, method)
+		params := request["params"].(map[string]any)
+		if params["taskId"] != "job-1" {
+			t.Fatalf("task authority missing: %#v", params)
+		}
+		result := any(map[string]any{"id": "push-1", "taskId": "job-1", "url": "https://hooks.example/a2a", "token": "callback-token", "authentication": map[string]any{"scheme": "Bearer", "credentials": "secret"}})
+		if method == "ListTaskPushNotificationConfigs" {
+			result = map[string]any{"configs": []any{result}, "nextPageToken": "next"}
+		} else if method == "DeleteTaskPushNotificationConfig" {
+			result = map[string]any{}
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request["id"], "result": result})
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
+	token, credentials := "callback-token", "secret"
+	created, err := client.AgentServiceCreatePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigInput{ID: "push-1", URL: "https://hooks.example/a2a", Token: &token, Authentication: &AgentServicePushAuthentication{Scheme: "Bearer", Credentials: &credentials}}, receipt)
+	if err != nil || created.Authentication == nil || *created.Authentication.Credentials != "secret" {
+		t.Fatalf("unexpected created config: %#v %v", created, err)
+	}
+	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.AgentServiceListPushConfigs(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigListOptions{PageSize: 1, Source: receipt})
+	if err != nil || page.NextPageToken != "next" || len(page.Configs) != 1 {
+		t.Fatalf("unexpected page: %#v %v", page, err)
+	}
+	if err := client.AgentServiceDeletePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig", "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig"}
+	if fmt.Sprint(methods) != fmt.Sprint(want) {
+		t.Fatalf("methods = %v", methods)
+	}
+	foreign := *receipt
+	foreign.TaskID = "job-2"
+	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", &foreign); err == nil {
+		t.Fatal("expected source/task mismatch")
+	}
+}
 
 func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
 	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "auth_required"}}

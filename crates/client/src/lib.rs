@@ -62,8 +62,10 @@ pub mod agent_services;
 pub use agent_services::{
     AgentPeerAuthorizationReceipt, AgentPeerAuthorizationStatus, AgentPeerCancelReceipt,
     AgentPeerCancelStatus, AgentPeerContinuationReceipt, AgentPeerContinuationStatus,
-    AgentPeerSelectionOption, AgentPeerSendReceipt, AgentPeerSendStatus, AgentServiceParent,
-    AgentServiceProviderAbort, AgentServiceReceipt, AgentServiceStopReceipt,
+    AgentPeerSelectionOption, AgentPeerSendReceipt, AgentPeerSendStatus, AgentServiceA2aStream,
+    AgentServiceListOptions, AgentServiceParent, AgentServiceProviderAbort,
+    AgentServicePushAuthentication, AgentServicePushConfig, AgentServicePushConfigInput,
+    AgentServicePushConfigPage, AgentServiceReceipt, AgentServiceStopReceipt, AgentServiceTaskPage,
 };
 pub mod aws;
 pub mod azure;
@@ -157,6 +159,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone)]
 pub struct ActeonClient {
     pub(crate) client: Client,
+    pub(crate) stream_client: Client,
     pub(crate) base_url: String,
     pub(crate) api_key: Option<String>,
 }
@@ -168,6 +171,7 @@ pub struct ActeonClientBuilder {
     timeout: Duration,
     api_key: Option<String>,
     client: Option<Client>,
+    stream_client: Option<Client>,
     ca_cert_path: Option<String>,
     client_cert_path: Option<String>,
     client_key_path: Option<String>,
@@ -182,6 +186,7 @@ impl ActeonClientBuilder {
             timeout: DEFAULT_TIMEOUT,
             api_key: None,
             client: None,
+            stream_client: None,
             ca_cert_path: None,
             client_cert_path: None,
             client_key_path: None,
@@ -248,17 +253,30 @@ impl ActeonClientBuilder {
         self
     }
 
+    /// Use a custom reqwest client for long-lived streams.
+    ///
+    /// Configure this client without a total request timeout. Connection and
+    /// read-idle timeouts may still be applied. Redirects and retries should
+    /// remain disabled for governed agent streams.
+    #[must_use]
+    pub fn stream_client(mut self, client: Client) -> Self {
+        self.stream_client = Some(client);
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<ActeonClient, Error> {
-        let client = if let Some(c) = self.client {
-            c
-        } else {
+        let build_client = |streaming: bool| -> Result<Client, Error> {
             let mut builder = Client::builder()
                 .retry(reqwest::retry::never())
                 .redirect(reqwest::redirect::Policy::none())
                 .use_rustls_tls()
-                .timeout(self.timeout)
                 .danger_accept_invalid_certs(self.danger_accept_invalid_certs);
+            builder = if streaming {
+                builder.connect_timeout(self.timeout)
+            } else {
+                builder.timeout(self.timeout)
+            };
 
             if let Some(ref ca_path) = self.ca_cert_path {
                 let ca_pem = std::fs::read(ca_path).map_err(|e| {
@@ -288,11 +306,22 @@ impl ActeonClientBuilder {
 
             builder
                 .build()
-                .map_err(|e| Error::Configuration(e.to_string()))?
+                .map_err(|e| Error::Configuration(e.to_string()))
+        };
+        let custom_client = self.client.is_some();
+        let client = match self.client {
+            Some(client) => client,
+            None => build_client(false)?,
+        };
+        let stream_client = match self.stream_client {
+            Some(client) => client,
+            None if custom_client => client.clone(),
+            None => build_client(true)?,
         };
 
         Ok(ActeonClient {
             client,
+            stream_client,
             base_url: self.base_url,
             api_key: self.api_key,
         })

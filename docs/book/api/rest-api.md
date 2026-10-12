@@ -758,7 +758,33 @@ Deliver an asynchronous external signal to a waiting execution.
 
 ### `POST /a2a/{namespace}/{tenant}`
 
-A2A JSON-RPC 2.0 endpoint supporting `message/send`, `tasks/get`, `tasks/cancel`, and push notification configuration.
+A2A JSON-RPC 2.0 endpoint supporting the v1 `SendMessage`, `GetTask`,
+`ListTasks`, `CancelTask`, and `GetExtendedAgentCard` methods. `ListTasks`
+provides filter-bound cursor pagination and the context, state, transition-time,
+history, and artifact selectors defined by A2A 1.0. The four v1 Task push
+notification configuration methods use schema-closed ProtoJSON and cursor
+pagination. Pre-1.0 slash-separated methods remain compatibility aliases.
+
+### `POST /a2a/{namespace}/{tenant}/agents/{agent}`
+
+Official A2A 1.0 JSON-RPC bound to one configured agent service. `SendMessage`
+enters the governed execution runtime and `GetTask` revalidates the original
+authenticated source. Admission returns the opaque
+`X-Acteon-Agent-Source-Context` receipt; agent principals must return it for
+observation or continuation. The route also supports `GetExtendedAgentCard`,
+`SendStreamingMessage`, `SubscribeToTask`, governed `ListTasks`, and governed `CancelTask`.
+Cancellation commits a future-start fence before returning. It reports a
+confirmed canceled Task only for a local non-start or qualified no-effect
+finality; otherwise the Task remains in its observed state with
+`metadata.acteonCancellation.state` set to `requested`. Both streaming methods use the
+exact card's capability, the shared tenant connection quota, and current
+source-provenance validation before every emitted status, artifact, or recovery
+snapshot. `ListTasks` scans only governed acceptances for this exact agent,
+filters them by the current source, sorts by last update descending, and binds
+its cursor to the caller, source receipt, and filters. Agent principals need an
+exact job receipt and therefore cannot enumerate sibling jobs that share their
+credential. Push methods remain unsupported and never fall back to the tenant
+Task engine.
 
 ### `POST /a2a/{namespace}/{tenant}/v1/message:send`
 
@@ -800,9 +826,18 @@ Retrieve task lifecycle status, output artifacts, and sub-task graphs.
 
 Server-Sent Events (SSE) stream of real-time task lifecycle transitions.
 
+### `GET /a2a/{namespace}/{tenant}/.well-known/agent-card.json`
+
+Public A2A 1.0 ProtoJSON Agent Card discovery endpoint. Only a published
+JSON-RPC interface is advertised until the HTTP+JSON binding has its own v1
+wire adapter and conformance gate. Push notifications follow the published
+capability after their v1 adapter passed external client conformance; streaming
+remains false until its v1 adapter passes the same gate.
+
 ### `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`
 
-Public unauthenticated discovery endpoint returning the agent card or tenant-aggregated catalog.
+Compatibility discovery endpoint returning Acteon's stored card or
+tenant-aggregated catalog.
 
 ---
 
@@ -971,6 +1006,7 @@ Cancel an active swarm execution run.
 | `POST` | `/v1/queues/tasks/{id}/complete` | Complete worker task |
 | **A2A Protocol & Bus** |||
 | `POST` | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 endpoint |
+| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}` | Exact-agent A2A JSON-RPC through the governed execution runtime |
 | `POST` | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST message/task submit |
 | `GET` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}` | List current safe, source-authorized registry options; descriptions are untrusted and the result grants no authority |
 | `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send` | Governed peer submission from an accepted agent task |
@@ -991,6 +1027,10 @@ Cancel an active swarm execution run.
 | `GET` | `/v1/time-intervals` | List time intervals |
 | `GET` | `/v1/retention` | List retention policies |
 | `GET` | `/v1/providers/health` | Provider health metrics & circuit breakers |
+| `GET` | `/v1/governance/federation/deliveries` | Page through sanitized outbound federation evidence under independent reconciliation authority |
+| `POST` | `/v1/governance/federation/deliveries/{delivery_id}:abandon` | Stop local recovery while preserving an unknown peer outcome |
+| `GET` | `/v1/governance/federation/deliveries/{delivery_id}/correlation` | Read immutable correlation for the currently ambiguous peer stage |
+| `POST` | `/v1/governance/federation/deliveries/{delivery_id}:reconcile` | Accept proof through the deployment-installed peer-finality verifier without peer traffic |
 | `GET` | `/admin/circuit-breakers` | List circuit breakers |
 | `POST` | `/admin/circuit-breakers/{provider}/trip` | Force-open circuit breaker |
 | `POST` | `/admin/circuit-breakers/{provider}/reset` | Force-close circuit breaker |
@@ -1020,6 +1060,55 @@ When the execution-authority deployment profile is enabled, single and batch
 grants still apply. See [Execution permits](../features/execution-permits.md) for
 configuration, typed SDK methods, refusal handling and supported execution paths.
 Dry runs can omit references.
+
+## Federation import admission
+
+An independently authorized manager publishes or terminally revokes one of the
+deployment's exact trust declarations through:
+
+```text
+POST /v1/governance/federation/trusts
+POST /v1/governance/federation/trusts/revoke
+```
+
+A foreign peer authenticated as its configured local principal first obtains
+the capability card addressed to its configured foreign domain:
+
+```text
+GET /a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities
+```
+
+The response contains exact signed `payload` bytes and an Ed25519 `signature`.
+It binds the current agent service digest, skill, protocol revision, replay and
+finality guarantees, authentication schemes, peer audience, key epoch and a
+short validity window. The caller cannot choose the audience.
+
+The peer submits exact signed authority bytes through:
+
+```text
+POST /a2a/{namespace}/{tenant}/federation/envelopes:import
+```
+
+The JSON body is `{"envelope":{"payload":"...","signature":"..."}}`.
+Payloads are limited to 64 KiB and the signature is exactly 128 lowercase hex
+characters encoding a 64-byte Ed25519 signature. Success returns a correlated
+`FederationImportReceipt` with
+`execution_started: false`; the endpoint does not create a task or effect. See
+[A2A federation status](../features/a2a.md#federation-status) for trust,
+identity and service-binding guarantees.
+
+To execute or replay an admitted message, the same configured peer calls:
+
+```text
+POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send
+```
+
+The body is
+`{"invocation":{"payload":"...","signature":"..."},"message":{...}}`.
+The signed payload binds the retained import and exact prepared provider input.
+Success returns the durable A2A `Task`. Repeating the exact request returns that
+task without duplicating a completed provider effect. A different message,
+agent, import, signature or current binding is rejected.
 
 ## Historical provider executions
 

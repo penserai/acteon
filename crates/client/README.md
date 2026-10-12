@@ -4,7 +4,7 @@ Native Rust HTTP client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 216 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 228 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -17,6 +17,16 @@ let status = client.platform_request(
 Path parameters are escaped individually. Query and body fields use the server's wire names; JSON response envelopes are preserved. Calls do not retry automatically. Keep request IDs stable across retries and return opaque receipt IDs unchanged. HTTP access does not imply a code-defined workflow runner in every language.
 
 See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-coverage/) for return types, native streaming APIs, runtime availability, and server feature requirements. The catalog is generated from the registered server routes and checked in CI.
+
+Typed federation management uses `publish_federation_trust` and
+`revoke_federation_trust`. A configured peer submits a signed envelope with
+`federation_capabilities` fetches the audience-bound signed peer card; `import_federation_envelope` correlates the returned scope and
+requires `execution_started == false`. Import admission retains bounded signed
+authority and does not dispatch local work. Use `invoke_federated_agent` to
+dispatch or replay an exact signed invocation through the authenticated agent
+runtime. An accepted source agent task uses `export_federated_message`,
+`observe_federated_export`, and `replay_federated_export`; endpoint, signer,
+credential, permits, timestamps, and limits remain deployment-owned. Reconciliation managers use `federation_delivery_evidence` for a typed, sanitized delivery page and `abandon_federation_delivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
 
 ## Installation
 
@@ -262,6 +272,64 @@ let receipt = client.agent_service_send_message("prod", "acme", "notifier", &mes
 let task = client.agent_service_get_task(&receipt).await?;
 ```
 
+Invoke the official exact-agent streaming RPC and retain its admission source
+outside protocol data. Use the retained receipt to subscribe after a restart:
+
+```rust
+use acteon_client::AgentServiceListOptions;
+use futures_util::StreamExt;
+
+let mut stream = client.agent_service_send_streaming_message(
+    "prod", "acme", "notifier", &message).await?;
+let source_context = stream.source_context().map(str::to_owned);
+while let Some(result) = stream.next().await { println!("{}", result?); }
+
+let mut updates = client.agent_service_subscribe_task(&receipt).await?;
+while let Some(result) = updates.next().await { println!("{}", result?); }
+
+let canceled = client.agent_service_cancel_task(&receipt).await?;
+println!("{}", canceled["metadata"]["acteonCancellation"]["state"]);
+
+let page = client.agent_service_list_tasks(
+    "prod", "acme", "notifier",
+    &AgentServiceListOptions { page_size: Some(25), ..Default::default() },
+    None, // pass Some(&receipt) to narrow the query to one job
+).await?;
+println!("{} of {}", page.tasks.len(), page.total_size);
+```
+
+An operations manager can bind an official callback to that exact Task. The
+typed result is checked against the route and task; pass the source receipt for
+an agent principal or an exact-job management call:
+
+```rust
+use acteon_client::{AgentServicePushAuthentication, AgentServicePushConfigInput};
+
+let push = client.agent_service_create_push_config(
+    "prod", "acme", "notifier", &receipt.task_id,
+    &AgentServicePushConfigInput {
+        id: Some("incident-hook".into()),
+        url: "https://hooks.example/a2a".into(),
+        token: Some(callback_token),
+        authentication: Some(AgentServicePushAuthentication {
+            scheme: "Bearer".into(), credentials: Some(webhook_secret),
+        }),
+    }, Some(&receipt),
+).await?;
+let configs = client.agent_service_list_push_configs(
+    "prod", "acme", "notifier", &receipt.task_id, Some(25), None, Some(&receipt)).await?;
+client.agent_service_delete_push_config(
+    "prod", "acme", "notifier", &receipt.task_id, &push.id, Some(&receipt)).await?;
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context.
+
+The default client uses a separate no-total-timeout transport for streams. If
+you supply a custom finite client, also set `ActeonClientBuilder::stream_client`
+to a client with redirects and retries disabled and no total request timeout.
+
 From an accepted source task, invoke, observe, and cancel a configured peer
 without putting authority fields in model data:
 
@@ -308,10 +376,13 @@ The helper sends that job's original identity and source context in one request:
 ```rust
 let stopped = client.agent_service_stop_task(&receipt).await?;
 println!("Future starts blocked: {}", stopped.future_starts_blocked);
+println!("Cancellation confirmed: {}", stopped.cancellation_confirmed);
 println!("Provider intervention: {:?}", stopped.provider_abort);
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellation_confirmed` is true only when the Task is `Canceled` because no
+attempt started or qualified reconciliation proved no effect.
 `provider_abort` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

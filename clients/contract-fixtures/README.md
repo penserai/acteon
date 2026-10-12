@@ -36,6 +36,12 @@ All five SDKs verify single/batch request construction, retained credentials and
 legacy header omission. Refusal tests preserve HTTP statuses instead of treating
 server error envelopes as transport or deserialization failures.
 
+`federation-management.json` pins configured trust publication, terminal
+revocation, exact signed-envelope bytes, and an inert import receipt across all
+five SDKs. Import helpers correlate namespace and tenant and reject any receipt
+that claims execution started. Server tests separately prove signature,
+peer-authentication, deployment-ceiling, state-backend, and revocation behavior.
+
 `agent-services.json` pins task identities, response provenance headers, and
 foreign model metadata across all five native SDKs. Contract tests verify that
 concurrent jobs use their own context, mutable task data cannot change the

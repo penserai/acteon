@@ -13,6 +13,58 @@ export interface AgentServiceReceipt {
   readonly sourceContext: string;
   readonly task: Record<string, unknown>;
 }
+export type AgentServiceTaskState =
+  | "TASK_STATE_UNSPECIFIED"
+  | "TASK_STATE_SUBMITTED"
+  | "TASK_STATE_WORKING"
+  | "TASK_STATE_COMPLETED"
+  | "TASK_STATE_FAILED"
+  | "TASK_STATE_CANCELED"
+  | "TASK_STATE_INPUT_REQUIRED"
+  | "TASK_STATE_AUTH_REQUIRED"
+  | "TASK_STATE_REJECTED";
+export interface AgentServiceListOptions {
+  readonly source?: AgentServiceReceipt;
+  readonly contextId?: string;
+  readonly status?: AgentServiceTaskState;
+  readonly pageSize?: number;
+  readonly pageToken?: string;
+  readonly historyLength?: number;
+  readonly statusTimestampAfter?: string;
+  readonly includeArtifacts?: boolean;
+}
+export interface AgentServiceTaskPage {
+  readonly tasks: readonly Readonly<Record<string, unknown>>[];
+  readonly nextPageToken: string;
+  readonly pageSize: number;
+  readonly totalSize: number;
+}
+export interface AgentServicePushAuthentication {
+  readonly scheme: string;
+  readonly credentials?: string;
+}
+export interface AgentServicePushConfigInput {
+  readonly url: string;
+  readonly id?: string;
+  readonly token?: string;
+  readonly authentication?: AgentServicePushAuthentication;
+}
+export interface AgentServicePushConfig {
+  readonly id: string;
+  readonly taskId: string;
+  readonly url: string;
+  readonly token?: string;
+  readonly authentication?: AgentServicePushAuthentication;
+}
+export interface AgentServicePushConfigPage {
+  readonly configs: readonly AgentServicePushConfig[];
+  readonly nextPageToken: string;
+}
+/** One official A2A StreamResponse plus host-owned admission provenance. */
+export interface AgentServiceA2aFrame {
+  readonly result: Record<string, unknown>;
+  readonly sourceContext?: string;
+}
 export type AgentPeerSendStatus =
   | Readonly<{ state: "uncertain" }>
   | Readonly<{ state: "accepted"; task: Record<string, unknown> }>
@@ -162,12 +214,63 @@ export function agentTask(value: unknown, namespace: string, tenant: string, id?
   if (typeof task.id !== "string" || !task.id || task.namespace !== namespace || task.tenant !== tenant || (id !== undefined && task.id !== id)) throw new Error("agent service task identity mismatch");
   return task;
 }
+export function agentServiceTaskPage(value: unknown): AgentServiceTaskPage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A task page is malformed");
+  const page = value as Record<string, unknown>;
+  if (Object.keys(page).sort().join(",") !== "nextPageToken,pageSize,tasks,totalSize"
+    || !Array.isArray(page.tasks)
+    || typeof page.nextPageToken !== "string" || page.nextPageToken.length > 8192
+    || typeof page.pageSize !== "number" || !Number.isSafeInteger(page.pageSize) || page.pageSize < 1 || page.pageSize > 100
+    || typeof page.totalSize !== "number" || !Number.isSafeInteger(page.totalSize) || page.totalSize < page.tasks.length
+    || page.tasks.length > page.pageSize) throw new Error("agent service A2A task page is malformed");
+  const tasks = page.tasks.map(value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A task projection is invalid");
+    const task = value as Record<string, unknown>;
+    const state = task.status !== null && typeof task.status === "object" && !Array.isArray(task.status) ? (task.status as Record<string, unknown>).state : undefined;
+    if (typeof task.id !== "string" || task.id.length === 0 || typeof state !== "string" || ![
+      "TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+      "TASK_STATE_CANCELED", "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED", "TASK_STATE_REJECTED",
+    ].includes(state)
+      || "namespace" in task || "tenant" in task
+      || (task.metadata !== null && typeof task.metadata === "object" && !Array.isArray(task.metadata) && "acteon_governed_execution" in task.metadata)) throw new Error("agent service A2A task projection is invalid");
+    return Object.freeze(task);
+  });
+  return Object.freeze({ tasks: Object.freeze(tasks), nextPageToken: page.nextPageToken, pageSize: page.pageSize, totalSize: page.totalSize });
+}
+export function agentServicePushConfig(value: unknown, taskId: string, id?: string): AgentServicePushConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A push configuration is invalid");
+  const config = value as Record<string, unknown>;
+  if (Object.keys(config).some(key => !["id", "taskId", "url", "token", "authentication"].includes(key))
+    || typeof config.id !== "string" || !config.id || (id !== undefined && config.id !== id)
+    || config.taskId !== taskId || typeof config.url !== "string" || !config.url
+    || (config.token !== undefined && (typeof config.token !== "string" || config.token.length > 4096))) throw new Error("agent service A2A push configuration is invalid");
+  let authentication: AgentServicePushAuthentication | undefined;
+  if (config.authentication !== undefined) {
+    if (!config.authentication || typeof config.authentication !== "object" || Array.isArray(config.authentication)) throw new Error("agent service A2A push authentication is invalid");
+    const auth = config.authentication as Record<string, unknown>;
+    if (Object.keys(auth).some(key => !["scheme", "credentials"].includes(key))
+      || typeof auth.scheme !== "string" || !auth.scheme.trim() || auth.scheme.length > 256
+      || (auth.credentials !== undefined && (typeof auth.credentials !== "string" || auth.credentials.length > 4096))) throw new Error("agent service A2A push authentication is invalid");
+    authentication = Object.freeze({ scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}) });
+  }
+  return Object.freeze({ id: config.id, taskId, url: config.url, ...(config.token !== undefined ? { token: config.token } : {}), ...(authentication ? { authentication } : {}) });
+}
+export function agentServicePushConfigPage(value: unknown, taskId: string): AgentServicePushConfigPage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A push page is invalid");
+  const page = value as Record<string, unknown>;
+  if (Object.keys(page).sort().join(",") !== "configs,nextPageToken" || !Array.isArray(page.configs)
+    || typeof page.nextPageToken !== "string" || page.nextPageToken.length > 8192) throw new Error("agent service A2A push page is invalid");
+  return Object.freeze({ configs: Object.freeze(page.configs.map(config => agentServicePushConfig(config, taskId))), nextPageToken: page.nextPageToken });
+}
 export function agentServiceBase(namespace: string, tenant: string, agent: string): string {
+  return agentServiceRpcBase(namespace, tenant, agent) + "/v1";
+}
+export function agentServiceRpcBase(namespace: string, tenant: string, agent: string): string {
   const segment = (value: string) => {
     if (!value || value === "." || value === "..") throw new Error("invalid agent service path segment");
     return encodeURIComponent(value);
   };
-  return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}/v1`;
+  return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}`;
 }
 
 export type AgentServiceProviderAbort =
@@ -190,9 +293,10 @@ export function agentProviderAbort(value: unknown): AgentServiceProviderAbort | 
   throw new Error("agent service provider abort status malformed");
 }
 
-/** Acknowledges future-start restriction and preserves separate provider finality. */
+/** Acknowledges cancellation intent and preserves separate provider finality. */
 export interface AgentServiceStopReceipt {
   readonly task: Record<string, unknown>;
   readonly futureStartsBlocked: true;
+  readonly cancellationConfirmed: boolean;
   readonly providerAbort?: AgentServiceProviderAbort;
 }

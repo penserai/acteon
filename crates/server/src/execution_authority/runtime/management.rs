@@ -1,4 +1,5 @@
 //! Management from original private authentication and independent deployment policy.
+mod federation_finality;
 mod reconciliation;
 mod registry;
 mod workforce;
@@ -7,16 +8,29 @@ use crate::{
     auth::projection::AuthenticatedExecutionConfiguration, config::ExecutionManagerConfig,
 };
 use acteon_core::{
+    FederationGrantCeilingDeclaration, FederationTrustDeclaration, FederationTrustView,
     GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
     GovernanceInterventionRequest, GovernanceLimits, GovernancePermitView, GovernanceRoute,
-    GovernanceRouteView, GovernanceScopeView, PublishGovernancePermitRequest,
+    GovernanceRouteView, GovernanceScopeView, PublishFederationTrustRequest,
+    PublishGovernancePermitRequest, RevokeFederationTrustRequest,
 };
 use acteon_governance::{
-    AuthorityChange, AuthorityStamp, CoordinationError,
+    AttemptStatus, AuthorityChange, AuthorityStamp, CoordinationError,
     control::{ControlChangeAuthorization, ControlChangeCeiling},
+    federation::{
+        EvaluatedFederationTrustPublication, FederationGrantCeiling, FederationTrust,
+        FederationTrustIssuanceCeiling,
+    },
     permit::{EvaluatedPermitPublication, ExecutionPermit, PermitIssuanceCeiling},
 };
+pub use federation_finality::TrustedFederationFinalityInstallation;
 pub use reconciliation::TrustedReconciliationInstallation;
+
+#[derive(Debug, Clone)]
+pub struct FederationDeliveryEvidencePage {
+    pub deliveries: Vec<acteon_executor::federation_transport::FederationDeliveryEvidence>,
+    pub next_cursor: Option<uuid::Uuid>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManagementError {
@@ -41,6 +55,41 @@ impl From<CoordinationError> for ManagementError {
         }
     }
 }
+
+fn public_management_bounds(
+    policy: &ExecutionManagerConfig,
+) -> acteon_core::GovernanceManagementBounds {
+    acteon_core::GovernanceManagementBounds {
+        subjects: policy.subjects.clone(),
+        can_issue_permits: policy.can_issue_permits,
+        can_intervene: policy.can_intervene,
+        can_read_history: policy.can_read_history,
+        can_reconcile: policy.can_reconcile,
+        can_manage_federation: policy.can_manage_federation,
+        valid_from_ms: policy.valid_from_ms,
+        limits: GovernanceLimits {
+            max_units: policy.limits.max_units,
+            max_concurrent: policy.limits.max_concurrent,
+            deadline_ms: policy.limits.deadline_ms,
+        },
+    }
+}
+
+fn visible_federation_trusts(
+    state: &acteon_governance::CoordinatorSnapshot,
+    policy: &ExecutionManagerConfig,
+) -> Vec<FederationTrustView> {
+    state
+        .federation_trusts
+        .values()
+        .filter(|record| policy.federation_trust_ids.contains(&record.trust.id))
+        .map(|record| FederationTrustView {
+            trust: public_federation_trust(&record.trust),
+            revoked: record.revoked,
+        })
+        .collect()
+}
+
 struct ManagementObservation<'a> {
     scope: &'a InstalledScope,
     policy: &'a ExecutionManagerConfig,
@@ -192,6 +241,187 @@ impl ExecutionAuthorityRuntime {
         .map_err(|_| ManagementError::Unavailable)
     }
 
+    /// Read a stable, bounded page of sanitized cross-domain delivery
+    /// evidence. The manager must hold independent reconciliation authority
+    /// over the source principal, and that authority is revalidated after IO.
+    pub async fn list_federation_delivery_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<FederationDeliveryEvidencePage, ManagementError> {
+        use acteon_executor::federation_transport::{
+            FederationDeliveryEvidenceReader, FederationTransportError,
+        };
+        if !(1..=200).contains(&limit) {
+            return Err(ManagementError::Invalid);
+        }
+        let observation = self
+            .management_observation(namespace, tenant, authentication)
+            .await?;
+        if !observation.policy.can_reconcile {
+            return Err(ManagementError::Forbidden);
+        }
+        let reader = FederationDeliveryEvidenceReader::new(
+            self.state.clone(),
+            self.clock.clone(),
+            self.encryptor.clone(),
+        );
+        let mut cursor = after;
+        let mut deliveries = Vec::new();
+        while deliveries.len() <= limit {
+            let evidence = reader
+                .list_evidence(namespace, tenant, cursor, 500)
+                .await
+                .map_err(|error| match error {
+                    FederationTransportError::Invalid => ManagementError::Invalid,
+                    FederationTransportError::Conflict => ManagementError::Conflict,
+                    _ => ManagementError::Unavailable,
+                })?;
+            let exhausted = evidence.len() < 500;
+            cursor = evidence.last().map(|delivery| delivery.delivery_id);
+            deliveries.extend(
+                evidence
+                    .into_iter()
+                    .filter(|delivery| federation_delivery_covered(observation.policy, delivery)),
+            );
+            if exhausted || cursor.is_none() {
+                break;
+            }
+        }
+        self.revalidate_management(&observation, authentication)
+            .await?;
+        let next_cursor = (deliveries.len() > limit).then(|| deliveries[limit - 1].delivery_id);
+        deliveries.truncate(limit);
+        Ok(FederationDeliveryEvidencePage {
+            deliveries,
+            next_cursor,
+        })
+    }
+
+    /// Terminally stop local recovery of an ambiguous outbound delivery. The
+    /// current manager must independently cover the retained source. This
+    /// never claims peer success or rejection and never calls the peer.
+    pub async fn abandon_federation_delivery(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: uuid::Uuid,
+        disposition_id: uuid::Uuid,
+        reason: &str,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<acteon_executor::federation_transport::FederationDeliveryEvidence, ManagementError>
+    {
+        use acteon_executor::{
+            federation_export::federation_export_attempt_id,
+            federation_transport::{
+                FederationDeliveryAbandonment, FederationDeliveryEvidenceReader,
+                FederationDeliveryEvidenceStatus, FederationDeliveryReconciler,
+            },
+        };
+        if delivery_id.is_nil()
+            || disposition_id.is_nil()
+            || reason.is_empty()
+            || reason.len() > 1_024
+            || reason.trim() != reason
+            || reason.chars().any(char::is_control)
+        {
+            return Err(ManagementError::Invalid);
+        }
+        let observation = self
+            .management_observation(namespace, tenant, authentication)
+            .await?;
+        if !observation.policy.can_reconcile {
+            return Err(ManagementError::Forbidden);
+        }
+        let reader = FederationDeliveryEvidenceReader::new(
+            self.state.clone(),
+            self.clock.clone(),
+            self.encryptor.clone(),
+        );
+        let evidence = reader
+            .get_evidence(namespace, tenant, delivery_id)
+            .await
+            .map_err(|error| federation_management_error(&error))?
+            .ok_or(ManagementError::NotFound)?;
+        if !federation_delivery_covered(observation.policy, &evidence) {
+            return Err(ManagementError::NotFound);
+        }
+
+        let attempt_id = federation_export_attempt_id(delivery_id);
+        let attempt = observation
+            .scope
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| ManagementError::Unavailable)?
+            .starts
+            .get(&attempt_id)
+            .cloned()
+            .ok_or(ManagementError::Conflict)?;
+        if attempt.subject != evidence.source.id() {
+            return Err(ManagementError::Conflict);
+        }
+
+        if let FederationDeliveryEvidenceStatus::Abandoned { abandonment, .. } = &evidence.status {
+            if abandonment.disposition_id != disposition_id
+                || abandonment.operator != observation.policy.principal
+                || abandonment.reason != reason
+            {
+                return Err(ManagementError::Conflict);
+            }
+            self.revalidate_management(&observation, authentication)
+                .await?;
+            observation
+                .scope
+                .coordinator
+                .settle(&attempt_id, &attempt.token, AttemptStatus::Settled)
+                .await?;
+            return Ok(evidence);
+        }
+        if attempt.status == AttemptStatus::Settled {
+            return Err(ManagementError::Conflict);
+        }
+
+        // This second authoritative read is the authorization linearization
+        // point. A concurrent revocation that precedes it blocks the write; a
+        // later revocation does not erase an already authorized disposition.
+        self.revalidate_management(&observation, authentication)
+            .await?;
+        let recorded_at_ms = self.clock.now().timestamp_millis();
+        let reconciler = FederationDeliveryReconciler::new(
+            self.state.clone(),
+            self.clock.clone(),
+            self.encryptor.clone(),
+        );
+        let abandoned = reconciler
+            .abandon(
+                namespace,
+                tenant,
+                delivery_id,
+                &evidence.source,
+                FederationDeliveryAbandonment {
+                    disposition_id,
+                    operator: observation.policy.principal.clone(),
+                    authority: observation.stamp.clone(),
+                    reason: reason.into(),
+                    recorded_at_ms,
+                },
+            )
+            .await
+            .map_err(|error| federation_management_error(&error))?;
+        // Journal finality is durable first. A lost settlement acknowledgment
+        // is repaired by replaying this same idempotent disposition request.
+        observation
+            .scope
+            .coordinator
+            .settle(&attempt_id, &attempt.token, AttemptStatus::Settled)
+            .await?;
+        Ok(abandoned)
+    }
+
     pub async fn inspect_governance(
         &self,
         namespace: &str,
@@ -255,20 +485,9 @@ impl ExecutionAuthorityRuntime {
                 revoked: record.revoked,
             })
             .collect();
+        let federation_trusts = visible_federation_trusts(&state, observation.policy);
         Ok(GovernanceScopeView {
-            management: acteon_core::GovernanceManagementBounds {
-                subjects: observation.policy.subjects.clone(),
-                can_issue_permits: observation.policy.can_issue_permits,
-                can_intervene: observation.policy.can_intervene,
-                can_read_history: observation.policy.can_read_history,
-                can_reconcile: observation.policy.can_reconcile,
-                valid_from_ms: observation.policy.valid_from_ms,
-                limits: GovernanceLimits {
-                    max_units: observation.policy.limits.max_units,
-                    max_concurrent: observation.policy.limits.max_concurrent,
-                    deadline_ms: observation.policy.limits.deadline_ms,
-                },
-            },
+            management: public_management_bounds(observation.policy),
             namespace: namespace.into(),
             tenant: tenant.into(),
             incarnation: state.incarnation,
@@ -285,7 +504,103 @@ impl ExecutionAuthorityRuntime {
                 .into_iter()
                 .filter(|id| observation.policy.subjects.iter().any(|s| s.id() == id))
                 .collect(),
+            federation_trusts,
         })
+    }
+
+    fn federation_ceiling(
+        observation: &ManagementObservation<'_>,
+    ) -> Result<FederationTrustIssuanceCeiling, ManagementError> {
+        if !observation.policy.can_manage_federation {
+            return Err(ManagementError::Forbidden);
+        }
+        let federation = observation
+            .scope
+            .prepared
+            .declaration()
+            .federation
+            .as_ref()
+            .ok_or(ManagementError::Forbidden)?;
+        let ceiling = FederationTrustIssuanceCeiling {
+            issuer: observation.policy.principal.clone(),
+            approved: federation
+                .trusts
+                .iter()
+                .filter(|trust| observation.policy.federation_trust_ids.contains(&trust.id))
+                .cloned()
+                .collect(),
+            valid_from_ms: observation.policy.valid_from_ms,
+            deadline_ms: observation.policy.limits.deadline_ms,
+        };
+        ceiling.validate().map_err(ManagementError::from)?;
+        Ok(ceiling)
+    }
+
+    pub async fn publish_federation_trust(
+        &self,
+        request: PublishFederationTrustRequest,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<GovernanceChangeReceipt, ManagementError> {
+        let observation = self
+            .management_observation(&request.namespace, &request.tenant, authentication)
+            .await?;
+        let ceiling = Self::federation_ceiling(&observation)?;
+        let record = observation
+            .scope
+            .coordinator
+            .publish_federation_trust(EvaluatedFederationTrustPublication {
+                change_id: &request.change_id,
+                trust: private_federation_trust(request.trust),
+                expected_revision: request.expected_revision,
+                ceiling: &ceiling,
+                evaluated_authority: &observation.stamp,
+                reason: &request.reason,
+                clock: self.clock.as_ref(),
+            })
+            .await?;
+        Ok(receipt(
+            request.namespace,
+            request.tenant,
+            request.change_id,
+            record,
+        ))
+    }
+
+    pub async fn revoke_federation_trust(
+        &self,
+        request: RevokeFederationTrustRequest,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<GovernanceChangeReceipt, ManagementError> {
+        let observation = self
+            .management_observation(&request.namespace, &request.tenant, authentication)
+            .await?;
+        let ceiling = Self::federation_ceiling(&observation)?;
+        if !observation
+            .policy
+            .federation_trust_ids
+            .contains(&request.trust_id)
+        {
+            return Err(ManagementError::Forbidden);
+        }
+        let record = observation
+            .scope
+            .coordinator
+            .revoke_federation_trust_evaluated(
+                &request.change_id,
+                &request.trust_id,
+                request.expected_revision,
+                &ceiling,
+                &observation.stamp,
+                &request.reason,
+                self.clock.as_ref(),
+            )
+            .await?;
+        Ok(receipt(
+            request.namespace,
+            request.tenant,
+            request.change_id,
+            record,
+        ))
     }
 
     pub async fn publish_governance_permit(
@@ -452,6 +767,111 @@ fn public_effect(effect: &acteon_governance::context::AcceptedEffect) -> Governa
     GovernanceEffect {
         operation: effect.operation.clone(),
         resources: effect.resources.clone(),
+    }
+}
+
+fn federation_management_error(
+    error: &acteon_executor::federation_transport::FederationTransportError,
+) -> ManagementError {
+    use acteon_executor::federation_transport::FederationTransportError;
+    match error {
+        FederationTransportError::Invalid => ManagementError::Invalid,
+        FederationTransportError::Conflict => ManagementError::Conflict,
+        FederationTransportError::Refused => ManagementError::Forbidden,
+        FederationTransportError::Unavailable => ManagementError::Unavailable,
+    }
+}
+
+pub(super) fn federation_delivery_covered(
+    policy: &ExecutionManagerConfig,
+    evidence: &acteon_executor::federation_transport::FederationDeliveryEvidence,
+) -> bool {
+    policy.subjects.contains(&evidence.source)
+        && !evidence.reconciliation_resources.is_empty()
+        && evidence
+            .reconciliation_resources
+            .iter()
+            .all(|resource| policy.reconciliation_resources.contains(resource))
+}
+
+fn private_effect(effect: GovernanceEffect) -> acteon_governance::context::AcceptedEffect {
+    acteon_governance::context::AcceptedEffect {
+        operation: effect.operation,
+        resources: effect.resources,
+    }
+}
+
+fn private_federation_grant(grant: FederationGrantCeilingDeclaration) -> FederationGrantCeiling {
+    FederationGrantCeiling {
+        source: grant.source,
+        target: grant.target,
+        agent_resource: grant.agent_resource,
+        binding_digest: grant.binding_digest,
+        skill: grant.skill,
+        ingress_effect: private_effect(grant.ingress_effect),
+        effects: grant.effects.into_iter().map(private_effect).collect(),
+        limits: acteon_governance::RootBudgetLimits {
+            max_units: grant.limits.max_units,
+            max_concurrent: grant.limits.max_concurrent,
+            deadline_ms: grant.limits.deadline_ms,
+        },
+        max_depth: grant.max_depth,
+    }
+}
+
+fn private_federation_trust(trust: FederationTrustDeclaration) -> FederationTrust {
+    FederationTrust {
+        id: trust.id,
+        revision: trust.revision,
+        foreign_domain: trust.foreign_domain,
+        local_audience: trust.local_audience,
+        key_id: trust.key_id,
+        verifying_key: trust.verifying_key,
+        minimum_issuer_epoch: trust.minimum_issuer_epoch,
+        max_revocation_staleness_ms: trust.max_revocation_staleness_ms,
+        max_clock_skew_ms: trust.max_clock_skew_ms,
+        valid_from_ms: trust.valid_from_ms,
+        deadline_ms: trust.deadline_ms,
+        approved: trust
+            .approved
+            .into_iter()
+            .map(private_federation_grant)
+            .collect(),
+    }
+}
+
+fn public_federation_grant(grant: &FederationGrantCeiling) -> FederationGrantCeilingDeclaration {
+    FederationGrantCeilingDeclaration {
+        source: grant.source.clone(),
+        target: grant.target.clone(),
+        agent_resource: grant.agent_resource.clone(),
+        binding_digest: grant.binding_digest.clone(),
+        skill: grant.skill.clone(),
+        ingress_effect: public_effect(&grant.ingress_effect),
+        effects: grant.effects.iter().map(public_effect).collect(),
+        limits: GovernanceLimits {
+            max_units: grant.limits.max_units,
+            max_concurrent: grant.limits.max_concurrent,
+            deadline_ms: grant.limits.deadline_ms,
+        },
+        max_depth: grant.max_depth,
+    }
+}
+
+fn public_federation_trust(trust: &FederationTrust) -> FederationTrustDeclaration {
+    FederationTrustDeclaration {
+        id: trust.id.clone(),
+        revision: trust.revision,
+        foreign_domain: trust.foreign_domain.clone(),
+        local_audience: trust.local_audience.clone(),
+        key_id: trust.key_id.clone(),
+        verifying_key: trust.verifying_key.clone(),
+        minimum_issuer_epoch: trust.minimum_issuer_epoch,
+        max_revocation_staleness_ms: trust.max_revocation_staleness_ms,
+        max_clock_skew_ms: trust.max_clock_skew_ms,
+        valid_from_ms: trust.valid_from_ms,
+        deadline_ms: trust.deadline_ms,
+        approved: trust.approved.iter().map(public_federation_grant).collect(),
     }
 }
 fn receipt(

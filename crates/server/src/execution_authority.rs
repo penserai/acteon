@@ -2,19 +2,24 @@
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
 pub mod agent_services;
 pub mod authorization_http;
+mod federation_http;
 mod peer_http;
 mod runtime;
+pub use federation_http::ActeonFederationHttpAdapter;
 pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
-    AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest, AgentPeerCancelInvocation,
-    AgentPeerCancelRequest, AgentPeerContinuationInvocation, AgentPeerContinuationRequest,
-    AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest, AgentPeerInvocation,
-    AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
+    AgentFederationExportRequest, AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest,
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerContinuationInvocation,
+    AgentPeerContinuationRequest, AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest,
+    AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
     AgentPeerTransportError, AgentServiceAcceptance, AgentServiceAuthorizationOpen,
     AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
-    AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
-    AgentServiceTaskObservation, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
-    ManagementError, TrustedReconciliationInstallation,
+    AgentServiceError, AgentServiceInitialPushConfig, AgentServiceListPage,
+    AgentServiceListPosition, AgentServiceListRequest, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, AgentServiceTaskObservation, ExecutionAuthorityRuntime,
+    ExecutionRuntimeDependencies, FederationAgentInvocation, FederationCapabilityAdmission,
+    FederationDeliveryEvidencePage, FederationExportRuntimeError, FederationImportAdmission,
+    ManagementError, TrustedFederationFinalityInstallation, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -207,6 +212,19 @@ impl ExecutionProviderRegistry {
                         resources.extend(operation.effect().resources.iter().cloned());
                         resources.extend(target.ingress_effect(Vec::new())?.resources);
                     }
+                    if let Some(federation) = &declaration.federation {
+                        for export in federation
+                            .exports
+                            .iter()
+                            .filter(|export| export.source_agent_id == *agent_id)
+                        {
+                            resources.extend(
+                                export
+                                    .local_effect(&declaration.namespace, &declaration.tenant)?
+                                    .resources,
+                            );
+                        }
+                    }
                     let (service, _) = &agent_operations[agent_id];
                     ingresses.insert(agent_id.clone(), service.ingress_effect(resources)?);
                 }
@@ -235,6 +253,18 @@ impl ExecutionProviderRegistry {
                             .iter()
                             .map(|target_id| ingresses[target_id].clone()),
                     );
+                    if let Some(federation) = &declaration.federation {
+                        for export in federation
+                            .exports
+                            .iter()
+                            .filter(|export| export.source_agent_id == *agent_id)
+                        {
+                            let effect =
+                                export.local_effect(&declaration.namespace, &declaration.tenant)?;
+                            intent.push(effect.clone());
+                            direct.push(effect);
+                        }
+                    }
                     intent.sort_by(|left, right| {
                         left.operation
                             .cmp(&right.operation)
@@ -312,6 +342,17 @@ impl ExecutionProviderRegistry {
                         .values()
                         .map(|agent| agent.binding.ingress_effect().clone()),
                 );
+                if let Some(federation) = &declaration.federation {
+                    effects.extend(
+                        federation
+                            .exports
+                            .iter()
+                            .map(|export| {
+                                export.local_effect(&declaration.namespace, &declaration.tenant)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
                 // Retain the previous footprint in the publisher ceiling so a
                 // new authentication revision can withdraw its old credential
                 // effects. Retained bindings are excluded from agent admission
@@ -367,6 +408,9 @@ impl ExecutionProviderRegistry {
                 }
                 if !declaration.managers.is_empty() {
                     policy["managers"] = serde_json::json!(declaration.managers);
+                }
+                if let Some(federation) = &declaration.federation {
+                    policy["federation"] = serde_json::json!(federation);
                 }
                 policy["peer_transport"] = serde_json::json!(configuration.peer_transport);
                 if !configuration.authorization_verifiers.is_empty() {
@@ -577,6 +621,30 @@ impl PreparedExecutionScope {
         self.agents
             .get(agent_id)
             .map(|agent| agent.binding.digest())
+    }
+
+    /// Exact deployment-derived ingress effect for federation review and
+    /// offline envelope construction. The runtime still rechecks it on import.
+    #[must_use]
+    pub fn agent_service_ingress_effect(
+        &self,
+        agent_id: &str,
+    ) -> Option<&acteon_governance::context::AcceptedEffect> {
+        self.agents
+            .get(agent_id)
+            .map(|agent| agent.binding.ingress_effect())
+    }
+
+    /// Exact qualified direct-effect footprint for one installed service.
+    #[must_use]
+    pub fn agent_service_direct_effects(
+        &self,
+        agent_id: &str,
+    ) -> Option<&[acteon_governance::context::AcceptedEffect]> {
+        self.agents
+            .get(agent_id)
+            .and_then(|agent| agent.binding.service_plan())
+            .map(acteon_executor::delegation::ApprovedServicePlan::direct_effects)
     }
 
     /// Qualify complete pinned plans against this scope's actual registrations.
@@ -978,12 +1046,38 @@ impl PreparedExecutionScope {
                         )
                     })
                     .collect(),
+            )?
+            .with_federation_export_admission_bounds(
+                self.declaration
+                    .federation
+                    .as_ref()
+                    .map(|federation| {
+                        federation
+                            .exports
+                            .iter()
+                            .map(|export| {
+                                Ok((
+                                    export.id.clone(),
+                                    (
+                                        export.local_effect(
+                                            &self.declaration.namespace,
+                                            &self.declaration.tenant,
+                                        )?,
+                                        vec![export.active_epoch()?.grant.source.clone()],
+                                    ),
+                                ))
+                            })
+                            .collect::<Result<_, String>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
             )
     }
 }
 
 fn canonicalize_manager(manager: &mut crate::config::ExecutionManagerConfig) {
     manager.agents.sort();
+    manager.federation_trust_ids.sort();
     manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
     manager.routes.sort();
     if let Some(workforce) = &mut manager.workforce {
@@ -1028,6 +1122,7 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
         permit.routes.sort();
         permit.chains.sort();
         permit.agents.sort();
+        permit.federation_exports.sort();
     }
     for effect in &mut declaration.historical_effects {
         effect.resources.sort();
@@ -1037,4 +1132,53 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
             .cmp(&b.operation)
             .then(a.resources.cmp(&b.resources))
     });
+    if let Some(federation) = &mut declaration.federation {
+        federation
+            .trusts
+            .sort_by(|a, b| a.id.cmp(&b.id).then(a.revision.cmp(&b.revision)));
+        federation.peers.sort_by(|a, b| {
+            a.foreign_domain.cmp(&b.foreign_domain).then(
+                a.authentication_principal
+                    .id()
+                    .cmp(b.authentication_principal.id()),
+            )
+        });
+        federation.exports.sort_by(|a, b| a.id.cmp(&b.id));
+        for export in &mut federation.exports {
+            export.internal_hosts.sort();
+            export.epochs.sort_by_key(|epoch| epoch.issuer_epoch);
+            for epoch in &mut export.epochs {
+                epoch.grant.ingress_effect.resources.sort();
+                for effect in &mut epoch.grant.effects {
+                    effect.resources.sort();
+                }
+                epoch.grant.effects.sort_by(|left, right| {
+                    left.operation
+                        .cmp(&right.operation)
+                        .then(left.resources.cmp(&right.resources))
+                });
+            }
+        }
+        for peer in &mut federation.peers {
+            peer.trust_ids.sort();
+        }
+        for trust in &mut federation.trusts {
+            for shape in &mut trust.approved {
+                shape.ingress_effect.resources.sort();
+                for effect in &mut shape.effects {
+                    effect.resources.sort();
+                }
+                shape.effects.sort_by(|left, right| {
+                    left.operation
+                        .cmp(&right.operation)
+                        .then(left.resources.cmp(&right.resources))
+                });
+            }
+            trust.approved.sort_by(|left, right| {
+                serde_json::to_vec(left)
+                    .unwrap_or_default()
+                    .cmp(&serde_json::to_vec(right).unwrap_or_default())
+            });
+        }
+    }
 }

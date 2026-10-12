@@ -15,6 +15,146 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentServiceTest {
+    @Test void officialStreamsPreserveRequestIdentityAndSourceOutOfBand() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var calls = new AtomicInteger(); var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                calls.incrementAndGet();
+                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("text/event-stream", exchange.getRequestHeaders().getFirst("Accept"));
+                var request = mapper.readTree(exchange.getRequestBody());
+                if (request.path("method").asText().equals("SubscribeToTask")) {
+                    assertEquals("job-1",request.path("params").path("id").asText());
+                    assertEquals("host-only",exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                } else {
+                    assertEquals("SendStreamingMessage",request.path("method").asText());
+                    assertNull(exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                }
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+                if (request.path("method").asText().equals("SendStreamingMessage"))
+                    exchange.getResponseHeaders().set(AgentServiceReceipt.SOURCE_CONTEXT_HEADER,"host-only");
+                var frame = mapper.createObjectNode();
+                frame.put("jsonrpc","2.0"); frame.set("id",request.path("id"));
+                frame.set("result",mapper.readTree("{\"task\":{\"id\":\"job-1\"}}"));
+                var body = (": keepalive\n\ndata: "+mapper.writeValueAsString(frame)+"\n\n").getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            try(var stream = client.agentServiceSendStreamingMessage("prod","acme","notifier",Map.of("messageId","m1"))) {
+                assertEquals("host-only",stream.sourceContext());
+                assertEquals("job-1",stream.next().path("task").path("id").asText());
+            }
+            try(var stream = client.agentServiceSubscribeTask(receipt)) {
+                assertNull(stream.sourceContext());
+                assertEquals("job-1",stream.next().path("task").path("id").asText());
+            }
+            assertEquals(2,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
+    @Test void officialCancelPreservesRequestIdentityAndSource() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                var request = mapper.readTree(exchange.getRequestBody());
+                assertEquals("CancelTask", request.path("method").asText());
+                assertEquals("cancel:job-1", request.path("id").asText());
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                var body = "{\"jsonrpc\":\"2.0\",\"id\":\"cancel:job-1\",\"result\":{\"id\":\"job-1\",\"status\":{\"state\":\"TASK_STATE_CANCELED\"},\"metadata\":{\"acteonCancellation\":{\"state\":\"confirmed\"}}}}".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            assertEquals("job-1", client.agentServiceCancelTask(receipt).path("id").asText());
+            if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
+    @Test void officialListTasksReturnsTypedSourceBoundPage() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                var request = mapper.readTree(exchange.getRequestBody());
+                assertEquals("ListTasks", request.path("method").asText());
+                assertEquals("list:notifier", request.path("id").asText());
+                assertEquals("TASK_STATE_WORKING", request.path("params").path("status").asText());
+                assertEquals(1, request.path("params").path("pageSize").asInt());
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                var body = "{\"jsonrpc\":\"2.0\",\"id\":\"list:notifier\",\"result\":{\"tasks\":[{\"id\":\"job-1\",\"status\":{\"state\":\"TASK_STATE_WORKING\"}}],\"nextPageToken\":\"next-1\",\"pageSize\":1,\"totalSize\":2}}".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var options = new AgentServiceListOptions(receipt,null,AgentServiceTaskState.WORKING,1,null,null,null,false);
+            var page = client.agentServiceListTasks("prod","acme","notifier",options);
+            assertEquals("job-1",page.tasks().get(0).path("id").asText());
+            assertEquals("next-1",page.nextPageToken());
+            assertEquals(2,page.totalSize());
+            if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
+    @Test void officialPushConfigCrudIsTypedAndTaskBound() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var failure = new AtomicReference<Throwable>(); var calls = new AtomicInteger();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                calls.incrementAndGet();
+                assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                var request = mapper.readTree(exchange.getRequestBody());
+                assertEquals("job-1", request.path("params").path("taskId").asText());
+                var stored = mapper.readTree("{\"id\":\"push-1\",\"taskId\":\"job-1\",\"url\":\"https://hooks.example/a2a\",\"token\":\"callback-token\",\"authentication\":{\"scheme\":\"Bearer\",\"credentials\":\"secret\"}}");
+                com.fasterxml.jackson.databind.JsonNode result;
+                if (request.path("method").asText().equals("ListTaskPushNotificationConfigs")) {
+                    result = mapper.createObjectNode().set("configs", mapper.createArrayNode().add(stored));
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) result).put("nextPageToken", "next");
+                } else if (request.path("method").asText().equals("DeleteTaskPushNotificationConfig")) {
+                    result = mapper.createObjectNode();
+                } else {
+                    result = stored;
+                }
+                var envelope = mapper.createObjectNode(); envelope.put("jsonrpc","2.0");
+                envelope.set("id", request.path("id")); envelope.set("result", result);
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                var body = mapper.writeValueAsBytes(envelope);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var input = new AgentServicePushConfigInput("push-1", "https://hooks.example/a2a", "callback-token", new AgentServicePushAuthentication("Bearer", "secret"));
+            var created = client.agentServiceCreatePushConfig("prod","acme","notifier","job-1",input,receipt);
+            assertEquals("secret", created.authentication().credentials());
+            assertEquals("push-1", client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",receipt).id());
+            assertEquals("next", client.agentServiceListPushConfigs("prod","acme","notifier","job-1",1,null,receipt).nextPageToken());
+            client.agentServiceDeletePushConfig("prod","acme","notifier","job-1","push-1",receipt);
+            assertEquals(4,calls.get());
+            var foreign = new AgentServiceReceipt("prod","acme","notifier","job-2","host-only",task);
+            assertThrows(IllegalArgumentException.class, () -> client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",foreign));
+            assertEquals(4,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
     @Test void peerToolSendsNoAuthorityFieldsAndValidatesReceipt() throws Exception {
         var mapper = JsonMapper.build();
         var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
@@ -168,7 +308,7 @@ class AgentServiceTest {
             var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
             server.createContext("/",exchange -> {
                 calls.incrementAndGet(); exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
-                var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",flag));
+                var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",flag,"cancellation_confirmed",false));
                 exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
             });server.start();
             try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
@@ -179,7 +319,7 @@ class AgentServiceTest {
         var malformedServer = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         malformedServer.createContext("/",exchange -> {
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
-            var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",true,"provider_abort",Map.of("state","reconciled","proof_digest","bad")));
+            var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",true,"cancellation_confirmed",false,"provider_abort",Map.of("state","reconciled","proof_digest","bad")));
             exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
         });malformedServer.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+malformedServer.getAddress().getPort())) {

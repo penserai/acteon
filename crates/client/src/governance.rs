@@ -1,16 +1,300 @@
 //! Typed operator governance; management requests never retry automatically.
 use crate::{ActeonClient, Error, PlatformOperation};
 pub use acteon_core::{
-    GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
+    FederationGrantCeilingDeclaration, FederationImportReceipt, FederationTrustDeclaration,
+    FederationTrustView, GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
     GovernanceInterventionRequest, GovernanceLimits, GovernanceManagementBounds,
     GovernancePermitDeclaration, GovernancePermitView, GovernanceRegistryMutationReceipt,
     GovernanceRegistryMutationRequest, GovernanceRegistryProjection,
     GovernanceRegistryProjectionView, GovernanceRoute, GovernanceRouteView, GovernanceScopeView,
-    ProviderExecutionHistory, ProviderHistoryReceipt, ProviderReconciliationCorrelation,
-    ProviderReconciliationRequest, PublishGovernancePermitRequest,
+    ImportFederationEnvelopeRequest, InvokeFederatedAgentRequest, ProviderExecutionHistory,
+    ProviderHistoryReceipt, ProviderReconciliationCorrelation, ProviderReconciliationRequest,
+    PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest,
+    SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, Task, TaskMessage,
 };
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedFederationCapabilityCard {
+    pub payload: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationExportAttemptStatus {
+    InFlight,
+    Settled,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FederationExportDelivery {
+    Registered,
+    ImportUncertain,
+    Imported {
+        receipt: Box<FederationImportReceipt>,
+    },
+    InvokeUncertain {
+        receipt: Box<FederationImportReceipt>,
+    },
+    Accepted {
+        receipt: Box<FederationImportReceipt>,
+        task: Box<Task>,
+    },
+    Rejected {
+        stage: String,
+        code: String,
+    },
+    Abandoned {
+        stage: String,
+        abandonment: FederationDeliveryAbandonment,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationExportReceipt {
+    pub attempt_id: String,
+    pub attempt_status: FederationExportAttemptStatus,
+    pub delivery_id: String,
+    pub delivery: FederationExportDelivery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FederationDeliveryEvidenceStatus {
+    Registered,
+    CapabilityNegotiating {
+        claim_expires_at_ms: i64,
+    },
+    Importing {
+        claim_expires_at_ms: i64,
+    },
+    ImportUncertain,
+    Imported,
+    Invoking {
+        claim_expires_at_ms: i64,
+    },
+    InvokeUncertain,
+    Accepted,
+    Rejected {
+        stage: String,
+        code: String,
+    },
+    Abandoned {
+        stage: String,
+        abandonment: FederationDeliveryAbandonment,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryAbandonment {
+    pub disposition_id: String,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority_incarnation: String,
+    pub authority_generation: u64,
+    pub reason: String,
+    pub recorded_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AbandonFederationDeliveryRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub disposition_id: &'a str,
+    pub reason: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconcileFederationDeliveryRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub proof_base64: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryFinalityEvidence {
+    pub stage: String,
+    pub accepted: bool,
+    pub source_id: String,
+    pub qualification_ref: String,
+    pub verifier_revision: String,
+    pub proof_digest: String,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority_incarnation: String,
+    pub authority_generation: u64,
+    pub accepted_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationFinalityCorrelation {
+    pub delivery_id: String,
+    pub stage: String,
+    pub parent_execution_id: String,
+    pub source: acteon_core::PrincipalIdentity,
+    pub adapter_revision: String,
+    pub binding_digest: String,
+    pub envelope_digest: String,
+    pub invocation_digest: String,
+    pub import_id: String,
+    pub invocation_nonce: String,
+    pub agent_id: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryEvidence {
+    pub delivery_id: String,
+    pub parent_execution_id: String,
+    pub source: acteon_core::PrincipalIdentity,
+    pub agent_id: String,
+    pub message_id: String,
+    pub trust_id: String,
+    pub trust_revision: u64,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub expired: bool,
+    pub exact_replay_idempotent: bool,
+    pub capability: Option<FederationCapabilityEvidence>,
+    pub status: FederationDeliveryEvidenceStatus,
+    pub reconciliations: Vec<FederationDeliveryFinalityEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationCapabilityEvidence {
+    pub card_digest: String,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub expires_at_ms: i64,
+    pub protocol_revision: String,
+    pub authentication_scheme: String,
+    pub credential_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryEvidencePage {
+    pub deliveries: Vec<FederationDeliveryEvidence>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FederationExportMessage<'a> {
+    message: &'a TaskMessage,
+}
 
 impl ActeonClient {
+    /// List sanitized outbound delivery evidence under reconciliation authority.
+    pub async fn federation_delivery_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<FederationDeliveryEvidencePage, Error> {
+        let limit = limit.map(|value| value.to_string());
+        let mut query = vec![("namespace", namespace), ("tenant", tenant)];
+        if let Some(after) = after {
+            query.push(("after", after));
+        }
+        if let Some(limit) = limit.as_deref() {
+            query.push(("limit", limit));
+        }
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceFederationDeliveryEvidence,
+                &[],
+                &query,
+                None,
+            )
+            .await?;
+        let page: FederationDeliveryEvidencePage = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if page.deliveries.iter().any(|delivery| {
+            delivery.delivery_id.is_empty() || delivery.parent_execution_id.is_empty()
+        }) {
+            return Err(Error::Deserialization(
+                "federation delivery evidence identity mismatch".into(),
+            ));
+        }
+        Ok(page)
+    }
+
+    /// Stop local recovery of an ambiguous delivery without asserting a peer
+    /// outcome. Reuse `disposition_id` to recover a lost acknowledgment.
+    pub async fn abandon_federation_delivery(
+        &self,
+        delivery_id: &str,
+        request: AbandonFederationDeliveryRequest<'_>,
+    ) -> Result<FederationDeliveryEvidence, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceAbandonFederationDelivery,
+                &[("delivery_id", delivery_id)],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|error| Error::Deserialization(error.to_string()))
+    }
+
+    /// Return immutable correlation for the currently ambiguous peer stage.
+    pub async fn federation_finality_correlation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: &str,
+    ) -> Result<FederationFinalityCorrelation, Error> {
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceFederationFinalityCorrelation,
+                &[("delivery_id", delivery_id)],
+                &[("namespace", namespace), ("tenant", tenant)],
+                None,
+            )
+            .await?;
+        let correlation: FederationFinalityCorrelation = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if correlation.delivery_id != delivery_id
+            || !matches!(correlation.stage.as_str(), "import" | "invoke")
+        {
+            return Err(Error::Deserialization(
+                "federation finality correlation identity mismatch".into(),
+            ));
+        }
+        Ok(correlation)
+    }
+
+    /// Accept qualified peer finality without sending or replaying a delivery.
+    pub async fn reconcile_federation_delivery(
+        &self,
+        delivery_id: &str,
+        request: ReconcileFederationDeliveryRequest<'_>,
+    ) -> Result<FederationDeliveryEvidence, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceReconcileFederationDelivery,
+                &[("delivery_id", delivery_id)],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let evidence: FederationDeliveryEvidence = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if evidence.delivery_id != delivery_id {
+            return Err(Error::Deserialization(
+                "federation reconciliation evidence identity mismatch".into(),
+            ));
+        }
+        Ok(evidence)
+    }
+
     /// Inspect the current projection/version under independently granted agent bounds.
     pub async fn registry_projection(
         &self,
@@ -192,6 +476,227 @@ impl ActeonClient {
             .await?;
         serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
     }
+    pub async fn publish_federation_trust(
+        &self,
+        request: &PublishFederationTrustRequest,
+    ) -> Result<GovernanceChangeReceipt, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernancePublishFederationTrust,
+                &[],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+    pub async fn revoke_federation_trust(
+        &self,
+        request: &RevokeFederationTrustRequest,
+    ) -> Result<GovernanceChangeReceipt, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceRevokeFederationTrust,
+                &[],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+    /// Authenticate as a configured peer and retain imported authority without executing it.
+    pub async fn import_federation_envelope(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        envelope: SignedFederationEnvelopeDeclaration,
+    ) -> Result<FederationImportReceipt, Error> {
+        let body = serde_json::to_value(ImportFederationEnvelopeRequest { envelope })
+            .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::FederationImportEnvelope,
+                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let receipt: FederationImportReceipt =
+            serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        if receipt.namespace != namespace || receipt.tenant != tenant || receipt.execution_started {
+            return Err(Error::Deserialization(
+                "federation import receipt identity or execution state mismatch".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+    /// Fetch the signed capability card addressed to the authenticated peer.
+    pub async fn federation_capabilities(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+    ) -> Result<SignedFederationCapabilityCard, Error> {
+        let value = self
+            .platform_request(
+                PlatformOperation::FederationCapabilities,
+                &[
+                    ("namespace", namespace),
+                    ("tenant", tenant),
+                    ("agent", agent),
+                ],
+                &[],
+                None,
+            )
+            .await?;
+        let card: SignedFederationCapabilityCard =
+            serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        if card.payload.is_empty() || card.signature.len() != 128 {
+            return Err(Error::Deserialization(
+                "invalid signed federation capability card".into(),
+            ));
+        }
+        Ok(card)
+    }
+    /// Invoke or replay an exact signed message as a configured federation peer.
+    pub async fn invoke_federated_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        invocation: SignedFederationInvocationDeclaration,
+        message: TaskMessage,
+    ) -> Result<Task, Error> {
+        let body = serde_json::to_value(InvokeFederatedAgentRequest {
+            invocation,
+            message,
+        })
+        .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::FederationInvokeAgent,
+                &[
+                    ("namespace", namespace),
+                    ("tenant", tenant),
+                    ("agent", agent),
+                ],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let task: Task =
+            serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        if task.namespace != namespace || task.tenant != tenant || task.id.is_empty() {
+            return Err(Error::Deserialization(
+                "federated task receipt identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
+    /// Submit one host-qualified export from an accepted local agent task.
+    pub async fn export_federated_message(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        profile: &str,
+        message: &TaskMessage,
+    ) -> Result<FederationExportReceipt, Error> {
+        self.federation_export_request(
+            PlatformOperation::FederationExportMessage,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+        .await
+    }
+    /// Observe the original durable export without issuing network traffic.
+    pub async fn observe_federated_export(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        profile: &str,
+        message: &TaskMessage,
+    ) -> Result<FederationExportReceipt, Error> {
+        self.federation_export_request(
+            PlatformOperation::FederationObserveExportMessage,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+        .await
+    }
+    /// Explicitly replay an exact request through a qualified idempotent peer.
+    pub async fn replay_federated_export(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        profile: &str,
+        message: &TaskMessage,
+    ) -> Result<FederationExportReceipt, Error> {
+        self.federation_export_request(
+            PlatformOperation::FederationReplayExportMessage,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn federation_export_request(
+        &self,
+        operation: PlatformOperation,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        profile: &str,
+        message: &TaskMessage,
+    ) -> Result<FederationExportReceipt, Error> {
+        let body = serde_json::to_value(FederationExportMessage { message })
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        let value = self
+            .platform_request(
+                operation,
+                &[
+                    ("namespace", namespace),
+                    ("tenant", tenant),
+                    ("agent", agent),
+                    ("task_id", task_id),
+                    ("profile", profile),
+                ],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let receipt: FederationExportReceipt = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if receipt.attempt_id.is_empty() || receipt.delivery_id.is_empty() {
+            return Err(Error::Deserialization(
+                "federation export receipt identity mismatch".into(),
+            ));
+        }
+        Ok(receipt)
+    }
     pub async fn intervene_governance(
         &self,
         request: &GovernanceInterventionRequest,
@@ -313,6 +818,154 @@ mod tests {
             assert_eq!(fixture.calls.lock().unwrap().len(), count + 1);
         }
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod federation_wire_tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn federation_management_and_inert_import_preserve_wire_contract() {
+        let wire: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../clients/contract-fixtures/federation-management.json"
+        ))
+        .unwrap();
+        let publication: PublishFederationTrustRequest =
+            serde_json::from_value(wire["publication"].clone()).unwrap();
+        let revocation: RevokeFederationTrustRequest =
+            serde_json::from_value(wire["revocation"].clone()).unwrap();
+        let envelope: SignedFederationEnvelopeDeclaration =
+            serde_json::from_value(wire["envelope"].clone()).unwrap();
+        let capability: SignedFederationCapabilityCard =
+            serde_json::from_value(wire["signed_capability_card"].clone()).unwrap();
+        let receipt: FederationImportReceipt =
+            serde_json::from_value(wire["import_receipt"].clone()).unwrap();
+        assert!(!receipt.execution_started);
+        assert_eq!(
+            serde_json::to_value(publication).unwrap(),
+            wire["publication"]
+        );
+        assert_eq!(
+            serde_json::to_value(revocation).unwrap(),
+            wire["revocation"]
+        );
+        assert_eq!(serde_json::to_value(envelope).unwrap(), wire["envelope"]);
+        assert_eq!(
+            serde_json::to_value(capability).unwrap(),
+            wire["signed_capability_card"]
+        );
+        assert_eq!(
+            serde_json::to_value(receipt).unwrap(),
+            wire["import_receipt"]
+        );
+        assert_eq!(
+            PlatformOperation::GovernancePublishFederationTrust
+                .descriptor()
+                .0,
+            "POST"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceRevokeFederationTrust
+                .descriptor()
+                .0,
+            "POST"
+        );
+        assert_eq!(
+            PlatformOperation::FederationCapabilities.descriptor().1,
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities"
+        );
+        assert_eq!(
+            PlatformOperation::FederationImportEnvelope.descriptor().1,
+            "/a2a/{namespace}/{tenant}/federation/envelopes:import"
+        );
+        let invocation = SignedFederationInvocationDeclaration {
+            payload: "signed-payload".into(),
+            signature: "a".repeat(128),
+        };
+        let message: TaskMessage = serde_json::from_value(serde_json::json!({
+            "messageId": "message-1",
+            "role": "user",
+            "parts": [{"text": "inspect"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(InvokeFederatedAgentRequest {
+                invocation,
+                message
+            })
+            .unwrap(),
+            serde_json::json!({
+                "invocation": {"payload": "signed-payload", "signature": "a".repeat(128)},
+                "message": {"messageId": "message-1", "role": "user", "parts": [{"text": "inspect"}]}
+            })
+        );
+        assert_eq!(
+            PlatformOperation::FederationInvokeAgent.descriptor().1,
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send"
+        );
+        let export_receipt: FederationExportReceipt =
+            serde_json::from_value(wire["export_receipt"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(export_receipt).unwrap(),
+            wire["export_receipt"]
+        );
+        let evidence: FederationDeliveryEvidencePage =
+            serde_json::from_value(wire["delivery_evidence_page"].clone()).unwrap();
+        assert_eq!(evidence.deliveries[0].message_id, "export-message-1");
+        let abandoned: FederationDeliveryEvidence =
+            serde_json::from_value(wire["abandoned_evidence"].clone()).unwrap();
+        assert!(matches!(
+            abandoned.status,
+            FederationDeliveryEvidenceStatus::Abandoned {
+                ref abandonment,
+                ..
+            } if abandonment.authority_generation == 12
+        ));
+        let correlation: FederationFinalityCorrelation =
+            serde_json::from_value(wire["finality_correlation"].clone()).unwrap();
+        assert_eq!(correlation.stage, "import");
+        let reconciled: FederationDeliveryEvidence =
+            serde_json::from_value(wire["reconciled_evidence"].clone()).unwrap();
+        assert_eq!(reconciled.reconciliations.len(), 1);
+        assert_eq!(
+            PlatformOperation::GovernanceFederationDeliveryEvidence
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceAbandonFederationDelivery
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries/{delivery_id}:abandon"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceFederationFinalityCorrelation
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries/{delivery_id}/correlation"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceReconcileFederationDelivery
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries/{delivery_id}:reconcile"
+        );
+        for (operation, suffix) in [
+            (PlatformOperation::FederationExportMessage, "send"),
+            (PlatformOperation::FederationObserveExportMessage, "observe"),
+            (PlatformOperation::FederationReplayExportMessage, "replay"),
+        ] {
+            assert_eq!(operation.descriptor().0, "POST");
+            assert!(
+                operation
+                    .descriptor()
+                    .1
+                    .ends_with(&format!("message:{suffix}"))
+            );
+        }
     }
 }
 

@@ -22,6 +22,7 @@ pub mod dlq;
 pub mod embeddings;
 pub mod events;
 pub mod executions;
+pub mod federation;
 pub mod governance;
 pub mod groups;
 pub mod health;
@@ -188,6 +189,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/a2a/{namespace}/{tenant}/.well-known/agent.json",
             get(a2a_discovery::discover_agent),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+            get(a2a_discovery::discover_agent_v1),
         );
 
     let protected = Router::new()
@@ -200,6 +205,18 @@ pub fn router(state: AppState) -> Router {
             get(governance::provider_history),
         )
         .route(
+            "/v1/governance/federation/deliveries",
+            get(governance::federation_delivery_evidence),
+        )
+        .route(
+            "/v1/governance/federation/deliveries/{delivery_action}",
+            post(governance::federation_delivery_action),
+        )
+        .route(
+            "/v1/governance/federation/deliveries/{delivery_id}/correlation",
+            get(governance::federation_finality_correlation),
+        )
+        .route(
             "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
             get(governance::reconciliation_correlation),
         )
@@ -208,6 +225,41 @@ pub fn router(state: AppState) -> Router {
             post(governance::accept_reconciliation),
         )
         .route("/v1/governance/permits", post(governance::publish_permit))
+        .route(
+            "/v1/governance/federation/trusts",
+            post(governance::publish_federation_trust),
+        )
+        .route(
+            "/v1/governance/federation/trusts/revoke",
+            post(governance::revoke_federation_trust),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+            get(federation::capabilities),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+            post(federation::import_envelope),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+            post(federation::invoke_agent),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+            post(federation::export_message)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+            post(federation::observe_export_message)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+            post(federation::replay_export_message)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
         .route("/v1/governance/changes", post(governance::intervene))
         .route("/v1/governance/registry", post(governance::mutate_registry))
         .route(
@@ -224,6 +276,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/a2a/{namespace}/{tenant}",
             post(a2a::a2a_rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}",
+            post(agent_services::rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
             "/a2a/{namespace}/{tenant}/v1/message:send",

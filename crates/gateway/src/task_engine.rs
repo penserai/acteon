@@ -60,26 +60,30 @@
 //! - **Protocol codecs**: A2A JSON-RPC 2.0 + REST framing lives in
 //!   the server layer, not here. The engine speaks pure Rust types.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 use acteon_audit::{AuditError, store::AuditStore};
 use acteon_core::{
     Artifact, BusApproval, BusApprovalStatus, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
-    MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
+    DlqFailureKind, MAX_APPROVAL_TTL_MS, MAX_DLQ_ERROR_BYTES, MAX_DLQ_EVENT_BYTES,
+    MAX_REFERENCE_DEPTH, PauseKind, PushDeliveryDlqEntry, Task, TaskArtifactUpdateEvent,
     TaskAuthorizationRequirement, TaskAuthorizationResolution, TaskMessage, TaskPauseResolution,
-    TaskRole, TaskState, TaskValidationError,
+    TaskPushConfigValidationError, TaskPushNotificationConfig, TaskRole, TaskState,
+    TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
 use crate::audit_helpers::{
-    build_task_audit_record, build_task_terminal_audit_record, task_terminal_audit_id,
+    build_task_audit_record, build_task_push_config_audit_record, build_task_terminal_audit_record,
+    task_terminal_audit_id,
 };
 use crate::task_authorization::{
     TaskAuthorizationVerification, TaskAuthorizationVerificationError, TaskAuthorizationVerifier,
@@ -124,6 +128,609 @@ pub const MAX_REFERENCE_GRAPH_NODES: usize = 256;
 /// costs O(depth) round-trips rather than O(nodes).
 const REFERENCE_GRAPH_FETCH_CONCURRENCY: usize = 32;
 
+/// Current private persistence format for an A2A task row.
+const DURABLE_TASK_RECORD_VERSION: u32 = 1;
+
+/// Maximum unacknowledged callback events retained in one task row. The task
+/// mutation fails closed at this boundary while any registered callback still
+/// needs the oldest event; tasks without callbacks continuously prune through
+/// their previous tail.
+pub const MAX_DURABLE_TASK_EVENTS: usize = 256;
+
+/// Maximum callback configurations embedded in one Task envelope. Each
+/// configuration can carry bounded URL and credential material, so this cap
+/// keeps one CAS value bounded across every state backend.
+pub const MAX_DURABLE_TASK_CALLBACKS: usize = 64;
+
+/// Maximum dead-lettered callback events retained inside one Task envelope.
+pub const MAX_DURABLE_TASK_DEAD_LETTERS: usize = 64;
+
+/// Upper bound for one callback delivery lease. Workers renew by claiming
+/// again only after expiry; keeping leases short bounds takeover latency.
+pub const MAX_TASK_PUSH_LEASE: Duration = Duration::from_secs(5 * 60);
+
+/// Backend-neutral task envelope. The public A2A [`Task`] remains the wire
+/// projection; this record is private storage state that can grow delivery
+/// cursors, leases, and an ordered mutation log without changing that API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskRecord {
+    record_version: u32,
+    task: Task,
+    #[serde(default)]
+    delivery: DurableTaskDelivery,
+}
+
+/// Reserved delivery state for the ordered outbox phases. Keeping it in the
+/// v1 envelope now proves that every task mutation preserves private state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskDelivery {
+    /// True after standalone `A2aTaskPushConfig` rows have been examined and
+    /// imported. New tasks set this immediately; legacy task rows begin false.
+    #[serde(default)]
+    legacy_config_scan_complete: bool,
+    /// Content digests for callbacks imported from standalone rows and still
+    /// owned by the mixed-version compatibility bridge. Native envelope CRUD
+    /// removes an ID from this map. Retaining this provenance until reviewed
+    /// cutover makes old-writer deletes distinguishable from native configs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    legacy_config_imports: BTreeMap<String, String>,
+    /// IDs whose standalone representation lost authority because native
+    /// envelope CRUD edited or deleted the callback. An ID may remain here as
+    /// a tombstone until reviewed cutover, preventing stale source rows from
+    /// resurrecting a native delete.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    legacy_config_native_overrides: BTreeSet<String>,
+    #[serde(default)]
+    next_sequence: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    events: Vec<DurableTaskEvent>,
+    /// Governed callback configurations and their ordered acknowledgement
+    /// cursors. Configuration identity and delivery progress share the Task CAS.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    callbacks: BTreeMap<String, DurableTaskCallback>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dead_letters: Vec<PushDeliveryDlqEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskCallback {
+    config: TaskPushNotificationConfig,
+    acknowledged_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lease: Option<DurableTaskDeliveryLease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    attempts: u32,
+    #[serde(default)]
+    blocked: bool,
+}
+
+impl DurableTaskCallback {
+    fn new(config: TaskPushNotificationConfig, acknowledged_sequence: u64) -> Self {
+        Self {
+            config,
+            acknowledged_sequence,
+            lease: None,
+            next_attempt_at: None,
+            attempts: 0,
+            blocked: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskDeliveryLease {
+    lease_id: String,
+    worker_id: String,
+    sequence: u64,
+    event_id: String,
+    attempt: u32,
+    claimed_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+}
+
+/// Fenced ownership of one callback's next ordered event. The lease ID must be
+/// presented to acknowledge or fail the delivery.
+#[derive(Clone)]
+pub struct TaskPushDeliveryClaim {
+    pub task_id: String,
+    pub config: TaskPushNotificationConfig,
+    pub sequence: u64,
+    pub event_id: String,
+    pub occurred_at: DateTime<Utc>,
+    pub payload: serde_json::Value,
+    pub attempt: u32,
+    pub lease_id: String,
+    pub lease_expires_at: DateTime<Utc>,
+}
+
+/// Repairable state-backend wake-up hint for a Task with callback work. The
+/// Task envelope remains authoritative; stale or missing hints are safe and
+/// are corrected by bounded Task-page repair.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskPushReadyHint {
+    pub namespace: String,
+    pub tenant: String,
+    pub task_id: String,
+    pub ready_at: DateTime<Utc>,
+}
+
+/// Operator disposition for a callback event parked in durable dead-letter
+/// state. Retry preserves the callback cursor; discard advances it exactly
+/// once so later events may continue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushDeadLetterResolution {
+    Retry,
+    Discard,
+}
+
+impl std::fmt::Debug for DurableTaskCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DurableTaskCallback")
+            .field("config", &self.config)
+            .field("acknowledged_sequence", &self.acknowledged_sequence)
+            .field("lease", &self.lease)
+            .field("next_attempt_at", &self.next_attempt_at)
+            .field("attempts", &self.attempts)
+            .field("blocked", &self.blocked)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskEvent {
+    sequence: u64,
+    event_id: String,
+    occurred_at: DateTime<Utc>,
+    payload: serde_json::Value,
+}
+
+impl DurableTaskDelivery {
+    fn ready_at(&self, immediate_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.callbacks
+            .values()
+            .filter_map(|callback| {
+                if callback.blocked
+                    || !self.events.iter().any(|event| {
+                        event.sequence == callback.acknowledged_sequence.saturating_add(1)
+                    })
+                {
+                    return None;
+                }
+                Some(
+                    callback
+                        .lease
+                        .as_ref()
+                        .map(|lease| lease.expires_at)
+                        .or(callback.next_attempt_at)
+                        .unwrap_or(immediate_at),
+                )
+            })
+            .min()
+    }
+
+    fn validate_legacy_config_provenance(&self) -> Result<(), TaskEngineError> {
+        if self.legacy_config_imports.iter().any(|(id, digest)| {
+            !self.callbacks.contains_key(id)
+                || digest.len() != 64
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "invalid legacy callback migration provenance".into(),
+            ));
+        }
+        if self.legacy_config_native_overrides.len() > MAX_DURABLE_TASK_CALLBACKS
+            || self
+                .legacy_config_native_overrides
+                .iter()
+                .any(|id| id.is_empty() || self.legacy_config_imports.contains_key(id))
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "invalid native callback migration overrides".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate(&self, task: &Task) -> Result<(), TaskEngineError> {
+        if self.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "callback configuration capacity exceeded".into(),
+            ));
+        }
+        if self.dead_letters.len() > MAX_DURABLE_TASK_DEAD_LETTERS {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "callback dead-letter capacity exceeded".into(),
+            ));
+        }
+        if self.events.len() > MAX_DURABLE_TASK_EVENTS {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "delivery event capacity exceeded".into(),
+            ));
+        }
+        let mut previous = None;
+        let mut ids = HashSet::with_capacity(self.events.len());
+        for event in &self.events {
+            if event.sequence == 0
+                || event.sequence > self.next_sequence
+                || previous.is_some_and(|value| event.sequence != value + 1)
+                || !ids.insert(event.event_id.as_str())
+                || uuid::Uuid::parse_str(&event.event_id).is_err()
+                || event.occurred_at > task.updated_at
+                || !valid_push_payload(&event.payload, &task.id, task.context_id.as_deref())
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid ordered delivery event log".into(),
+                ));
+            }
+            previous = Some(event.sequence);
+        }
+        for (id, callback) in &self.callbacks {
+            if id != &callback.config.id
+                || callback.config.task_id != task.id
+                || callback.config.namespace != task.namespace
+                || callback.config.tenant != task.tenant
+                || callback.config.validate().is_err()
+                || callback.acknowledged_sequence > self.next_sequence
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback configuration or cursor".into(),
+                ));
+            }
+            if callback.blocked && (callback.lease.is_some() || callback.next_attempt_at.is_some())
+                || callback.lease.as_ref().is_some_and(|lease| {
+                    lease.sequence != callback.acknowledged_sequence.saturating_add(1)
+                        || lease.attempt != callback.attempts
+                        || lease.claimed_at >= lease.expires_at
+                        || uuid::Uuid::parse_str(&lease.lease_id).is_err()
+                        || lease.worker_id.is_empty()
+                        || !self.events.iter().any(|event| {
+                            event.sequence == lease.sequence && event.event_id == lease.event_id
+                        })
+                })
+                || callback.lease.is_some() && callback.next_attempt_at.is_some()
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback lease or retry state".into(),
+                ));
+            }
+        }
+        self.validate_legacy_config_provenance()?;
+        self.validate_dead_letters(task)?;
+        if let Some(first) = self.events.first()
+            && self
+                .callbacks
+                .values()
+                .any(|callback| callback.acknowledged_sequence.saturating_add(1) < first.sequence)
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "delivery log skipped an unacknowledged callback event".into(),
+            ));
+        }
+        if self.events.is_empty()
+            && self
+                .callbacks
+                .values()
+                .any(|callback| callback.acknowledged_sequence != self.next_sequence)
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "delivery log omitted an unacknowledged callback event".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_dead_letters(&self, task: &Task) -> Result<(), TaskEngineError> {
+        let mut ids = HashSet::with_capacity(self.dead_letters.len());
+        for entry in &self.dead_letters {
+            let valid_delivery_identity = match (entry.sequence, entry.event_id.as_deref()) {
+                (Some(sequence), Some(event_id)) => {
+                    sequence > 0 && uuid::Uuid::parse_str(event_id).is_ok()
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if entry.task_id != task.id
+                || entry.namespace != task.namespace
+                || entry.tenant != task.tenant
+                || uuid::Uuid::parse_str(&entry.id).is_err()
+                || !ids.insert(entry.id.as_str())
+                || !valid_delivery_identity
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback dead letter".into(),
+                ));
+            }
+        }
+        if self.callbacks.iter().any(|(config_id, callback)| {
+            callback.blocked
+                && !self.dead_letters.iter().any(|entry| {
+                    entry.config_id == *config_id
+                        && entry.sequence == callback.acknowledged_sequence.checked_add(1)
+                        && entry.event_id.as_ref().is_some_and(|event_id| {
+                            self.events.iter().any(|event| {
+                                Some(event.sequence) == entry.sequence
+                                    && event.event_id == *event_id
+                            })
+                        })
+                })
+        }) {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "blocked callback has no matching dead letter".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn append(
+        &mut self,
+        event_id: String,
+        occurred_at: DateTime<Utc>,
+        payload: serde_json::Value,
+    ) -> Result<(), TaskEngineError> {
+        let acknowledged = self
+            .callbacks
+            .values()
+            .map(|callback| callback.acknowledged_sequence)
+            .min()
+            .unwrap_or(self.next_sequence);
+        self.events.retain(|event| event.sequence > acknowledged);
+        if self.events.len() >= MAX_DURABLE_TASK_EVENTS {
+            return Err(TaskEngineError::DeliveryLogFull);
+        }
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| TaskEngineError::InvalidDurableRecord("sequence exhausted".into()))?;
+        self.events.push(DurableTaskEvent {
+            sequence: self.next_sequence,
+            event_id,
+            occurred_at,
+            payload,
+        });
+        Ok(())
+    }
+
+    fn prune_acknowledged(&mut self) {
+        let acknowledged = self
+            .callbacks
+            .values()
+            .map(|callback| callback.acknowledged_sequence)
+            .min()
+            .unwrap_or(self.next_sequence);
+        self.events.retain(|event| event.sequence > acknowledged);
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PersistedPushPayload {
+    Status {
+        #[serde(rename = "statusUpdate")]
+        update: PersistedStatusUpdate,
+    },
+    Artifact {
+        #[serde(rename = "artifactUpdate")]
+        update: PersistedArtifactUpdate,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedStatusUpdate {
+    task_id: String,
+    #[serde(default)]
+    context_id: Option<String>,
+    status: PersistedProtocolStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedProtocolStatus {
+    state: PersistedProtocolTaskState,
+    #[serde(default)]
+    message: Option<serde_json::Value>,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+enum PersistedProtocolTaskState {
+    #[serde(rename = "TASK_STATE_SUBMITTED")]
+    Submitted,
+    #[serde(rename = "TASK_STATE_WORKING")]
+    Working,
+    #[serde(rename = "TASK_STATE_COMPLETED")]
+    Completed,
+    #[serde(rename = "TASK_STATE_FAILED")]
+    Failed,
+    #[serde(rename = "TASK_STATE_CANCELED")]
+    Canceled,
+    #[serde(rename = "TASK_STATE_INPUT_REQUIRED")]
+    InputRequired,
+    #[serde(rename = "TASK_STATE_AUTH_REQUIRED")]
+    AuthRequired,
+    #[serde(rename = "TASK_STATE_REJECTED")]
+    Rejected,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedArtifactUpdate {
+    task_id: String,
+    #[serde(default)]
+    context_id: Option<String>,
+    artifact: Artifact,
+    append: bool,
+    last_chunk: bool,
+}
+
+fn valid_push_payload(
+    payload: &serde_json::Value,
+    expected_task_id: &str,
+    expected_context_id: Option<&str>,
+) -> bool {
+    match serde_json::from_value::<PersistedPushPayload>(payload.clone()) {
+        Ok(PersistedPushPayload::Status { update }) => {
+            update.task_id == expected_task_id
+                && update.context_id.as_deref() == expected_context_id
+                && update
+                    .status
+                    .message
+                    .as_ref()
+                    .is_none_or(serde_json::Value::is_object)
+                && {
+                    let _ = (&update.status.state, update.status.timestamp);
+                    true
+                }
+        }
+        Ok(PersistedPushPayload::Artifact { update }) => {
+            update.task_id == expected_task_id
+                && update.context_id.as_deref() == expected_context_id
+                && update.artifact.validate().is_ok()
+                && !update.append
+                && {
+                    let _ = update.last_chunk;
+                    true
+                }
+        }
+        Err(_) => false,
+    }
+}
+
+/// Project one exact A2A 1.0 status-update callback payload. Both the durable
+/// mutation log and the live compatibility worker use this function, keeping
+/// delayed delivery and replay on the same wire representation.
+pub fn project_task_status_push_payload(
+    task: &Task,
+    state: TaskState,
+    timestamp: DateTime<Utc>,
+) -> Result<serde_json::Value, TaskEngineError> {
+    let mut status = task.status.clone();
+    if status.state != state {
+        status.state = state;
+        status.message = None;
+        status.timestamp = timestamp;
+    }
+    let mut status = serde_json::to_value(&status)?;
+    let object = status.as_object_mut().ok_or_else(|| {
+        TaskEngineError::InvalidDurableRecord("task status is not an object".into())
+    })?;
+    if let Some(state) = object.get_mut("state")
+        && let Some(name) = state.as_str()
+    {
+        *state = serde_json::Value::String(format!("TASK_STATE_{}", name.to_ascii_uppercase()));
+    }
+    if let Some(message) = object
+        .get_mut("message")
+        .and_then(serde_json::Value::as_object_mut)
+        && let Some(role) = message.get_mut("role")
+        && let Some(name) = role.as_str()
+    {
+        *role = serde_json::Value::String(format!("ROLE_{}", name.to_ascii_uppercase()));
+    }
+    let mut update = serde_json::json!({
+        "taskId": task.id,
+        "status": status,
+    });
+    if let Some(context_id) = &task.context_id {
+        update["contextId"] = serde_json::Value::String(context_id.clone());
+    }
+    Ok(serde_json::json!({"statusUpdate": update}))
+}
+
+/// Project one exact A2A 1.0 artifact-update callback payload from the durable
+/// resolved artifact snapshot.
+pub fn project_task_artifact_push_payload(
+    task: &Task,
+    artifact_id: &str,
+    last_chunk: bool,
+) -> Result<serde_json::Value, TaskEngineError> {
+    let artifact = task
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_id == artifact_id)
+        .ok_or_else(|| {
+            TaskEngineError::InvalidDurableRecord(format!(
+                "mutated artifact '{artifact_id}' is absent"
+            ))
+        })?;
+    let mut update = serde_json::json!({
+        "taskId": task.id,
+        "artifact": artifact,
+        "append": false,
+        "lastChunk": last_chunk,
+    });
+    if let Some(context_id) = &task.context_id {
+        update["contextId"] = serde_json::Value::String(context_id.clone());
+    }
+    Ok(serde_json::json!({"artifactUpdate": update}))
+}
+
+impl DurableTaskRecord {
+    fn new(task: Task) -> Self {
+        Self {
+            record_version: DURABLE_TASK_RECORD_VERSION,
+            task,
+            delivery: DurableTaskDelivery {
+                legacy_config_scan_complete: true,
+                ..DurableTaskDelivery::default()
+            },
+        }
+    }
+
+    fn from_legacy(task: Task) -> Self {
+        Self {
+            record_version: DURABLE_TASK_RECORD_VERSION,
+            task,
+            delivery: DurableTaskDelivery::default(),
+        }
+    }
+
+    fn decode(raw: &str) -> Result<Self, TaskEngineError> {
+        let value: serde_json::Value = serde_json::from_str(raw)?;
+        if value.get("recordVersion").is_none() {
+            // Rows written before the envelope rollout remain readable and
+            // migrate atomically on their next successful task mutation.
+            return Ok(Self::from_legacy(serde_json::from_value(value)?));
+        }
+
+        let record: Self = serde_json::from_value(value)?;
+        if record.record_version != DURABLE_TASK_RECORD_VERSION {
+            return Err(TaskEngineError::UnsupportedRecordVersion(
+                record.record_version,
+            ));
+        }
+        record.delivery.validate(&record.task)?;
+        Ok(record)
+    }
+
+    fn encode(&self) -> Result<String, TaskEngineError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    fn ready_hint(&self) -> Option<TaskPushReadyHint> {
+        self.delivery
+            .ready_at(self.task.updated_at)
+            .map(|ready_at| TaskPushReadyHint {
+                namespace: self.task.namespace.clone(),
+                tenant: self.task.tenant.clone(),
+                task_id: self.task.id.clone(),
+                ready_at,
+            })
+    }
+}
+
+pub(crate) fn decode_persisted_task(raw: &str) -> Result<Task, TaskEngineError> {
+    Ok(DurableTaskRecord::decode(raw)?.task)
+}
+
 fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
@@ -138,6 +745,11 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
         }
         scalar => scalar.clone(),
     }
+}
+
+fn push_config_digest(config: &TaskPushNotificationConfig) -> Result<String, serde_json::Error> {
+    let value = canonical_json(&serde_json::to_value(config)?);
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
 fn task_message_digest(message: &TaskMessage) -> Result<String, serde_json::Error> {
@@ -170,6 +782,24 @@ impl TaskScope {
             self.tenant.clone(),
             KeyKind::A2aTask,
             task_id.to_string(),
+        )
+    }
+
+    fn push_ready_key(&self, task_id: &str) -> StateKey {
+        StateKey::new(
+            self.namespace.clone(),
+            self.tenant.clone(),
+            KeyKind::A2aPushReady,
+            task_id.to_string(),
+        )
+    }
+
+    fn legacy_push_config_key(&self, task_id: &str, config_id: &str) -> StateKey {
+        StateKey::new(
+            self.namespace.clone(),
+            self.tenant.clone(),
+            KeyKind::A2aTaskPushConfig,
+            format!("{task_id}:{config_id}"),
         )
     }
 
@@ -226,6 +856,57 @@ impl TaskEngine {
             stream_tx: None,
             legacy_only: false,
         }
+    }
+
+    async fn sync_push_ready_hint(
+        &self,
+        record: &DurableTaskRecord,
+    ) -> Result<Option<TaskPushReadyHint>, TaskEngineError> {
+        let scope = TaskScope::new(&record.task.namespace, &record.task.tenant);
+        let key = scope.push_ready_key(&record.task.id);
+        let hint = record.ready_hint();
+        if let Some(hint) = &hint {
+            self.state
+                .set(&key, &serde_json::to_string(hint)?, None)
+                .await?;
+        } else {
+            self.state.delete(&key).await?;
+        }
+        Ok(hint)
+    }
+
+    async fn sync_push_ready_hint_best_effort(&self, record: &DurableTaskRecord) {
+        if let Err(error) = self.sync_push_ready_hint(record).await {
+            warn!(
+                %error,
+                task_id = %record.task.id,
+                "A2A callback ready-index update deferred to repair"
+            );
+        }
+    }
+
+    /// Rebuild one Task's callback-ready hint from its authoritative envelope.
+    /// Workers call this while walking bounded Task pages, so a missed hint
+    /// write can delay work only until the next repair pass.
+    pub async fn repair_push_ready_hint(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Option<TaskPushReadyHint>, TaskEngineError> {
+        let Some(raw) = self.state.get(&scope.task_key(task_id)).await? else {
+            self.state.delete(&scope.push_ready_key(task_id)).await?;
+            return Ok(None);
+        };
+        let record = DurableTaskRecord::decode(&raw)?;
+        if record.task.namespace != scope.namespace
+            || record.task.tenant != scope.tenant
+            || record.task.id != task_id
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "A2A Task row identity does not match its ready-index repair key".into(),
+            ));
+        }
+        self.sync_push_ready_hint(&record).await
     }
 
     /// Restrict a tenant-level legacy protocol adapter to legacy tasks. Governed
@@ -366,6 +1047,25 @@ impl TaskEngine {
         }
     }
 
+    /// Emit credential-free evidence for a callback configuration mutation.
+    /// Audit failure cannot roll back the already-committed Task CAS.
+    async fn emit_push_config_audit(&self, task: &Task, operation: &str, config_id: &str) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let record =
+            build_task_push_config_audit_record(task, operation, config_id, self.clock.now());
+        if let Err(error) = audit.record(record).await {
+            warn!(
+                %error,
+                task_id = %task.id,
+                config_id,
+                operation,
+                "A2A push-config audit write failed"
+            );
+        }
+    }
+
     /// Replay terminal task audits whose stable receipt is absent.
     ///
     /// The task row is authoritative: once a task has reached a terminal
@@ -381,7 +1081,7 @@ impl TaskEngine {
         let mut replayed = 0;
         let mut first_error = None;
         for (_, raw) in entries {
-            let task: Task = match serde_json::from_str(&raw) {
+            let task = match decode_persisted_task(&raw) {
                 Ok(task) => task,
                 Err(error) => {
                     warn!(%error, "skipping malformed task row during terminal audit recovery");
@@ -427,6 +1127,17 @@ impl TaskEngine {
     /// If the task's history carries `referenceTaskIds`, the reference
     /// graph is walked first — see the `check_reference_graph` method.
     pub async fn create_task(&self, task: Task) -> Result<Task, TaskEngineError> {
+        self.create_task_with_push_configs(task, Vec::new()).await
+    }
+
+    /// Create a Task and its initial push configurations in one state-store
+    /// insertion. Inline A2A admission uses this boundary so a runnable event
+    /// can never commit before its callback cursor exists.
+    pub async fn create_task_with_push_configs(
+        &self,
+        task: Task,
+        configs: Vec<TaskPushNotificationConfig>,
+    ) -> Result<Task, TaskEngineError> {
         task.validate()?;
         let scope = TaskScope::new(&task.namespace, &task.tenant);
         if self.hidden_governed_task(&scope, &task.id).await? {
@@ -439,14 +1150,51 @@ impl TaskEngine {
             .collect();
         self.check_reference_graph(&scope, &task.id, &seed).await?;
         let key = scope.task_key(&task.id);
-        let payload = serde_json::to_string(&task)?;
+        let mut record = DurableTaskRecord::new(task.clone());
+        let mut config_ids = Vec::with_capacity(configs.len());
+        for config in configs {
+            Self::validate_push_config_identity(&scope, &task.id, &config)?;
+            if record.delivery.callbacks.contains_key(&config.id) {
+                return Err(TaskEngineError::PushConfigAlreadyExists(config.id));
+            }
+            config_ids.push(config.id.clone());
+            record
+                .delivery
+                .callbacks
+                .insert(config.id.clone(), DurableTaskCallback::new(config, 0));
+            if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+                return Err(TaskEngineError::PushConfigCapacityExceeded);
+            }
+        }
+        record.delivery.validate(&record.task)?;
+        let payload = record.encode()?;
         let inserted = self.state.check_and_set(&key, &payload, None).await?;
         if !inserted {
             return Err(TaskEngineError::AlreadyExists(task.id));
         }
         debug!(task_id = %task.id, namespace = %task.namespace, tenant = %task.tenant, "task created");
         self.emit_audit(&task, "create", None).await;
+        for config_id in config_ids {
+            self.emit_push_config_audit(&task, "create", &config_id)
+                .await;
+        }
         Ok(task)
+    }
+
+    fn validate_push_config_identity(
+        scope: &TaskScope,
+        task_id: &str,
+        config: &TaskPushNotificationConfig,
+    ) -> Result<(), TaskEngineError> {
+        config.validate()?;
+        if config.task_id != task_id
+            || config.namespace != scope.namespace
+            || config.tenant != scope.tenant
+            || config.created_at > config.updated_at
+        {
+            return Err(TaskEngineError::PushConfigIdentityMismatch);
+        }
+        Ok(())
     }
 
     /// Fetch a task by scope + id.
@@ -478,8 +1226,813 @@ impl TaskEngine {
         let Some((raw, version)) = self.state.get_versioned(&key).await? else {
             return Ok(None);
         };
-        let task: Task = serde_json::from_str(&raw)?;
+        let task = decode_persisted_task(&raw)?;
         Ok(Some((task, version)))
+    }
+
+    /// Upsert one callback configuration inside the Task envelope. A new
+    /// callback starts at the current delivery tail; updating one preserves
+    /// its delivery state and original creation timestamp. An actively leased
+    /// callback cannot change underneath the request already in flight.
+    pub async fn upsert_push_config(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        mut config: TaskPushNotificationConfig,
+    ) -> Result<TaskPushNotificationConfig, TaskEngineError> {
+        Self::validate_push_config_identity(scope, task_id, &config)?;
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let legacy_row_exists = self
+            .state
+            .get(&scope.legacy_push_config_key(task_id, &config.id))
+            .await?
+            .is_some();
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let existed = record.delivery.callbacks.contains_key(&config.id);
+            if !existed && record.delivery.callbacks.len() >= MAX_DURABLE_TASK_CALLBACKS {
+                return Err(TaskEngineError::PushConfigCapacityExceeded);
+            }
+            let callback = match record.delivery.callbacks.get(&config.id) {
+                Some(existing) => {
+                    if existing.lease.is_some() {
+                        return Err(TaskEngineError::PushConfigDeliveryInFlight);
+                    }
+                    config.created_at = existing.config.created_at;
+                    let mut updated = existing.clone();
+                    updated.config = config.clone();
+                    updated
+                }
+                None => DurableTaskCallback::new(config.clone(), record.delivery.next_sequence),
+            };
+            if config.updated_at < config.created_at {
+                return Err(TaskEngineError::PushConfigIdentityMismatch);
+            }
+            record
+                .delivery
+                .callbacks
+                .insert(config.id.clone(), callback);
+            let imported = record
+                .delivery
+                .legacy_config_imports
+                .remove(&config.id)
+                .is_some();
+            if legacy_row_exists
+                || imported
+                || record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .contains(&config.id)
+            {
+                record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .insert(config.id.clone());
+            }
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    let operation = if existed { "update" } else { "create" };
+                    self.emit_push_config_audit(&record.task, operation, &config.id)
+                        .await;
+                    return Ok(config);
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Read one callback configuration without exposing cursor or delivery
+    /// state.
+    pub async fn get_push_config(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+    ) -> Result<Option<TaskPushNotificationConfig>, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        let record = DurableTaskRecord::decode(&raw)?;
+        Ok(record
+            .delivery
+            .callbacks
+            .get(config_id)
+            .map(|callback| callback.config.clone()))
+    }
+
+    /// List callback configurations in stable ID order.
+    pub async fn list_push_configs(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Vec<TaskPushNotificationConfig>, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        let record = DurableTaskRecord::decode(&raw)?;
+        Ok(record
+            .delivery
+            .callbacks
+            .values()
+            .map(|callback| callback.config.clone())
+            .collect())
+    }
+
+    /// Claim one callback's next unacknowledged event under a fenced lease.
+    /// Concurrent replicas race through the Task CAS; at most one receives a
+    /// claim for a given callback and sequence.
+    pub async fn claim_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        worker_id: &str,
+        lease_for: Duration,
+    ) -> Result<Option<TaskPushDeliveryClaim>, TaskEngineError> {
+        if worker_id.is_empty() || worker_id.len() > 256 {
+            return Err(TaskEngineError::InvalidPushWorkerId);
+        }
+        if lease_for.is_zero() || lease_for > MAX_TASK_PUSH_LEASE {
+            return Err(TaskEngineError::InvalidPushLeaseDuration);
+        }
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let lease_delta = chrono::Duration::from_std(lease_for)
+            .map_err(|_| TaskEngineError::InvalidPushLeaseDuration)?;
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let now = self.clock.now();
+            let callback = record
+                .delivery
+                .callbacks
+                .get(config_id)
+                .ok_or_else(|| TaskEngineError::PushConfigNotFound(config_id.into()))?;
+            if callback.blocked
+                || callback.next_attempt_at.is_some_and(|ready| ready > now)
+                || callback
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires_at > now)
+            {
+                return Ok(None);
+            }
+            let sequence = callback
+                .acknowledged_sequence
+                .checked_add(1)
+                .ok_or(TaskEngineError::PushDeliverySequenceExhausted)?;
+            let Some(event) = record
+                .delivery
+                .events
+                .iter()
+                .find(|event| event.sequence == sequence)
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            let attempt = callback
+                .attempts
+                .checked_add(1)
+                .ok_or(TaskEngineError::PushDeliveryAttemptExhausted)?;
+            let lease = DurableTaskDeliveryLease {
+                lease_id: uuid::Uuid::now_v7().to_string(),
+                worker_id: worker_id.into(),
+                sequence,
+                event_id: event.event_id.clone(),
+                attempt,
+                claimed_at: now,
+                expires_at: now + lease_delta,
+            };
+            let config = {
+                let callback = record
+                    .delivery
+                    .callbacks
+                    .get_mut(config_id)
+                    .expect("callback remained present inside one record");
+                callback.attempts = attempt;
+                callback.next_attempt_at = None;
+                callback.lease = Some(lease.clone());
+                callback.config.clone()
+            };
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(Some(TaskPushDeliveryClaim {
+                        task_id: task_id.into(),
+                        config,
+                        sequence,
+                        event_id: event.event_id,
+                        occurred_at: event.occurred_at,
+                        payload: event.payload,
+                        attempt,
+                        lease_id: lease.lease_id,
+                        lease_expires_at: lease.expires_at,
+                    }));
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Acknowledge a successful leased delivery and advance exactly one
+    /// sequence. A stale or replaced owner cannot advance the cursor.
+    pub async fn acknowledge_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+    ) -> Result<(), TaskEngineError> {
+        self.finish_push_delivery(scope, task_id, config_id, lease_id, None)
+            .await
+    }
+
+    /// Release a failed claim and durably schedule its same sequence for a
+    /// later attempt.
+    pub async fn retry_push_delivery_at(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+        retry_at: DateTime<Utc>,
+    ) -> Result<(), TaskEngineError> {
+        self.finish_push_delivery(scope, task_id, config_id, lease_id, Some(retry_at))
+            .await
+    }
+
+    async fn finish_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+        retry_at: Option<DateTime<Utc>>,
+    ) -> Result<(), TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let callback = record
+                .delivery
+                .callbacks
+                .get_mut(config_id)
+                .ok_or_else(|| TaskEngineError::PushConfigNotFound(config_id.into()))?;
+            let lease = callback
+                .lease
+                .as_ref()
+                .filter(|lease| lease.lease_id == lease_id)
+                .cloned()
+                .ok_or(TaskEngineError::PushDeliveryLeaseLost)?;
+            if lease.expires_at <= self.clock.now() {
+                return Err(TaskEngineError::PushDeliveryLeaseLost);
+            }
+            callback.lease = None;
+            if let Some(retry_at) = retry_at {
+                if retry_at < self.clock.now() {
+                    return Err(TaskEngineError::InvalidPushRetryTime);
+                }
+                callback.next_attempt_at = Some(retry_at);
+            } else {
+                callback.acknowledged_sequence = lease.sequence;
+                callback.next_attempt_at = None;
+                callback.attempts = 0;
+                record.delivery.prune_acknowledged();
+            }
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(());
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Move a terminally failed leased event into the Task envelope's bounded
+    /// dead-letter state. The callback remains blocked at this sequence until
+    /// an operator policy resolves it.
+    pub async fn dead_letter_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+        failure_kind: DlqFailureKind,
+        last_error: &str,
+    ) -> Result<PushDeliveryDlqEntry, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            if record.delivery.dead_letters.len() >= MAX_DURABLE_TASK_DEAD_LETTERS {
+                return Err(TaskEngineError::PushDeadLetterCapacityExceeded);
+            }
+            let callback = record
+                .delivery
+                .callbacks
+                .get(config_id)
+                .ok_or_else(|| TaskEngineError::PushConfigNotFound(config_id.into()))?;
+            let lease = callback
+                .lease
+                .as_ref()
+                .filter(|lease| lease.lease_id == lease_id)
+                .cloned()
+                .ok_or(TaskEngineError::PushDeliveryLeaseLost)?;
+            let now = self.clock.now();
+            if lease.expires_at <= now {
+                return Err(TaskEngineError::PushDeliveryLeaseLost);
+            }
+            let event = record
+                .delivery
+                .events
+                .iter()
+                .find(|event| event.sequence == lease.sequence)
+                .ok_or_else(|| {
+                    TaskEngineError::InvalidDurableRecord("leased event is absent".into())
+                })?;
+            let entry = PushDeliveryDlqEntry::new_at(
+                uuid::Uuid::now_v7().to_string(),
+                config_id,
+                task_id,
+                &scope.namespace,
+                &scope.tenant,
+                &callback.config.url,
+                failure_kind,
+                last_error,
+                callback.attempts,
+                serde_json::to_string(&event.payload)?,
+                now,
+            )
+            .with_delivery_identity(lease.sequence, &lease.event_id);
+            let callback = record
+                .delivery
+                .callbacks
+                .get_mut(config_id)
+                .expect("callback remained present inside one record");
+            callback.lease = None;
+            callback.next_attempt_at = None;
+            callback.blocked = true;
+            record.delivery.dead_letters.push(entry.clone());
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(entry);
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Project Task-embedded dead letters without exposing callback lease state.
+    pub async fn list_push_dead_letters(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Vec<PushDeliveryDlqEntry>, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        Ok(DurableTaskRecord::decode(&raw)?.delivery.dead_letters)
+    }
+
+    /// Import append-only dead letters written by a pre-envelope worker.
+    ///
+    /// The Task envelope wins an exact ID replay. A duplicate ID with different
+    /// evidence is rejected rather than hidden, and the capacity check covers
+    /// the merged set before the Task CAS commits. Callers may delete standalone
+    /// rows only after this method succeeds.
+    pub async fn import_legacy_push_dead_letters(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        entries: Vec<PushDeliveryDlqEntry>,
+    ) -> Result<usize, TaskEngineError> {
+        let mut incoming_ids = HashSet::with_capacity(entries.len());
+        for entry in &entries {
+            if entry.task_id != task_id
+                || entry.namespace != scope.namespace
+                || entry.tenant != scope.tenant
+                || entry.sequence.is_some()
+                || entry.event_id.is_some()
+                || uuid::Uuid::parse_str(&entry.id).is_err()
+                || entry.config_id.is_empty()
+                || entry.url.is_empty()
+                || entry.attempts == 0
+                || entry.first_failed_at > entry.last_failed_at
+                || entry.last_error.len() > MAX_DLQ_ERROR_BYTES
+                || entry.event_json.len() > MAX_DLQ_EVENT_BYTES
+                || !incoming_ids.insert(entry.id.as_str())
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid legacy callback dead letter".into(),
+                ));
+            }
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let mut imported = 0usize;
+            for entry in &entries {
+                if let Some(existing) = record
+                    .delivery
+                    .dead_letters
+                    .iter()
+                    .find(|existing| existing.id == entry.id)
+                {
+                    if existing != entry {
+                        return Err(TaskEngineError::InvalidDurableRecord(
+                            "legacy callback dead-letter ID conflicts with Task evidence".into(),
+                        ));
+                    }
+                    continue;
+                }
+                record.delivery.dead_letters.push(entry.clone());
+                imported += 1;
+            }
+            if imported == 0 {
+                return Ok(0);
+            }
+            if record.delivery.dead_letters.len() > MAX_DURABLE_TASK_DEAD_LETTERS {
+                return Err(TaskEngineError::PushDeadLetterCapacityExceeded);
+            }
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => return Ok(imported),
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Resolve one Task-embedded dead letter under the same CAS as its callback
+    /// cursor. Retrying keeps the failed sequence pending; discarding advances
+    /// over that sequence. Both operations unblock the callback atomically.
+    pub async fn resolve_push_dead_letter(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        entry_id: &str,
+        resolution: PushDeadLetterResolution,
+    ) -> Result<PushDeliveryDlqEntry, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let index = record
+                .delivery
+                .dead_letters
+                .iter()
+                .position(|entry| entry.id == entry_id)
+                .ok_or_else(|| TaskEngineError::PushDeadLetterNotFound(entry_id.into()))?;
+            let entry = record.delivery.dead_letters[index].clone();
+            if let Some(callback) = record.delivery.callbacks.get_mut(&entry.config_id)
+                && callback.blocked
+                && callback.lease.is_none()
+                && entry.sequence == callback.acknowledged_sequence.checked_add(1)
+            {
+                if resolution == PushDeadLetterResolution::Discard {
+                    callback.acknowledged_sequence = callback
+                        .acknowledged_sequence
+                        .checked_add(1)
+                        .ok_or(TaskEngineError::PushDeliverySequenceExhausted)?;
+                }
+                callback.attempts = 0;
+                callback.next_attempt_at = None;
+                callback.blocked = false;
+            }
+            record.delivery.dead_letters.remove(index);
+            record.delivery.prune_acknowledged();
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(entry);
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Whether the one-time standalone push-config scan has been committed for
+    /// this Task. Callers use this before scanning the legacy key kind.
+    pub async fn push_config_migration_complete(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<bool, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        Ok(DurableTaskRecord::decode(&raw)?
+            .delivery
+            .legacy_config_scan_complete)
+    }
+
+    /// Import legacy standalone configurations once and seal the migration
+    /// marker in the same Task CAS. Existing envelope entries win a race with a
+    /// stale legacy row; newly imported callbacks start at the current tail.
+    pub async fn import_legacy_push_configs(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        configs: Vec<TaskPushNotificationConfig>,
+    ) -> Result<Vec<TaskPushNotificationConfig>, TaskEngineError> {
+        for config in &configs {
+            Self::validate_push_config_identity(scope, task_id, config)?;
+        }
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            if !record.delivery.legacy_config_scan_complete {
+                let tail = record.delivery.next_sequence;
+                let mut imported_ids = Vec::new();
+                for config in &configs {
+                    let digest = push_config_digest(config)?;
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        record.delivery.callbacks.entry(config.id.clone())
+                    {
+                        imported_ids.push(config.id.clone());
+                        entry.insert(DurableTaskCallback::new(config.clone(), tail));
+                        record
+                            .delivery
+                            .legacy_config_imports
+                            .insert(config.id.clone(), digest);
+                    }
+                }
+                if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+                    return Err(TaskEngineError::PushConfigCapacityExceeded);
+                }
+                record.delivery.legacy_config_scan_complete = true;
+                record.delivery.validate(&record.task)?;
+                let payload = record.encode()?;
+                if matches!(
+                    self.state
+                        .compare_and_swap(&key, version, &payload, None)
+                        .await?,
+                    CasResult::Conflict { .. }
+                ) {
+                    continue;
+                }
+                for config_id in imported_ids {
+                    self.emit_push_config_audit(&record.task, "legacy_import", &config_id)
+                        .await;
+                }
+            }
+            return Ok(record
+                .delivery
+                .callbacks
+                .values()
+                .map(|callback| callback.config.clone())
+                .collect());
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Reconcile the complete standalone configuration snapshot after all
+    /// pre-envelope writers have been stopped. Imported callbacks follow old
+    /// creates, updates, and deletes; callbacks subsequently changed through
+    /// native envelope CRUD remain authoritative. The successful Task CAS
+    /// clears migration provenance, after which callers may delete standalone
+    /// rows.
+    pub async fn finalize_legacy_push_configs(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        configs: Vec<TaskPushNotificationConfig>,
+    ) -> Result<Vec<TaskPushNotificationConfig>, TaskEngineError> {
+        let mut snapshot = BTreeMap::new();
+        for config in configs {
+            Self::validate_push_config_identity(scope, task_id, &config)?;
+            if snapshot.insert(config.id.clone(), config).is_some() {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "duplicate standalone callback configuration".into(),
+                ));
+            }
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let tail = record.delivery.next_sequence;
+            let tracked_ids = record
+                .delivery
+                .legacy_config_imports
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut mutations = Vec::new();
+            for id in tracked_ids {
+                if let Some(config) = snapshot.get(&id) {
+                    let callback = record.delivery.callbacks.get_mut(&id).ok_or_else(|| {
+                        TaskEngineError::InvalidDurableRecord(
+                            "legacy callback provenance lost its configuration".into(),
+                        )
+                    })?;
+                    if callback.lease.is_some() {
+                        return Err(TaskEngineError::PushConfigDeliveryInFlight);
+                    }
+                    if push_config_digest(&callback.config)? != push_config_digest(config)? {
+                        callback.config = config.clone();
+                        mutations.push(("legacy_cutover_update", id.clone()));
+                    }
+                } else {
+                    let callback = record.delivery.callbacks.get(&id).ok_or_else(|| {
+                        TaskEngineError::InvalidDurableRecord(
+                            "legacy callback provenance lost its configuration".into(),
+                        )
+                    })?;
+                    if callback.lease.is_some() {
+                        return Err(TaskEngineError::PushConfigDeliveryInFlight);
+                    }
+                    record.delivery.callbacks.remove(&id);
+                    mutations.push(("legacy_cutover_delete", id));
+                }
+            }
+            for (id, config) in &snapshot {
+                if record.delivery.legacy_config_native_overrides.contains(id) {
+                    continue;
+                }
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    record.delivery.callbacks.entry(id.clone())
+                {
+                    entry.insert(DurableTaskCallback::new(config.clone(), tail));
+                    mutations.push(("legacy_cutover_import", id.clone()));
+                }
+            }
+            if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+                return Err(TaskEngineError::PushConfigCapacityExceeded);
+            }
+            record.delivery.legacy_config_scan_complete = true;
+            record.delivery.legacy_config_imports.clear();
+            record.delivery.legacy_config_native_overrides.clear();
+            record.delivery.prune_acknowledged();
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    for (operation, config_id) in mutations {
+                        self.emit_push_config_audit(&record.task, operation, &config_id)
+                            .await;
+                    }
+                    return Ok(record
+                        .delivery
+                        .callbacks
+                        .values()
+                        .map(|callback| callback.config.clone())
+                        .collect());
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Delete a callback configuration and immediately release any event-log
+    /// prefix retained only for that callback. Returns `false` when absent.
+    pub async fn delete_push_config(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+    ) -> Result<bool, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let legacy_row_exists = self
+            .state
+            .get(&scope.legacy_push_config_key(task_id, config_id))
+            .await?
+            .is_some();
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            if record.delivery.callbacks.remove(config_id).is_none() {
+                return Ok(false);
+            }
+            let imported = record
+                .delivery
+                .legacy_config_imports
+                .remove(config_id)
+                .is_some();
+            if legacy_row_exists
+                || imported
+                || record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .contains(config_id)
+            {
+                record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .insert(config_id.to_owned());
+            }
+            record.delivery.prune_acknowledged();
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    self.emit_push_config_audit(&record.task, "delete", config_id)
+                        .await;
+                    return Ok(true);
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
     }
 
     /// List all tasks in a scope. O(N) scan of `A2aTask` keys for the
@@ -497,7 +2050,7 @@ impl TaskEngine {
                 warn!("skipping task row outside its canonical scope");
                 continue;
             };
-            match serde_json::from_str::<Task>(&raw) {
+            match decode_persisted_task(&raw) {
                 Ok(t) => {
                     if !self.hidden_governed_task(scope, id).await? {
                         out.push(t);
@@ -509,6 +2062,48 @@ impl TaskEngine {
             }
         }
         Ok(out)
+    }
+
+    /// Inventory every durable A2A Task identity across the configured state
+    /// backend. Migration tooling uses the value as the authority and verifies
+    /// that each scanned key is its exact canonical identity before acting.
+    pub async fn list_all_task_refs(&self) -> Result<Vec<(TaskScope, String)>, TaskEngineError> {
+        let mut tasks = Vec::new();
+        let mut after = None;
+        let mut cursors = BTreeSet::new();
+        loop {
+            let page = self
+                .state
+                .scan_keys_by_kind_page(KeyKind::A2aTask, after.as_deref(), 500)
+                .await?;
+            for (key, raw) in page.entries {
+                let record = DurableTaskRecord::decode(&raw)?;
+                let scope = TaskScope::new(&record.task.namespace, &record.task.tenant);
+                if key != scope.task_key(&record.task.id).canonical() {
+                    return Err(TaskEngineError::InvalidDurableRecord(
+                        "A2A Task row identity does not match its canonical key".into(),
+                    ));
+                }
+                tasks.push((scope, record.task.id));
+            }
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            if !cursors.insert(cursor.clone()) {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "A2A Task inventory cursor did not advance".into(),
+                ));
+            }
+            after = Some(cursor);
+        }
+        tasks.sort_by(|left, right| {
+            (&left.0.namespace, &left.0.tenant, &left.1).cmp(&(
+                &right.0.namespace,
+                &right.0.tenant,
+                &right.1,
+            ))
+        });
+        Ok(tasks)
     }
 
     /// Transition a task to a new state with an optional driving
@@ -531,10 +2126,16 @@ impl TaskEngine {
             None
         };
         let task = self
-            .cas_mutate(&key, task_id, "transition", move |task: &mut Task, now| {
-                task.transition_to_at(next, message.clone(), now)?;
-                Ok(())
-            })
+            .cas_mutate(
+                &key,
+                task_id,
+                "transition",
+                None,
+                move |task: &mut Task, now| {
+                    task.transition_to_at(next, message.clone(), now)?;
+                    Ok(())
+                },
+            )
             .await?;
         if let Some(from) = from_state {
             self.emit_stream(
@@ -581,12 +2182,14 @@ impl TaskEngine {
             TaskRole::Agent,
             "Task failed by the stale-task reaper: no recorded progress within its working TTL.",
         );
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 // Task was deleted between the reaper's scan and now.
                 return Ok(None);
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             // Governed work may have an unresolved external attempt. Its
             // runtime projects qualified execution evidence; elapsed time alone
             // cannot prove failure or release its retained capacity.
@@ -612,13 +2215,20 @@ impl TaskEngine {
             }
             let from_state = task.status.state;
             task.transition_to_at(TaskState::Failed, Some(reason.clone()), now)?;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Failed, now)?,
+            )?;
+            let payload = record.encode()?;
             match self
                 .state
                 .compare_and_swap(&key, version, &payload, None)
                 .await?
             {
                 CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
                     debug!(task_id = %task_id, "stale task reaped to Failed");
                     self.emit_audit(&task, "reap", Some(from_state)).await;
                     self.emit_stream(
@@ -631,7 +2241,7 @@ impl TaskEngine {
                             to: TaskState::Failed,
                         },
                     );
-                    return Ok(Some(task));
+                    return Ok(Some(task.clone()));
                 }
                 CasResult::Conflict { .. } => {
                     // Lost the race; re-read and re-evaluate staleness.
@@ -708,6 +2318,7 @@ impl TaskEngine {
                 &key,
                 task_id,
                 "append_history",
+                None,
                 move |task: &mut Task, now| {
                     task.append_history_at(message.clone(), now)?;
                     Ok(())
@@ -757,6 +2368,7 @@ impl TaskEngine {
                 &key,
                 &task_id,
                 "artifact_update",
+                Some((artifact_id_for_emit.clone(), last_chunk_for_emit)),
                 move |task: &mut Task, now| {
                     task.apply_artifact_event_at(&event, now)?;
                     Ok(())
@@ -785,7 +2397,7 @@ impl TaskEngine {
         task_id: &str,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "progress", |task: &mut Task, now| {
+        self.cas_mutate(&key, task_id, "progress", None, |task: &mut Task, now| {
             task.record_progress_at(now);
             Ok(())
         })
@@ -807,6 +2419,7 @@ impl TaskEngine {
             &key,
             task_id,
             "pending_approval",
+            None,
             move |task: &mut Task, _now| {
                 task.set_pending_approval(approval_id.clone());
                 Ok(())
@@ -963,7 +2576,7 @@ impl TaskEngine {
         let stamp_id = approval_id.clone();
         let prompt_id = format!("{approval_id}.challenge");
         let mutated = self
-            .cas_mutate(&key, task_id, "pause", move |task: &mut Task, now| {
+            .cas_mutate(&key, task_id, "pause", None, move |task: &mut Task, now| {
                 let prompt = challenge_reason.as_ref().map(|reason| {
                     let mut message =
                         TaskMessage::text(prompt_id.clone(), TaskRole::Agent, reason.clone());
@@ -1444,13 +3057,15 @@ impl TaskEngine {
         resolution: &TaskAuthorizationResolution,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.status.state == TaskState::Working && task.pending_approval_id.is_none() {
-                return Ok(task);
+                return Ok(task.clone());
             }
             if task.status.state != TaskState::AuthRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
@@ -1466,13 +3081,20 @@ impl TaskEngine {
             }
             task.transition_to_at(TaskState::Working, None, now)?;
             task.updated_at = now;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Working, now)?,
+            )?;
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(
                     &task,
                     "resolve_authorization",
@@ -1489,7 +3111,7 @@ impl TaskEngine {
                         to: TaskState::Working,
                     },
                 );
-                return Ok(task);
+                return Ok(task.clone());
             }
         }
         Err(TaskEngineError::CasExhausted(task_id.to_string()))
@@ -1613,11 +3235,13 @@ impl TaskEngine {
         approval_id: &str,
     ) -> Result<(), TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Ok(());
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.status.state != TaskState::AuthRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
             {
@@ -1630,14 +3254,22 @@ impl TaskEngine {
             );
             message.task_id = Some(task_id.to_string());
             message.context_id.clone_from(&task.context_id);
-            task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
-            let payload = serde_json::to_string(&task)?;
+            let now = self.clock.now();
+            task.transition_to_at(TaskState::Failed, Some(message), now)?;
+            let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Failed, now)?,
+            )?;
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(
                     &task,
                     "authorization_challenge_expired",
@@ -1868,11 +3500,13 @@ impl TaskEngine {
         message: TaskMessage,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.context_id != message.context_id {
                 return Err(TaskEngineError::ChallengeResponseContextMismatch);
             }
@@ -1892,7 +3526,7 @@ impl TaskEngine {
                         approval_id.to_string(),
                     ));
                 }
-                return Ok(task);
+                return Ok(task.clone());
             }
             if task.status.state != TaskState::InputRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
@@ -1915,13 +3549,20 @@ impl TaskEngine {
             let now = self.clock.now();
             task.transition_to_at(TaskState::Working, None, now)?;
             task.updated_at = now;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Working, now)?,
+            )?;
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(&task, "resolve_input", Some(TaskState::InputRequired))
                     .await;
                 self.emit_stream(
@@ -1943,7 +3584,7 @@ impl TaskEngine {
                         to: TaskState::Working,
                     },
                 );
-                return Ok(task);
+                return Ok(task.clone());
             }
         }
         Err(TaskEngineError::CasExhausted(task_id.to_string()))
@@ -2064,11 +3705,13 @@ impl TaskEngine {
         approval_id: &str,
     ) -> Result<(), TaskEngineError> {
         let key = scope.task_key(task_id);
+        let status_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
                 return Ok(());
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             if task.status.state != TaskState::InputRequired
                 || task.pending_approval_id.as_deref() != Some(approval_id)
             {
@@ -2081,14 +3724,22 @@ impl TaskEngine {
             );
             message.task_id = Some(task_id.to_string());
             message.context_id.clone_from(&task.context_id);
-            task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
-            let payload = serde_json::to_string(&task)?;
+            let now = self.clock.now();
+            task.transition_to_at(TaskState::Failed, Some(message), now)?;
+            let task = record.task.clone();
+            record.delivery.append(
+                status_event_id.clone(),
+                now,
+                project_task_status_push_payload(&task, TaskState::Failed, now)?,
+            )?;
+            let payload = record.encode()?;
             if matches!(
                 self.state
                     .compare_and_swap(&key, version, &payload, None)
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(
                     &task,
                     "input_challenge_expired",
@@ -2123,10 +3774,16 @@ impl TaskEngine {
         chain_id: Option<String>,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "link_chain", move |task: &mut Task, _now| {
-            task.chain_id.clone_from(&chain_id);
-            Ok(())
-        })
+        self.cas_mutate(
+            &key,
+            task_id,
+            "link_chain",
+            None,
+            move |task: &mut Task, _now| {
+                task.chain_id.clone_from(&chain_id);
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -2152,6 +3809,7 @@ impl TaskEngine {
                 &key,
                 task_id,
                 "artifact_upsert",
+                Some((artifact_id_for_emit.clone(), false)),
                 move |task: &mut Task, now| {
                     task.upsert_artifact_at(artifact.clone(), append, now)?;
                     Ok(())
@@ -2220,7 +3878,7 @@ impl TaskEngine {
         let key = scope.task_key(task_id);
         let mut transitioned = false;
         let task = self
-            .cas_mutate(&key, task_id, "governed_working", |task, now| {
+            .cas_mutate(&key, task_id, "governed_working", None, |task, now| {
                 Self::validate_governed_projection(task, expected)?;
                 if task.status.state.is_terminal() {
                     transitioned = false;
@@ -2269,21 +3927,27 @@ impl TaskEngine {
         let mut transitioned = false;
         let artifact_id = artifact.artifact_id.clone();
         let task = self
-            .cas_mutate(&key, task_id, "governed_result", |task, now| {
-                Self::validate_governed_projection(task, expected)?;
-                transitioned = task.status.state != next;
-                if transitioned {
-                    // A missing projection is rebuilt as Submitted. A durable,
-                    // qualified completion receipt authorizes repairing both
-                    // transitions in this CAS without starting another effect.
-                    if task.status.state == TaskState::Submitted {
-                        task.transition_to_at(TaskState::Working, None, now)?;
+            .cas_mutate(
+                &key,
+                task_id,
+                "governed_result",
+                Some((artifact_id.clone(), true)),
+                |task, now| {
+                    Self::validate_governed_projection(task, expected)?;
+                    transitioned = task.status.state != next;
+                    if transitioned {
+                        // A missing projection is rebuilt as Submitted. A durable,
+                        // qualified completion receipt authorizes repairing both
+                        // transitions in this CAS without starting another effect.
+                        if task.status.state == TaskState::Submitted {
+                            task.transition_to_at(TaskState::Working, None, now)?;
+                        }
+                        task.transition_to_at(next, None, now)?;
                     }
-                    task.transition_to_at(next, None, now)?;
-                }
-                task.upsert_artifact_at(artifact.clone(), false, now)?;
-                Ok(())
-            })
+                    task.upsert_artifact_at(artifact.clone(), false, now)?;
+                    Ok(())
+                },
+            )
             .await?;
         self.emit_stream(
             &scope.namespace,
@@ -2321,11 +3985,14 @@ impl TaskEngine {
         key: &StateKey,
         task_id: &str,
         operation: &str,
+        artifact_event: Option<(String, bool)>,
         mut mutate: F,
     ) -> Result<Task, TaskEngineError>
     where
         F: FnMut(&mut Task, DateTime<Utc>) -> Result<(), TaskValidationError>,
     {
+        let status_event_id = uuid::Uuid::now_v7().to_string();
+        let artifact_event_id = uuid::Uuid::now_v7().to_string();
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             if self
                 .hidden_governed_task(
@@ -2339,21 +4006,57 @@ impl TaskEngine {
             let Some((raw, version)) = self.state.get_versioned(key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
-            let mut task: Task = serde_json::from_str(&raw)?;
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let task = &mut record.task;
             let from_state = task.status.state;
+            let artifact_before = artifact_event
+                .as_ref()
+                .and_then(|(artifact_id, _)| {
+                    task.artifacts
+                        .iter()
+                        .find(|artifact| artifact.artifact_id == *artifact_id)
+                })
+                .map(serde_json::to_value)
+                .transpose()?;
             let now = self.clock.now();
-            mutate(&mut task, now)?;
+            mutate(task, now)?;
             task.updated_at = now;
-            let payload = serde_json::to_string(&task)?;
+            let task = record.task.clone();
+            if let Some((artifact_id, last_chunk)) = &artifact_event {
+                let artifact_after = task
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.artifact_id == *artifact_id)
+                    .map(serde_json::to_value)
+                    .transpose()?;
+                if artifact_before != artifact_after {
+                    let payload =
+                        project_task_artifact_push_payload(&task, artifact_id, *last_chunk)?;
+                    record
+                        .delivery
+                        .append(artifact_event_id.clone(), now, payload)?;
+                }
+            }
+            if from_state != task.status.state {
+                record.delivery.append(
+                    status_event_id.clone(),
+                    now,
+                    project_task_status_push_payload(&task, task.status.state, now)?,
+                )?;
+            }
+            let payload = record.encode()?;
             match self
                 .state
                 .compare_and_swap(key, version, &payload, None)
                 .await?
             {
                 CasResult::Ok => {
+                    if !record.delivery.callbacks.is_empty() {
+                        self.sync_push_ready_hint_best_effort(&record).await;
+                    }
                     debug!(task_id = %task_id, state = ?task.status.state, "task mutated");
                     self.emit_audit(&task, operation, Some(from_state)).await;
-                    return Ok(task);
+                    return Ok(task.clone());
                 }
                 CasResult::Conflict { .. } => {
                     // Lost the race; re-read and re-apply.
@@ -2534,6 +4237,40 @@ pub enum TaskEngineError {
     Validation(#[from] TaskValidationError),
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("unsupported durable task record version {0}")]
+    UnsupportedRecordVersion(u32),
+    #[error("invalid durable task record: {0}")]
+    InvalidDurableRecord(String),
+    #[error("durable task delivery log is full; callback acknowledgement is required")]
+    DeliveryLogFull,
+    #[error("push configuration identity does not match its task scope")]
+    PushConfigIdentityMismatch,
+    #[error("push configuration '{0}' already exists in the initial task envelope")]
+    PushConfigAlreadyExists(String),
+    #[error("task callback configuration capacity is limited to {MAX_DURABLE_TASK_CALLBACKS}")]
+    PushConfigCapacityExceeded,
+    #[error("push configuration '{0}' was not found")]
+    PushConfigNotFound(String),
+    #[error("push configuration cannot be updated while delivery is in flight")]
+    PushConfigDeliveryInFlight,
+    #[error("push delivery worker id is invalid")]
+    InvalidPushWorkerId,
+    #[error("push delivery lease duration must be between 1ns and 5 minutes")]
+    InvalidPushLeaseDuration,
+    #[error("push delivery retry time must not be in the past")]
+    InvalidPushRetryTime,
+    #[error("push delivery lease was lost or replaced")]
+    PushDeliveryLeaseLost,
+    #[error("push delivery sequence is exhausted")]
+    PushDeliverySequenceExhausted,
+    #[error("push delivery attempt counter is exhausted")]
+    PushDeliveryAttemptExhausted,
+    #[error("task callback dead-letter capacity is exhausted")]
+    PushDeadLetterCapacityExceeded,
+    #[error("task callback dead letter '{0}' was not found")]
+    PushDeadLetterNotFound(String),
+    #[error("push configuration validation failed: {0}")]
+    PushConfigValidation(#[from] TaskPushConfigValidationError),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
     CasExhausted(String),
     #[error("reference graph for task '{task_id}' contains a cycle back to itself")]
@@ -2759,7 +4496,7 @@ mod tests {
 
     use super::*;
     use acteon_core::{Artifact, TaskPart as Part, TaskRole as Role};
-    use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
+    use acteon_state::testing::faults::{FaultStore, FaultTiming, ReadOperation, WriteOperation};
     use acteon_state_memory::MemoryStateStore;
 
     fn engine() -> TaskEngine {
@@ -2774,6 +4511,20 @@ mod tests {
         Task::new(id, "agents", "demo")
     }
 
+    fn test_push_config(task: &Task, id: &str) -> TaskPushNotificationConfig {
+        TaskPushNotificationConfig::new(
+            id,
+            &task.id,
+            &task.namespace,
+            &task.tenant,
+            format!("https://{id}.example/a2a"),
+        )
+    }
+
+    fn test_callback(task: &Task, acknowledged_sequence: u64) -> DurableTaskCallback {
+        DurableTaskCallback::new(test_push_config(task, "callback"), acknowledged_sequence)
+    }
+
     #[tokio::test]
     async fn create_then_get_task() {
         let e = engine();
@@ -2781,6 +4532,1025 @@ mod tests {
         let got = e.get_task(&scope(), "t1").await.unwrap().unwrap();
         assert_eq!(got.id, "t1");
         assert_eq!(got.status.state, TaskState::Submitted);
+    }
+
+    #[tokio::test]
+    async fn create_persists_private_versioned_envelope() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored["recordVersion"], 1);
+        assert_eq!(stored["task"]["id"], "t1");
+        assert_eq!(
+            stored["delivery"],
+            serde_json::json!({"legacyConfigScanComplete": true, "nextSequence": 0})
+        );
+        assert!(stored.get("id").is_none(), "Task must remain a projection");
+    }
+
+    #[tokio::test]
+    async fn create_commits_inline_callback_with_the_task() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        let config = test_push_config(&task, "inline");
+        e.create_task_with_push_configs(task, vec![config.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            e.get_push_config(&scope(), "t1", "inline")
+                .await
+                .unwrap()
+                .unwrap()
+                .url,
+            config.url
+        );
+        let record =
+            DurableTaskRecord::decode(&state.get(&scope().task_key("t1")).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(record.delivery.callbacks["inline"].acknowledged_sequence, 0);
+    }
+
+    #[tokio::test]
+    async fn callback_upsert_starts_at_tail_and_update_preserves_cursor_and_creation() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        e.create_task(task.clone()).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        let original = test_push_config(&task, "callback");
+        let saved = e
+            .upsert_push_config(&scope(), "t1", original.clone())
+            .await
+            .unwrap();
+        let mut updated = original;
+        updated.url = "https://replacement.example/a2a".into();
+        updated.updated_at += chrono::Duration::seconds(1);
+        let saved_update = e.upsert_push_config(&scope(), "t1", updated).await.unwrap();
+
+        assert_eq!(saved_update.created_at, saved.created_at);
+        assert_eq!(saved_update.url, "https://replacement.example/a2a");
+        let record =
+            DurableTaskRecord::decode(&state.get(&scope().task_key("t1")).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(
+            record.delivery.callbacks["callback"].acknowledged_sequence,
+            1
+        );
+        assert_eq!(e.list_push_configs(&scope(), "t1").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn callback_delete_releases_its_delivery_retention_floor() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        e.create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        assert!(
+            e.delete_push_config(&scope(), "t1", "callback")
+                .await
+                .unwrap()
+        );
+        assert!(
+            e.get_push_config(&scope(), "t1", "callback")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let record =
+            DurableTaskRecord::decode(&state.get(&scope().task_key("t1")).await.unwrap().unwrap())
+                .unwrap();
+        assert!(record.delivery.events.is_empty());
+        assert!(
+            !e.delete_push_config(&scope(), "t1", "callback")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_capacity_bounds_the_task_envelope() {
+        let e = engine();
+        let task = sample_task("t1");
+        e.create_task(task.clone()).await.unwrap();
+        for index in 0..MAX_DURABLE_TASK_CALLBACKS {
+            e.upsert_push_config(
+                &scope(),
+                "t1",
+                test_push_config(&task, &format!("callback-{index}")),
+            )
+            .await
+            .unwrap();
+        }
+        let error = e
+            .upsert_push_config(&scope(), "t1", test_push_config(&task, "overflow"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::PushConfigCapacityExceeded));
+        assert_eq!(
+            e.list_push_configs(&scope(), "t1").await.unwrap().len(),
+            MAX_DURABLE_TASK_CALLBACKS
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_ready_hint_tracks_claim_retry_ack_and_repairs_loss() {
+        let epoch = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = Arc::new(acteon_time::ManualClock::new(epoch));
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone()).with_clock(clock.clone());
+        let task = Task::new_at("ready", "agents", "demo", epoch);
+        e.create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        let ready_key = scope().push_ready_key("ready");
+        assert!(state.get(&ready_key).await.unwrap().is_none());
+
+        e.transition_task(&scope(), "ready", TaskState::Working, None)
+            .await
+            .unwrap();
+        let hint: TaskPushReadyHint =
+            serde_json::from_str(&state.get(&ready_key).await.unwrap().expect("ready hint"))
+                .unwrap();
+        assert_eq!(hint.task_id, "ready");
+        assert_eq!(hint.ready_at, epoch);
+
+        state.delete(&ready_key).await.unwrap();
+        assert!(
+            e.repair_push_ready_hint(&scope(), "ready")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let claim = e
+            .claim_push_delivery(
+                &scope(),
+                "ready",
+                "callback",
+                "worker",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let leased: TaskPushReadyHint =
+            serde_json::from_str(&state.get(&ready_key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(leased.ready_at, epoch + chrono::Duration::seconds(30));
+
+        let retry_at = epoch + chrono::Duration::seconds(10);
+        e.retry_push_delivery_at(&scope(), "ready", "callback", &claim.lease_id, retry_at)
+            .await
+            .unwrap();
+        let retry: TaskPushReadyHint =
+            serde_json::from_str(&state.get(&ready_key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(retry.ready_at, retry_at);
+
+        clock.advance_to(Duration::from_secs(10)).unwrap();
+        let retry_claim = e
+            .claim_push_delivery(
+                &scope(),
+                "ready",
+                "callback",
+                "worker",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        e.acknowledge_push_delivery(&scope(), "ready", "callback", &retry_claim.lease_id)
+            .await
+            .unwrap();
+        assert!(state.get(&ready_key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn callback_ready_hint_repair_rejects_a_mismatched_task_row() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let mismatched = Task::new("different", "agents", "demo");
+        state
+            .set(
+                &scope().task_key("indexed"),
+                &serde_json::to_string(&mismatched).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let error = e
+            .repair_push_ready_hint(&scope(), "indexed")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, TaskEngineError::InvalidDurableRecord(_)));
+        assert!(
+            state
+                .get(&scope().push_ready_key("indexed"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_lease_fences_replicas_and_expired_acknowledgements() {
+        let epoch = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = Arc::new(acteon_time::ManualClock::new(epoch));
+        let state = Arc::new(MemoryStateStore::new());
+        let first = Arc::new(TaskEngine::new(state.clone()).with_clock(clock.clone()));
+        let second = Arc::new(TaskEngine::new(state.clone()).with_clock(clock.clone()));
+        let task = Task::new_at("t1", "agents", "demo", epoch);
+        first
+            .create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        first
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        let a = first.clone();
+        let b = second.clone();
+        let (left, right) = tokio::join!(
+            async move {
+                a.claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-a",
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+            },
+            async move {
+                b.claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-b",
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+            }
+        );
+        assert!(left.is_some() ^ right.is_some());
+        let original = left.or(right).unwrap();
+        assert_eq!(original.sequence, 1);
+        assert_eq!(original.attempt, 1);
+        let mut in_flight_update = original.config.clone();
+        in_flight_update.url = "https://updated.example/hook".into();
+        assert!(matches!(
+            first
+                .upsert_push_config(&scope(), "t1", in_flight_update)
+                .await,
+            Err(TaskEngineError::PushConfigDeliveryInFlight)
+        ));
+
+        clock.advance_to(Duration::from_secs(5)).unwrap();
+        let takeover = second
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-c",
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(takeover.sequence, original.sequence);
+        assert_eq!(takeover.event_id, original.event_id);
+        assert_eq!(takeover.attempt, 2);
+        assert!(matches!(
+            first
+                .acknowledge_push_delivery(&scope(), "t1", "callback", &original.lease_id,)
+                .await,
+            Err(TaskEngineError::PushDeliveryLeaseLost)
+        ));
+        second
+            .acknowledge_push_delivery(&scope(), "t1", "callback", &takeover.lease_id)
+            .await
+            .unwrap();
+        assert!(
+            first
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-a",
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_retry_and_dead_letter_survive_engine_replacement() {
+        let epoch = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = Arc::new(acteon_time::ManualClock::new(epoch));
+        let state = Arc::new(MemoryStateStore::new());
+        let engine = TaskEngine::new(state.clone()).with_clock(clock.clone());
+        let task = Task::new_at("t1", "agents", "demo", epoch);
+        engine
+            .create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        engine
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let claim = engine
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-a",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        engine
+            .retry_push_delivery_at(
+                &scope(),
+                "t1",
+                "callback",
+                &claim.lease_id,
+                epoch + chrono::Duration::seconds(10),
+            )
+            .await
+            .unwrap();
+
+        let replacement = TaskEngine::new(state).with_clock(clock.clone());
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-b",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        clock.advance_to(Duration::from_secs(10)).unwrap();
+        let retry = replacement
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-b",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.sequence, claim.sequence);
+        assert_eq!(retry.attempt, 2);
+        let entry = replacement
+            .dead_letter_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                &retry.lease_id,
+                DlqFailureKind::Exhausted,
+                "HTTP 503",
+            )
+            .await
+            .unwrap();
+        assert_eq!(entry.attempts, 2);
+        assert_eq!(entry.failure_kind, DlqFailureKind::Exhausted);
+        assert_eq!(entry.sequence, Some(retry.sequence));
+        assert_eq!(entry.event_id.as_deref(), Some(retry.event_id.as_str()));
+        assert_eq!(
+            replacement
+                .list_push_dead_letters(&scope(), "t1")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-c",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let mut updated = replacement
+            .get_push_config(&scope(), "t1", "callback")
+            .await
+            .unwrap()
+            .unwrap();
+        updated.url = "https://repaired.example/hook".into();
+        replacement
+            .upsert_push_config(&scope(), "t1", updated)
+            .await
+            .unwrap();
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-c",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        replacement
+            .resolve_push_dead_letter(&scope(), "t1", &entry.id, PushDeadLetterResolution::Retry)
+            .await
+            .unwrap();
+        let replay = replacement
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-c",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.sequence, retry.sequence);
+        assert_eq!(replay.event_id, retry.event_id);
+        assert_eq!(replay.attempt, 1);
+        assert_eq!(replay.config.url, "https://repaired.example/hook");
+        let discarded = replacement
+            .dead_letter_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                &replay.lease_id,
+                DlqFailureKind::Terminal,
+                "HTTP 410",
+            )
+            .await
+            .unwrap();
+        replacement
+            .resolve_push_dead_letter(
+                &scope(),
+                "t1",
+                &discarded.id,
+                PushDeadLetterResolution::Discard,
+            )
+            .await
+            .unwrap();
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-d",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_blocked_callback_preserves_resolvable_dead_letter_evidence() {
+        let e = engine();
+        let task = sample_task("blocked-delete");
+        e.create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        e.transition_task(&scope(), "blocked-delete", TaskState::Working, None)
+            .await
+            .unwrap();
+        let claim = e
+            .claim_push_delivery(
+                &scope(),
+                "blocked-delete",
+                "callback",
+                "worker",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let entry = e
+            .dead_letter_push_delivery(
+                &scope(),
+                "blocked-delete",
+                "callback",
+                &claim.lease_id,
+                DlqFailureKind::Terminal,
+                "HTTP 410",
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            e.delete_push_config(&scope(), "blocked-delete", "callback")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            e.list_push_dead_letters(&scope(), "blocked-delete")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        e.resolve_push_dead_letter(
+            &scope(),
+            "blocked-delete",
+            &entry.id,
+            PushDeadLetterResolution::Discard,
+        )
+        .await
+        .unwrap();
+        assert!(
+            e.list_push_dead_letters(&scope(), "blocked-delete")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_dead_letter_import_is_idempotent_and_detects_conflicts() {
+        let e = engine();
+        e.create_task(sample_task("legacy-dlq")).await.unwrap();
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let entry = PushDeliveryDlqEntry::new_at(
+            uuid::Uuid::now_v7().to_string(),
+            "callback",
+            "legacy-dlq",
+            "agents",
+            "demo",
+            "https://callback.example/a2a",
+            DlqFailureKind::Terminal,
+            "HTTP 410",
+            1,
+            r#"{"legacy":true}"#.into(),
+            now,
+        );
+
+        assert_eq!(
+            e.import_legacy_push_dead_letters(&scope(), "legacy-dlq", vec![entry.clone()])
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            e.import_legacy_push_dead_letters(&scope(), "legacy-dlq", vec![entry.clone()])
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            e.list_push_dead_letters(&scope(), "legacy-dlq")
+                .await
+                .unwrap(),
+            vec![entry.clone()]
+        );
+
+        let mut conflicting = entry;
+        conflicting.last_error = "different evidence".into();
+        let error = e
+            .import_legacy_push_dead_letters(&scope(), "legacy-dlq", vec![conflicting])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::InvalidDurableRecord(_)));
+    }
+
+    #[tokio::test]
+    async fn legacy_callback_import_is_one_time_and_envelope_wins_stale_replay() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("legacy");
+        state
+            .set(
+                &scope().task_key("legacy"),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !e.push_config_migration_complete(&scope(), "legacy")
+                .await
+                .unwrap()
+        );
+        let legacy = test_push_config(&task, "callback");
+        e.import_legacy_push_configs(&scope(), "legacy", vec![legacy])
+            .await
+            .unwrap();
+        assert!(
+            e.push_config_migration_complete(&scope(), "legacy")
+                .await
+                .unwrap()
+        );
+
+        let mut current = e
+            .get_push_config(&scope(), "legacy", "callback")
+            .await
+            .unwrap()
+            .unwrap();
+        current.url = "https://current.example/a2a".into();
+        current.updated_at += chrono::Duration::seconds(1);
+        e.upsert_push_config(&scope(), "legacy", current)
+            .await
+            .unwrap();
+        let stale = test_push_config(&task, "callback");
+        let configs = e
+            .import_legacy_push_configs(&scope(), "legacy", vec![stale])
+            .await
+            .unwrap();
+        assert_eq!(configs[0].url, "https://current.example/a2a");
+    }
+
+    #[tokio::test]
+    async fn legacy_callback_cutover_reconciles_owned_rows_and_preserves_native_edits() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("legacy-cutover");
+        state
+            .set(
+                &scope().task_key(&task.id),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let imported = ["updated", "deleted", "native-edit", "native-delete"]
+            .map(|id| test_push_config(&task, id))
+            .to_vec();
+        e.import_legacy_push_configs(&scope(), &task.id, imported.clone())
+            .await
+            .unwrap();
+
+        let mut native_edit = imported[2].clone();
+        native_edit.url = "https://native.example/a2a".into();
+        native_edit.updated_at += chrono::Duration::seconds(1);
+        e.upsert_push_config(&scope(), &task.id, native_edit.clone())
+            .await
+            .unwrap();
+        assert!(
+            e.delete_push_config(&scope(), &task.id, "native-delete")
+                .await
+                .unwrap()
+        );
+        let native_only = test_push_config(&task, "native-only");
+        e.upsert_push_config(&scope(), &task.id, native_only.clone())
+            .await
+            .unwrap();
+
+        let mut old_writer_update = imported[0].clone();
+        old_writer_update.url = "https://old-writer.example/a2a".into();
+        old_writer_update.updated_at += chrono::Duration::seconds(2);
+        let late_create = test_push_config(&task, "late-create");
+        let configs = e
+            .finalize_legacy_push_configs(
+                &scope(),
+                &task.id,
+                vec![
+                    old_writer_update.clone(),
+                    imported[2].clone(),
+                    imported[3].clone(),
+                    late_create.clone(),
+                ],
+            )
+            .await
+            .unwrap();
+        let by_id = configs
+            .into_iter()
+            .map(|config| (config.id.clone(), config))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(by_id["updated"].url, old_writer_update.url);
+        assert!(!by_id.contains_key("deleted"));
+        assert_eq!(by_id["native-edit"].url, native_edit.url);
+        assert!(!by_id.contains_key("native-delete"));
+        assert_eq!(by_id["native-only"].url, native_only.url);
+        assert_eq!(by_id["late-create"].url, late_create.url);
+        let raw = state
+            .get(&scope().task_key(&task.id))
+            .await
+            .unwrap()
+            .unwrap();
+        let record = DurableTaskRecord::decode(&raw).unwrap();
+        assert!(record.delivery.legacy_config_imports.is_empty());
+        assert!(record.delivery.legacy_config_native_overrides.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_raw_task_migrates_on_first_successful_mutation() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("legacy");
+        state
+            .set(
+                &scope().task_key("legacy"),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            e.get_task(&scope(), "legacy")
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .state,
+            TaskState::Submitted
+        );
+        e.transition_task(&scope(), "legacy", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        let raw = state
+            .get(&scope().task_key("legacy"))
+            .await
+            .unwrap()
+            .unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored["recordVersion"], 1);
+        assert_eq!(stored["task"]["status"]["state"], "working");
+    }
+
+    #[tokio::test]
+    async fn durable_envelope_rejects_unknown_fields_and_versions() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let key = scope().task_key("t1");
+        let task = sample_task("t1");
+        state
+            .set(
+                &key,
+                &serde_json::json!({
+                    "recordVersion": 1,
+                    "task": task,
+                    "delivery": {},
+                    "unrecognized": true
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            e.get_task(&scope(), "t1").await,
+            Err(TaskEngineError::Serde(_))
+        ));
+
+        state
+            .set(
+                &key,
+                &serde_json::json!({
+                    "recordVersion": 2,
+                    "task": sample_task("t1"),
+                    "delivery": {}
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            e.get_task(&scope(), "t1").await,
+            Err(TaskEngineError::UnsupportedRecordVersion(2))
+        ));
+    }
+
+    #[tokio::test]
+    async fn transition_commits_the_protocol_event_in_the_same_task_record() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+        let message = TaskMessage::text("working", TaskRole::Agent, "accepted");
+        e.transition_task(&scope(), "t1", TaskState::Working, Some(message))
+            .await
+            .unwrap();
+
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let record = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(record.task.status.state, TaskState::Working);
+        assert_eq!(record.delivery.next_sequence, 1);
+        assert_eq!(record.delivery.events.len(), 1);
+        let event = &record.delivery.events[0];
+        assert_eq!(event.sequence, 1);
+        assert_eq!(event.payload["statusUpdate"]["taskId"], "t1");
+        assert_eq!(
+            event.payload["statusUpdate"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        assert_eq!(
+            event.payload["statusUpdate"]["status"]["message"]["role"],
+            "ROLE_AGENT"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_log_backpressure_keeps_the_task_mutation_atomic() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        let mut record = DurableTaskRecord::new(task.clone());
+        record
+            .delivery
+            .callbacks
+            .insert("callback".into(), test_callback(&task, 0));
+        for _ in 0..MAX_DURABLE_TASK_EVENTS {
+            record
+                .delivery
+                .append(
+                    uuid::Uuid::now_v7().to_string(),
+                    task.status.timestamp,
+                    project_task_status_push_payload(
+                        &task,
+                        task.status.state,
+                        task.status.timestamp,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        state
+            .set(&scope().task_key("t1"), &record.encode().unwrap(), None)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            e.transition_task(&scope(), "t1", TaskState::Working, None)
+                .await,
+            Err(TaskEngineError::DeliveryLogFull)
+        ));
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let retained = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(retained.task.status.state, TaskState::Submitted);
+        assert_eq!(retained.delivery.events.len(), MAX_DURABLE_TASK_EVENTS);
+        assert_eq!(
+            retained.delivery.next_sequence,
+            MAX_DURABLE_TASK_EVENTS as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledged_delivery_prefix_prunes_before_the_next_atomic_append() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        let mut record = DurableTaskRecord::new(task.clone());
+        record
+            .delivery
+            .callbacks
+            .insert("callback".into(), test_callback(&task, 0));
+        for _ in 0..MAX_DURABLE_TASK_EVENTS {
+            record
+                .delivery
+                .append(
+                    uuid::Uuid::now_v7().to_string(),
+                    task.status.timestamp,
+                    project_task_status_push_payload(
+                        &task,
+                        task.status.state,
+                        task.status.timestamp,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        record
+            .delivery
+            .callbacks
+            .get_mut("callback")
+            .unwrap()
+            .acknowledged_sequence = 128;
+        state
+            .set(&scope().task_key("t1"), &record.encode().unwrap(), None)
+            .await
+            .unwrap();
+
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let raw = state.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let retained = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(retained.delivery.next_sequence, 257);
+        assert_eq!(retained.delivery.events.first().unwrap().sequence, 129);
+        assert_eq!(retained.delivery.events.last().unwrap().sequence, 257);
+    }
+
+    #[tokio::test]
+    async fn cas_conflict_retries_without_duplicating_the_delivery_event() {
+        let inner = Arc::new(MemoryStateStore::new());
+        let inner_store: Arc<dyn StateStore> = inner.clone();
+        let faults = Arc::new(FaultStore::new(inner_store));
+        let e = TaskEngine::new(faults.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+        let (read_reached, resume_read) = faults
+            .pause_next_read(
+                KeyKind::A2aTask,
+                ReadOperation::GetVersioned,
+                FaultTiming::After,
+            )
+            .unwrap();
+        let transition = tokio::spawn({
+            let e = e.clone();
+            async move {
+                e.transition_task(&scope(), "t1", TaskState::Working, None)
+                    .await
+            }
+        });
+        read_reached.await.unwrap();
+        TaskEngine::new(inner.clone())
+            .record_progress(&scope(), "t1")
+            .await
+            .unwrap();
+        resume_read.send(()).unwrap();
+        transition.await.unwrap().unwrap();
+
+        let raw = inner.get(&scope().task_key("t1")).await.unwrap().unwrap();
+        let record = DurableTaskRecord::decode(&raw).unwrap();
+        assert_eq!(record.delivery.next_sequence, 1);
+        assert_eq!(record.delivery.events.len(), 1);
+        assert_eq!(record.delivery.events[0].sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn ordered_delivery_log_survives_engine_replacement() {
+        let state = Arc::new(MemoryStateStore::new());
+        let key = scope().task_key("t1");
+        TaskEngine::new(state.clone())
+            .create_task(sample_task("t1"))
+            .await
+            .unwrap();
+        TaskEngine::new(state.clone())
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let mut record =
+            DurableTaskRecord::decode(&state.get(&key).await.unwrap().unwrap()).unwrap();
+        record
+            .delivery
+            .callbacks
+            .insert("callback".into(), test_callback(&record.task, 0));
+        state
+            .set(&key, &record.encode().unwrap(), None)
+            .await
+            .unwrap();
+
+        TaskEngine::new(state.clone())
+            .transition_task(&scope(), "t1", TaskState::Completed, None)
+            .await
+            .unwrap();
+        let record = DurableTaskRecord::decode(&state.get(&key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(record.delivery.next_sequence, 2);
+        assert_eq!(
+            record
+                .delivery
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_ne!(
+            record.delivery.events[0].event_id,
+            record.delivery.events[1].event_id
+        );
+        assert_eq!(
+            record.delivery.events[1].payload["statusUpdate"]["status"]["state"],
+            "TASK_STATE_COMPLETED"
+        );
     }
 
     #[tokio::test]
@@ -2821,6 +5591,35 @@ mod tests {
         let mut ids: Vec<_> = all.iter().map(|t| t.id.clone()).collect();
         ids.sort();
         assert_eq!(ids, vec!["t1".to_string(), "t2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn migration_inventory_pages_and_validates_canonical_task_identity() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        for index in 0..501 {
+            e.create_task(sample_task(&format!("task-{index:03}")))
+                .await
+                .unwrap();
+        }
+        let refs = e.list_all_task_refs().await.unwrap();
+        assert_eq!(refs.len(), 501);
+        assert_eq!(refs.first().unwrap().1, "task-000");
+        assert_eq!(refs.last().unwrap().1, "task-500");
+
+        let wrong_key = scope().task_key("wrong-key");
+        state
+            .set(
+                &wrong_key,
+                &serde_json::to_string(&sample_task("actual-id")).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            e.list_all_task_refs().await,
+            Err(TaskEngineError::InvalidDurableRecord(_))
+        ));
     }
 
     #[tokio::test]
@@ -3627,6 +6426,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_config_audit_records_are_sanitized() {
+        let (e, audit) = audited_engine();
+        let task = sample_task("t1");
+        e.create_task(task.clone()).await.unwrap();
+        let mut config = test_push_config(&task, "callback-1");
+        config.url = "https://hooks.example/a2a?secret=url-secret".into();
+        config.token = Some("bearer-secret".into());
+        config.authentication = Some(acteon_core::PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("credential-secret".into()),
+        });
+        e.upsert_push_config(&scope(), "t1", config).await.unwrap();
+        e.delete_push_config(&scope(), "t1", "callback-1")
+            .await
+            .unwrap();
+
+        let records: Vec<_> = audit
+            .records()
+            .into_iter()
+            .filter(|record| record.action_type == "a2a.task.push_config")
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].outcome_details["operation"], "create");
+        assert_eq!(records[1].outcome_details["operation"], "delete");
+        for record in records {
+            assert_eq!(record.action_id, "t1");
+            assert_eq!(record.outcome_details["config_id"], "callback-1");
+            let encoded = serde_json::to_string(&record).unwrap();
+            for secret in ["url-secret", "bearer-secret", "credential-secret"] {
+                assert!(!encoded.contains(secret), "audit leaked {secret}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn audit_records_state_transition_with_from_state() {
         let (e, audit) = audited_engine();
         e.create_task(sample_task("t1")).await.unwrap();
@@ -4014,10 +6848,16 @@ mod tests {
     async fn resolve_input_resumes_task_and_closes_approval() {
         let e = engine();
         working_task(&e, "t1").await;
+        let current = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        e.upsert_push_config(&scope(), "t1", test_push_config(&current, "callback"))
+            .await
+            .unwrap();
         let (_, challenge) = e
             .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
             .await
             .unwrap();
+        let ready_key = scope().push_ready_key("t1");
+        e.state.delete(&ready_key).await.unwrap();
         let (task, approval) = e
             .resolve_input(
                 &scope(),
@@ -4038,6 +6878,7 @@ mod tests {
             approval.task_resolution.as_ref().unwrap().message_id,
             "response-1"
         );
+        assert!(e.state.get(&ready_key).await.unwrap().is_some());
         let idx = StateKey::new(
             "agents",
             "demo",

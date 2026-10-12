@@ -36,10 +36,97 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_create_then_cas_expiry(store).await?;
     test_ttl_set(store).await?;
     test_scan_by_kind_includes_check_and_set(store).await?;
+    test_ordered_scan_pages(store).await?;
+    test_cross_scope_scan_pages(store).await?;
     test_set_clears_ttl_on_overwrite(store).await?;
     test_cas_replaces_ttl(store).await?;
     test_timeout_index_reindex_replaces(store).await?;
     test_chain_ready_index_reindex_replaces(store).await?;
+    Ok(())
+}
+
+async fn test_cross_scope_scan_pages(store: &dyn StateStore) -> Result<(), StateError> {
+    let kind = KeyKind::Custom("ordered-cross-scope-page-conformance".into());
+    for (namespace, tenant, id) in [
+        ("z-ns", "tenant", "a"),
+        ("a-ns", "tenant", "b"),
+        ("m-ns", "tenant", "c"),
+    ] {
+        store
+            .set(
+                &StateKey::new(namespace, tenant, kind.clone(), id),
+                id,
+                None,
+            )
+            .await?;
+    }
+    let mut entries = Vec::new();
+    let mut after = None;
+    let mut cursors = std::collections::BTreeSet::new();
+    loop {
+        let page = store
+            .scan_keys_by_kind_page(kind.clone(), after.as_deref(), 2)
+            .await?;
+        assert!(page.entries.len() <= 2);
+        entries.extend(page.entries);
+        let Some(cursor) = page.next_cursor else {
+            break;
+        };
+        assert!(cursors.insert(cursor.clone()), "cursor must advance");
+        after = Some(cursor);
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "c", "a"]
+    );
+    Ok(())
+}
+
+async fn test_ordered_scan_pages(store: &dyn StateStore) -> Result<(), StateError> {
+    let kind = KeyKind::Custom("ordered-page-conformance".into());
+    for id in ["c", "a", "d", "b"] {
+        store.set(&test_key(kind.clone(), id), id, None).await?;
+    }
+    let first = store
+        .scan_keys_page("test-ns", "test-tenant", kind.clone(), None, None, 2)
+        .await?;
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert!(first.next_cursor.is_some());
+    let second = store
+        .scan_keys_page(
+            "test-ns",
+            "test-tenant",
+            kind.clone(),
+            None,
+            first.next_cursor.as_deref(),
+            2,
+        )
+        .await?;
+    assert_eq!(
+        second
+            .entries
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+        ["c", "d"]
+    );
+    assert!(second.next_cursor.is_none());
+    let prefixed = store
+        .scan_keys_page("test-ns", "test-tenant", kind, Some("c"), None, 2)
+        .await?;
+    assert_eq!(prefixed.entries.len(), 1);
+    assert_eq!(prefixed.entries[0].1, "c");
     Ok(())
 }
 

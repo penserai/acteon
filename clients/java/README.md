@@ -4,7 +4,7 @@ Java client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 216 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 223 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```java
 var status = client.platformRequest(PlatformOperation.BUS_STAGES_STATUS,
@@ -24,6 +24,17 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 ## Typed governance management
 
 Use `governance`, `publishGovernancePermit`, and `interveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+
+Cross-domain execution uses `publishFederationTrust`,
+`revokeFederationTrust`, `federationCapabilities`, `importFederationEnvelope`, and
+`invokeFederatedAgent`. The import helper
+requires a configured peer credential, correlates the returned scope, and
+accepts only a receipt with `executionStarted() == false`. Import retains signed
+authority without dispatching work. Invocation sends the exact signed intent
+and message, validates the returned task scope and ID, and does not retry
+automatically. Accepted source tasks use `exportFederatedMessage`,
+`observeFederatedExport`, and `replayFederatedExport`; the client returns a
+typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `federationDeliveryEvidence` for typed sanitized pages and `abandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 
@@ -443,6 +454,20 @@ var receipt = client.agentServiceSendMessage("prod", "acme", "notifier",
 var task = client.agentServiceGetTask(receipt);
 ```
 
+Invoke and subscribe through the official exact-agent A2A stream. Closing the
+iterator closes the response body:
+
+```java
+try (var stream = client.agentServiceSendStreamingMessage(
+        "prod", "acme", "notifier", message)) {
+    saveHostProvenance(stream.sourceContext());
+    while (stream.hasNext()) render(stream.next());
+}
+try (var updates = client.agentServiceSubscribeTask(receipt)) {
+    while (updates.hasNext()) render(updates.next());
+}
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```java
@@ -505,11 +530,41 @@ The helper sends that job's original identity and source context in one request:
 ```java
 var stopped = client.agentServiceStopTask(receipt);
 System.out.println(stopped.futureStartsBlocked());
+System.out.println(stopped.cancellationConfirmed());
 System.out.println(stopped.providerAbort());
 System.out.println(stopped.task().path("status"));
+
+var officialTask = client.agentServiceCancelTask(receipt);
+System.out.println(officialTask.path("metadata").path("acteonCancellation").path("state"));
+
+var page = client.agentServiceListTasks("prod", "acme", "notifier",
+    new AgentServiceListOptions(null, null, null, 25, null, null, null, false));
+System.out.println(page.tasks().size() + " of " + page.totalSize());
+// Pass receipt as the first option for an agent principal or exact-job query.
 ```
 
+Manage an official callback with an operations-management credential:
+
+```java
+var push = client.agentServiceCreatePushConfig("prod", "acme", "notifier",
+    receipt.taskId(), new AgentServicePushConfigInput(
+        "incident-hook", "https://hooks.example/a2a", callbackToken,
+        new AgentServicePushAuthentication("Bearer", webhookSecret)), receipt);
+var configs = client.agentServiceListPushConfigs(
+    "prod", "acme", "notifier", receipt.taskId(), 25, null, receipt);
+client.agentServiceDeletePushConfig(
+    "prod", "acme", "notifier", receipt.taskId(), push.id(), receipt);
+```
+
+Create, get, list, delete, and inline registration require
+operations-management authority because responses can contain callback secrets.
+Keep those values out of logs and model context. Java push value types redact
+secret fields from their `toString()` output.
+
 The acknowledgement always confirms a durable restriction on future starts.
+`cancellationConfirmed()` is true only for a fenced local non-start or qualified
+provider proof of no effect. The official helper returns the A2A Task directly;
+`requested` preserves an in-flight or uncertain provider outcome.
 `providerAbort()` separately reports `restricted_only`, `uncertain`, or finality
 accepted by the qualified reconciliation verifier; it is absent when no registered
 attempt needs intervention. A stop never refunds spent budget. Uncertain work retains

@@ -1,14 +1,18 @@
 package acteon
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -31,6 +35,65 @@ type AgentServiceReceipt struct {
 	Task          map[string]any `json:"task"`
 }
 
+// AgentServiceListOptions are official A2A filters for one exact agent.
+type AgentServiceListOptions struct {
+	Source               *AgentServiceReceipt
+	ContextID            string
+	Status               string
+	PageSize             int
+	PageToken            string
+	HistoryLength        *int
+	StatusTimestampAfter *time.Time
+	IncludeArtifacts     bool
+}
+
+// AgentServiceTaskPage is a schema-validated official A2A ListTasks result.
+type AgentServiceTaskPage struct {
+	Tasks         []map[string]any
+	NextPageToken string
+	PageSize      int
+	TotalSize     int
+}
+
+type AgentServicePushAuthentication struct {
+	Scheme      string
+	Credentials *string
+}
+
+type AgentServicePushConfigInput struct {
+	ID             string
+	URL            string
+	Token          *string
+	Authentication *AgentServicePushAuthentication
+}
+
+type AgentServicePushConfig struct {
+	ID             string
+	TaskID         string
+	URL            string
+	Token          *string
+	Authentication *AgentServicePushAuthentication
+}
+
+type AgentServicePushConfigListOptions struct {
+	PageSize  int
+	PageToken string
+	Source    *AgentServiceReceipt
+}
+
+type AgentServicePushConfigPage struct {
+	Configs       []AgentServicePushConfig
+	NextPageToken string
+}
+
+// AgentServiceA2AFrame is one official StreamResponse. SourceContext is
+// host-owned admission provenance and never comes from Result.
+type AgentServiceA2AFrame struct {
+	Result        map[string]any
+	SourceContext string
+	Err           error
+}
+
 func agentSource(value string) error {
 	if len(value) == 0 || len(value) > 8192 || !agentSourcePattern.MatchString(value) {
 		return fmt.Errorf("agent service source context missing or malformed")
@@ -44,6 +107,13 @@ func agentSegment(value string) (string, error) {
 	return url.PathEscape(value), nil
 }
 func agentServiceBase(namespace, tenant, agent string) (string, error) {
+	base, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return "", err
+	}
+	return base + "/v1", nil
+}
+func agentServiceRPCBase(namespace, tenant, agent string) (string, error) {
 	n, err := agentSegment(namespace)
 	if err != nil {
 		return "", err
@@ -56,7 +126,7 @@ func agentServiceBase(namespace, tenant, agent string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "/a2a/" + n + "/" + t + "/agents/" + a + "/v1", nil
+	return "/a2a/" + n + "/" + t + "/agents/" + a, nil
 }
 
 type AgentServiceParent struct {
@@ -262,6 +332,500 @@ func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, namespac
 		return nil, err
 	}
 	return &AgentServiceReceipt{Namespace: namespace, Tenant: tenant, Agent: agent, TaskID: id, SourceContext: source, Task: task}, nil
+}
+
+// AgentServiceSendStreamingMessage invokes one exact governed agent through
+// official A2A SSE. Stream errors are delivered as a final frame with Err set.
+func (c *Client) AgentServiceSendStreamingMessage(ctx context.Context, namespace, tenant, agent string, message map[string]any) (<-chan *AgentServiceA2AFrame, error) {
+	return c.AgentServiceSendStreamingMessageWithParent(ctx, namespace, tenant, agent, message, nil)
+}
+
+// AgentServiceSendStreamingMessageWithParent carries existing verified
+// authority into an official A2A streaming invocation.
+func (c *Client) AgentServiceSendStreamingMessageWithParent(ctx context.Context, namespace, tenant, agent string, message map[string]any, parent *AgentServiceParent) (<-chan *AgentServiceA2AFrame, error) {
+	messageID, ok := message["messageId"].(string)
+	if !ok || messageID == "" {
+		return nil, fmt.Errorf("streaming message requires messageId")
+	}
+	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	requestID := "stream:" + messageID
+	headers := map[string]string{}
+	if parent != nil {
+		if err := agentSource(parent.ExecutionContext); err != nil || len(parent.Permits) == 0 {
+			return nil, fmt.Errorf("delegated agent service parent is malformed")
+		}
+		permits, err := json.Marshal(parent.Permits)
+		if err != nil {
+			return nil, err
+		}
+		headers[AgentExecutionContextHeader] = parent.ExecutionContext
+		headers["x-acteon-execution-permits"] = string(permits)
+	}
+	return c.openAgentServiceA2A(ctx, path, requestID, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "SendStreamingMessage",
+		"params": map[string]any{"message": message},
+	}, headers, true)
+}
+
+// AgentServiceSubscribeTask subscribes to one retained governed Task through
+// official A2A SSE using its host-owned source receipt.
+func (c *Client) AgentServiceSubscribeTask(ctx context.Context, receipt *AgentServiceReceipt) (<-chan *AgentServiceA2AFrame, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	path, err := agentServiceRPCBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	requestID := "subscribe:" + receipt.TaskID
+	return c.openAgentServiceA2A(ctx, path, requestID, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "SubscribeToTask",
+		"params": map[string]any{"id": receipt.TaskID},
+	}, map[string]string{AgentSourceContextHeader: receipt.SourceContext}, false)
+}
+
+// AgentServiceCancelTask requests official A2A cancellation. A nonterminal
+// result means the durable fence is active while provider finality is pending.
+func (c *Client) AgentServiceCancelTask(ctx context.Context, receipt *AgentServiceReceipt) (map[string]any, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	path, err := agentServiceRPCBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	requestID := "cancel:" + receipt.TaskID
+	rpc, _, err := c.agentServiceRequest(ctx, http.MethodPost, path, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "CancelTask",
+		"params": map[string]any{"id": receipt.TaskID},
+	}, receipt.SourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rpc["jsonrpc"] != "2.0" || rpc["id"] != requestID {
+		return nil, fmt.Errorf("agent service A2A response request identity mismatch")
+	}
+	if failure, ok := rpc["error"].(map[string]any); ok {
+		return nil, fmt.Errorf("A2A error %v: %v", failure["code"], failure["message"])
+	}
+	task, ok := rpc["result"].(map[string]any)
+	if !ok || task["id"] != receipt.TaskID {
+		return nil, fmt.Errorf("agent service A2A cancellation task identity mismatch")
+	}
+	if _, ok := task["status"].(map[string]any); !ok {
+		return nil, fmt.Errorf("agent service A2A cancellation task identity mismatch")
+	}
+	return task, nil
+}
+
+// AgentServiceListTasks lists only tasks visible to the current authenticated
+// source. Source narrows visibility to one job and is required for agent principals.
+func (c *Client) AgentServiceListTasks(ctx context.Context, namespace, tenant, agent string, options AgentServiceListOptions) (*AgentServiceTaskPage, error) {
+	if options.PageSize < 0 || options.PageSize > 100 {
+		return nil, fmt.Errorf("invalid agent service ListTasks pagination")
+	}
+	if len(options.PageToken) > 8192 || options.HistoryLength != nil && (*options.HistoryLength < 0 || *options.HistoryLength > math.MaxInt32) {
+		return nil, fmt.Errorf("invalid agent service ListTasks pagination")
+	}
+	states := map[string]bool{
+		"": true, "TASK_STATE_UNSPECIFIED": true, "TASK_STATE_SUBMITTED": true,
+		"TASK_STATE_WORKING": true, "TASK_STATE_COMPLETED": true, "TASK_STATE_FAILED": true,
+		"TASK_STATE_CANCELED": true, "TASK_STATE_INPUT_REQUIRED": true,
+		"TASK_STATE_AUTH_REQUIRED": true, "TASK_STATE_REJECTED": true,
+	}
+	if !states[options.Status] {
+		return nil, fmt.Errorf("invalid A2A task status")
+	}
+	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	sourceContext := ""
+	if options.Source != nil {
+		if options.Source.Namespace != namespace || options.Source.Tenant != tenant || options.Source.Agent != agent {
+			return nil, fmt.Errorf("agent service ListTasks receipt does not match the route")
+		}
+		if err := agentSource(options.Source.SourceContext); err != nil {
+			return nil, err
+		}
+		sourceContext = options.Source.SourceContext
+	}
+	params := map[string]any{}
+	if options.ContextID != "" {
+		params["contextId"] = options.ContextID
+	}
+	if options.Status != "" {
+		params["status"] = options.Status
+	}
+	if options.PageSize != 0 {
+		params["pageSize"] = options.PageSize
+	}
+	if options.PageToken != "" {
+		params["pageToken"] = options.PageToken
+	}
+	if options.HistoryLength != nil {
+		params["historyLength"] = *options.HistoryLength
+	}
+	if options.StatusTimestampAfter != nil {
+		params["statusTimestampAfter"] = options.StatusTimestampAfter.UTC().Format(time.RFC3339Nano)
+	}
+	if options.IncludeArtifacts {
+		params["includeArtifacts"] = true
+	}
+	requestID := "list:" + agent
+	rpc, _, err := c.agentServiceRequest(ctx, http.MethodPost, path, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "ListTasks", "params": params,
+	}, sourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rpc["jsonrpc"] != "2.0" || rpc["id"] != requestID {
+		return nil, fmt.Errorf("agent service A2A response request identity mismatch")
+	}
+	if failure, ok := rpc["error"].(map[string]any); ok {
+		return nil, fmt.Errorf("A2A error %v: %v", failure["code"], failure["message"])
+	}
+	result, ok := rpc["result"].(map[string]any)
+	if !ok || len(result) != 4 {
+		return nil, fmt.Errorf("agent service A2A task page is malformed")
+	}
+	rawTasks, ok := result["tasks"].([]any)
+	pageSize, pageOK := exactJSONInt(result["pageSize"])
+	totalSize, totalOK := exactJSONInt(result["totalSize"])
+	token, tokenOK := result["nextPageToken"].(string)
+	if !ok || !pageOK || !totalOK || !tokenOK || pageSize < 1 || pageSize > 100 || len(token) > 8192 || len(rawTasks) > pageSize || totalSize < len(rawTasks) {
+		return nil, fmt.Errorf("agent service A2A task page is malformed")
+	}
+	tasks := make([]map[string]any, 0, len(rawTasks))
+	for _, value := range rawTasks {
+		task, ok := value.(map[string]any)
+		id, idOK := task["id"].(string)
+		status, statusOK := task["status"].(map[string]any)
+		state, stateOK := status["state"].(string)
+		validState := map[string]bool{
+			"TASK_STATE_SUBMITTED": true, "TASK_STATE_WORKING": true,
+			"TASK_STATE_COMPLETED": true, "TASK_STATE_FAILED": true,
+			"TASK_STATE_CANCELED": true, "TASK_STATE_INPUT_REQUIRED": true,
+			"TASK_STATE_AUTH_REQUIRED": true, "TASK_STATE_REJECTED": true,
+		}[state]
+		_, hasNamespace := task["namespace"]
+		_, hasTenant := task["tenant"]
+		metadata, _ := task["metadata"].(map[string]any)
+		_, hasPrivate := metadata["acteon_governed_execution"]
+		if !ok || !idOK || id == "" || !statusOK || !stateOK || !validState || hasNamespace || hasTenant || hasPrivate {
+			return nil, fmt.Errorf("agent service A2A task projection is invalid")
+		}
+		tasks = append(tasks, task)
+	}
+	return &AgentServiceTaskPage{Tasks: tasks, NextPageToken: token, PageSize: pageSize, TotalSize: totalSize}, nil
+}
+
+func pushConfigInput(taskID string, input AgentServicePushConfigInput) (map[string]any, error) {
+	if taskID == "" || input.URL == "" {
+		return nil, fmt.Errorf("task ID and push URL must not be empty")
+	}
+	if input.Token != nil && len(*input.Token) > 4096 {
+		return nil, fmt.Errorf("push token is too large")
+	}
+	params := map[string]any{"taskId": taskID, "url": input.URL}
+	if input.ID != "" {
+		params["id"] = input.ID
+	}
+	if input.Token != nil {
+		params["token"] = *input.Token
+	}
+	if input.Authentication != nil {
+		auth := input.Authentication
+		if strings.TrimSpace(auth.Scheme) == "" || len(auth.Scheme) > 256 || auth.Credentials != nil && len(*auth.Credentials) > 4096 {
+			return nil, fmt.Errorf("push authentication is invalid")
+		}
+		value := map[string]any{"scheme": auth.Scheme}
+		if auth.Credentials != nil {
+			value["credentials"] = *auth.Credentials
+		}
+		params["authentication"] = value
+	}
+	return params, nil
+}
+
+func parsePushConfig(value map[string]any, taskID, expectedID string) (*AgentServicePushConfig, error) {
+	if len(value) < 3 || len(value) > 5 {
+		return nil, fmt.Errorf("agent service A2A push configuration is invalid")
+	}
+	for key := range value {
+		if key != "id" && key != "taskId" && key != "url" && key != "token" && key != "authentication" {
+			return nil, fmt.Errorf("agent service A2A push configuration fields are invalid")
+		}
+	}
+	id, idOK := value["id"].(string)
+	pushURL, urlOK := value["url"].(string)
+	if !idOK || id == "" || expectedID != "" && id != expectedID || value["taskId"] != taskID || !urlOK || pushURL == "" {
+		return nil, fmt.Errorf("agent service A2A push configuration is invalid")
+	}
+	config := &AgentServicePushConfig{ID: id, TaskID: taskID, URL: pushURL}
+	if token, present := value["token"]; present {
+		text, ok := token.(string)
+		if !ok || len(text) > 4096 {
+			return nil, fmt.Errorf("agent service A2A push configuration is invalid")
+		}
+		config.Token = &text
+	}
+	if raw, present := value["authentication"]; present {
+		auth, ok := raw.(map[string]any)
+		if !ok || len(auth) < 1 || len(auth) > 2 {
+			return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+		}
+		for key := range auth {
+			if key != "scheme" && key != "credentials" {
+				return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+			}
+		}
+		scheme, ok := auth["scheme"].(string)
+		if !ok || strings.TrimSpace(scheme) == "" || len(scheme) > 256 {
+			return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+		}
+		parsed := &AgentServicePushAuthentication{Scheme: scheme}
+		if credentials, present := auth["credentials"]; present {
+			text, ok := credentials.(string)
+			if !ok || len(text) > 4096 {
+				return nil, fmt.Errorf("agent service A2A push authentication is invalid")
+			}
+			parsed.Credentials = &text
+		}
+		config.Authentication = parsed
+	}
+	return config, nil
+}
+
+func (c *Client) agentServicePushRPC(ctx context.Context, namespace, tenant, agent, taskID, method string, params map[string]any, source *AgentServiceReceipt) (map[string]any, error) {
+	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	sourceContext := ""
+	if source != nil {
+		if source.Namespace != namespace || source.Tenant != tenant || source.Agent != agent || source.TaskID != taskID {
+			return nil, fmt.Errorf("agent service push receipt does not match the route or task")
+		}
+		if err := agentSource(source.SourceContext); err != nil {
+			return nil, err
+		}
+		sourceContext = source.SourceContext
+	}
+	requestID := "push:" + method + ":" + taskID
+	rpc, _, err := c.agentServiceRequest(ctx, http.MethodPost, path, map[string]any{"jsonrpc": "2.0", "id": requestID, "method": method, "params": params}, sourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rpc["jsonrpc"] != "2.0" || rpc["id"] != requestID {
+		return nil, fmt.Errorf("agent service A2A response request identity mismatch")
+	}
+	if failure, ok := rpc["error"].(map[string]any); ok {
+		return nil, fmt.Errorf("A2A error %v: %v", failure["code"], failure["message"])
+	}
+	result, ok := rpc["result"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent service A2A response has no object result")
+	}
+	return result, nil
+}
+
+func (c *Client) AgentServiceCreatePushConfig(ctx context.Context, namespace, tenant, agent, taskID string, input AgentServicePushConfigInput, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
+	params, err := pushConfigInput(taskID, input)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "CreateTaskPushNotificationConfig", params, source)
+	if err != nil {
+		return nil, err
+	}
+	return parsePushConfig(value, taskID, input.ID)
+}
+
+func (c *Client) AgentServiceGetPushConfig(ctx context.Context, namespace, tenant, agent, taskID, configID string, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "GetTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
+	if err != nil {
+		return nil, err
+	}
+	return parsePushConfig(value, taskID, configID)
+}
+
+func (c *Client) AgentServiceListPushConfigs(ctx context.Context, namespace, tenant, agent, taskID string, options AgentServicePushConfigListOptions) (*AgentServicePushConfigPage, error) {
+	if options.PageSize < 0 || options.PageSize > 100 || len(options.PageToken) > 8192 {
+		return nil, fmt.Errorf("invalid push configuration pagination")
+	}
+	params := map[string]any{"taskId": taskID}
+	if options.PageSize != 0 {
+		params["pageSize"] = options.PageSize
+	}
+	if options.PageToken != "" {
+		params["pageToken"] = options.PageToken
+	}
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "ListTaskPushNotificationConfigs", params, options.Source)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 2 {
+		return nil, fmt.Errorf("agent service A2A push page is invalid")
+	}
+	token, tokenOK := value["nextPageToken"].(string)
+	raw, configsOK := value["configs"].([]any)
+	if !tokenOK || len(token) > 8192 || !configsOK {
+		return nil, fmt.Errorf("agent service A2A push page is invalid")
+	}
+	configs := make([]AgentServicePushConfig, 0, len(raw))
+	for _, item := range raw {
+		config, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("agent service A2A push page is invalid")
+		}
+		parsed, err := parsePushConfig(config, taskID, "")
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, *parsed)
+	}
+	return &AgentServicePushConfigPage{Configs: configs, NextPageToken: token}, nil
+}
+
+func (c *Client) AgentServiceDeletePushConfig(ctx context.Context, namespace, tenant, agent, taskID, configID string, source *AgentServiceReceipt) error {
+	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "DeleteTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
+	if err != nil {
+		return err
+	}
+	if len(value) != 0 {
+		return fmt.Errorf("agent service A2A delete result is invalid")
+	}
+	return nil
+}
+
+func exactJSONInt(value any) (int, bool) {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number > math.MaxInt32 || math.Trunc(number) != number {
+		return 0, false
+	}
+	return int(number), true
+}
+
+func (c *Client) openAgentServiceA2A(ctx context.Context, path, requestID string, envelope map[string]any, extraHeaders map[string]string, requireSource bool) (<-chan *AgentServiceA2AFrame, error) {
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(A2AVersionHeader, A2AProtocolVersion)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
+	streamClient := *c.httpClient
+	streamClient.Timeout = 0
+	streamClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &HTTPError{Status: resp.StatusCode, Message: string(data)}
+	}
+	if resp.Header.Get(A2AVersionHeader) != A2AProtocolVersion {
+		resp.Body.Close()
+		return nil, fmt.Errorf("agent service A2A stream version missing or unsupported")
+	}
+	if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		resp.Body.Close()
+		return nil, fmt.Errorf("agent service did not return an A2A SSE stream")
+	}
+	source := ""
+	if requireSource {
+		source = resp.Header.Get(AgentSourceContextHeader)
+		if err := agentSource(source); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+	}
+	frames := make(chan *AgentServiceA2AFrame, 64)
+	go func() {
+		defer close(frames)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		const maxFrame = 2 << 20
+		scanner.Buffer(make([]byte, 0, 64*1024), maxFrame)
+		var data []string
+		size := 0
+		send := func(frame *AgentServiceA2AFrame) bool {
+			select {
+			case frames <- frame:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		flush := func() bool {
+			if len(data) == 0 {
+				return true
+			}
+			var rpc struct {
+				JSONRPC string         `json:"jsonrpc"`
+				ID      string         `json:"id"`
+				Result  map[string]any `json:"result"`
+				Error   map[string]any `json:"error"`
+			}
+			err := json.Unmarshal([]byte(strings.Join(data, "\n")), &rpc)
+			data, size = nil, 0
+			if err != nil || rpc.JSONRPC != "2.0" || rpc.ID != requestID {
+				return send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A SSE frame request identity mismatch")}) && false
+			}
+			if rpc.Error != nil {
+				return send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A stream error: %v", rpc.Error)}) && false
+			}
+			if rpc.Result == nil {
+				return send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A SSE frame has no object result")}) && false
+			}
+			return send(&AgentServiceA2AFrame{Result: rpc.Result, SourceContext: source})
+		}
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				if !flush() {
+					return
+				}
+			} else if strings.HasPrefix(line, "data:") {
+				value := strings.TrimPrefix(line, "data:")
+				value = strings.TrimPrefix(value, " ")
+				size += len(value)
+				if size > maxFrame {
+					send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A SSE frame exceeds 2 MiB")})
+					return
+				}
+				data = append(data, value)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			send(&AgentServiceA2AFrame{Err: &ConnectionError{Message: err.Error()}})
+			return
+		}
+		flush()
+	}()
+	return frames, nil
 }
 
 // AgentServiceSendPeer submits from an accepted source task to one configured
@@ -812,9 +1376,10 @@ func agentProviderAbort(value any) (*AgentServiceProviderAbort, error) {
 // AgentServiceStopReceipt acknowledges a durable restriction on future starts.
 // Task remains actual provider evidence; ProviderAbort reports separate finality.
 type AgentServiceStopReceipt struct {
-	Task                map[string]any             `json:"task"`
-	FutureStartsBlocked bool                       `json:"future_starts_blocked"`
-	ProviderAbort       *AgentServiceProviderAbort `json:"provider_abort,omitempty"`
+	Task                  map[string]any             `json:"task"`
+	FutureStartsBlocked   bool                       `json:"future_starts_blocked"`
+	CancellationConfirmed bool                       `json:"cancellation_confirmed"`
+	ProviderAbort         *AgentServiceProviderAbort `json:"provider_abort,omitempty"`
 }
 
 // AgentServiceStopTask stops future starts for the original retained job.
@@ -842,6 +1407,10 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if !ok || !blocked {
 		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
 	}
+	confirmed, ok := value["cancellation_confirmed"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
+	}
 	task, ok := value["task"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("agent service task identity mismatch")
@@ -849,9 +1418,12 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if _, err := agentTask(task, receipt.Namespace, receipt.Tenant, receipt.TaskID); err != nil {
 		return nil, err
 	}
+	if status, _ := task["status"].(map[string]any); confirmed && status["state"] != "canceled" {
+		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
+	}
 	abort, err := agentProviderAbort(value["provider_abort"])
 	if err != nil {
 		return nil, err
 	}
-	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true, ProviderAbort: abort}, nil
+	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true, CancellationConfirmed: confirmed, ProviderAbort: abort}, nil
 }

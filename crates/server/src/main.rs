@@ -78,6 +78,15 @@ enum Commands {
         #[arg(long)]
         review_digest: Option<String>,
     },
+    /// Preview or apply the reviewed backend-wide A2A callback cutover.
+    A2aPushCutover {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        review_digest: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -96,10 +105,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_encrypt();
     }
 
-    if matches!(&cli.command, Some(Commands::ScopeUpgrade { .. }))
-        && !Path::new(&cli.config).exists()
+    if matches!(
+        &cli.command,
+        Some(Commands::ScopeUpgrade { .. } | Commands::A2aPushCutover { .. })
+    ) && !Path::new(&cli.config).exists()
     {
-        return Err("scope upgrade requires an existing backend configuration file".into());
+        return Err(
+            "state migration commands require an existing backend configuration file".into(),
+        );
     }
 
     // Load configuration from TOML file, or use defaults if the file does not exist.
@@ -172,6 +185,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if let Some(Commands::A2aPushCutover {
+        actor,
+        reason,
+        review_digest,
+    }) = cli.command
+    {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        let (store, _lock) = acteon_server::state_factory::create_state(&config.state).await?;
+        let plan =
+            acteon_server::a2a_push_cutover::A2aPushCutoverPlan::preview(store, actor, reason)
+                .await?;
+        let status = if let Some(digest) = review_digest {
+            if plan.apply(&digest).await? {
+                "applied"
+            } else {
+                "already_applied"
+            }
+        } else {
+            "preview"
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"status": status, "plan": plan.report()})
+            )?
+        );
+        return Ok(());
+    }
+
     config.server.validate_exposure(
         cli.host.as_deref().unwrap_or(&config.server.host),
         config.auth.enabled,
@@ -196,11 +244,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Resolve every external finality trust root before publishing any authority.
+    acteon_server::config::validate_finality_source_key_separation(
+        &config.reconciliation_sources,
+        &config.federation_finality_sources,
+        |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+    )?;
+    acteon_server::config::validate_federation_capability_key_separation(
+        config.execution_authority.as_ref(),
+        &config.reconciliation_sources,
+        &config.federation_finality_sources,
+        |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+    )?;
     let reconciliation_installations = acteon_server::config::prepare_reconciliation_sources(
         &config.reconciliation_sources,
         config.execution_authority.as_ref(),
         |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
     )?;
+    let federation_finality_installations =
+        acteon_server::config::prepare_federation_finality_sources(
+            &config.federation_finality_sources,
+            config.execution_authority.as_ref(),
+            |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+        )?;
 
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
@@ -256,6 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the state backend.
     let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
+    acteon_server::a2a_push_cutover::verify_a2a_push_cutover_fence(store.as_ref()).await?;
 
     // Create the audit store if enabled.
     let audit_store = if config.audit.enabled {
@@ -1685,16 +1751,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state: store.clone(),
                 executor: exec_config.clone(),
                 clock: Arc::new(acteon_time::SystemClock::default()),
+                stream_tx: Some(gateway.stream_tx().clone()),
+                audit: gateway.audit_store(),
                 encryptor: payload_encryptor.clone(),
                 outbound_tls: loaded_outbound_tls.clone(),
                 signing_key: zeroize::Zeroizing::new(key.expose_secret().as_bytes().to_vec()),
             },
         )
         .await?;
-        let runtime = Arc::new(if reconciliation_installations.is_empty() {
+        let runtime = if reconciliation_installations.is_empty() {
             runtime
         } else {
             runtime.with_trusted_reconciliation_verifiers(reconciliation_installations)?
+        };
+        let runtime = Arc::new(if federation_finality_installations.is_empty() {
+            runtime
+        } else {
+            runtime.with_trusted_federation_finality_verifiers(federation_finality_installations)?
         });
         gateway.install_provider_execution_mediator(runtime.mediator());
         gateway.install_chain_execution_mediator(runtime.clone());
@@ -2029,10 +2102,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?,
             rx,
         );
-        let worker = match config.executor.dlq_retention_seconds {
-            Some(seconds) => worker.with_dlq_retention(Duration::from_secs(seconds)),
-            None => worker,
-        };
         tokio::spawn(worker.run())
     };
 

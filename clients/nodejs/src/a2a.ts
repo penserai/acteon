@@ -95,8 +95,8 @@ export interface MakePushConfigOptions {
   /** Pre-allocate the config id (UUIDv7 by convention). Omit to let
    *  the server mint one. */
   id?: string;
-  /** Optional bearer token sent in
-   *  `Authorization: Bearer <token>` on every push POST. */
+  /** Optional callback token sent in
+   *  `X-A2A-Notification-Token` on every push POST. */
   token?: string;
   /** Optional richer authentication metadata. */
   authentication?: Record<string, unknown>;

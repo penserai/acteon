@@ -76,7 +76,10 @@ bus and swarm paths refer to their corresponding crates.
 
 ## Storage evidence and coordinator prototype contract
 
-StateStore exposes atomic check-and-set, versioned reads and single-key CAS. It
+StateStore exposes atomic check-and-set, versioned reads, single-key CAS and
+stable ordered scope/kind pages. PostgreSQL and DynamoDB implement paging with
+native ordered queries; Redis maintains a sorted index with lazy legacy-row
+backfill and stale-member pruning. It
 has no generic multi-key transaction. Existing DynamoDB versioned reads request
 strong consistency; backend correctness still needs an end-to-end coordinator
 contract test, including failure and replica behavior.

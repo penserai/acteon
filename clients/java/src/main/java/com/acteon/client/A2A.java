@@ -138,8 +138,8 @@ public final class A2A {
         /** Pre-allocated config id (UUIDv7 by convention). Null
          *  lets the server mint one. */
         public String id;
-        /** Optional bearer token sent in
-         *  {@code Authorization: Bearer <token>} on every push
+        /** Optional callback token sent in
+         *  {@code X-A2A-Notification-Token} on every push
          *  POST. */
         public String token;
         /** Optional richer authentication metadata. */

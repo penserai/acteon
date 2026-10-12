@@ -44,6 +44,179 @@ type PublishGovernancePermitRequest struct {
 	Permit           GovernancePermitDeclaration `json:"permit"`
 	Reason           string                      `json:"reason"`
 }
+type FederationGrantCeilingDeclaration struct {
+	Source        PrincipalIdentity  `json:"source"`
+	Target        PrincipalIdentity  `json:"target"`
+	AgentResource GovernanceResource `json:"agent_resource"`
+	BindingDigest string             `json:"binding_digest"`
+	Skill         string             `json:"skill"`
+	IngressEffect GovernanceEffect   `json:"ingress_effect"`
+	Effects       []GovernanceEffect `json:"effects"`
+	Limits        GovernanceLimits   `json:"limits"`
+	MaxDepth      uint64             `json:"max_depth"`
+}
+type FederationTrustDeclaration struct {
+	ID                       string                              `json:"id"`
+	Revision                 uint64                              `json:"revision"`
+	ForeignDomain            string                              `json:"foreign_domain"`
+	LocalAudience            string                              `json:"local_audience"`
+	KeyID                    string                              `json:"key_id"`
+	VerifyingKey             string                              `json:"verifying_key"`
+	MinimumIssuerEpoch       uint64                              `json:"minimum_issuer_epoch"`
+	MaxRevocationStalenessMs int64                               `json:"max_revocation_staleness_ms"`
+	MaxClockSkewMs           int64                               `json:"max_clock_skew_ms"`
+	ValidFromMs              int64                               `json:"valid_from_ms"`
+	DeadlineMs               int64                               `json:"deadline_ms"`
+	Approved                 []FederationGrantCeilingDeclaration `json:"approved"`
+}
+type PublishFederationTrustRequest struct {
+	Namespace        string                     `json:"namespace"`
+	Tenant           string                     `json:"tenant"`
+	ChangeID         string                     `json:"change_id"`
+	ExpectedRevision uint64                     `json:"expected_revision"`
+	Trust            FederationTrustDeclaration `json:"trust"`
+	Reason           string                     `json:"reason"`
+}
+type RevokeFederationTrustRequest struct {
+	Namespace        string `json:"namespace"`
+	Tenant           string `json:"tenant"`
+	ChangeID         string `json:"change_id"`
+	TrustID          string `json:"trust_id"`
+	ExpectedRevision uint64 `json:"expected_revision"`
+	Reason           string `json:"reason"`
+}
+type SignedFederationEnvelopeDeclaration struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+type SignedFederationCapabilityCard struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+
+type SignedFederationInvocationDeclaration struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+type FederationImportReceipt struct {
+	Namespace        string             `json:"namespace"`
+	Tenant           string             `json:"tenant"`
+	ImportID         string             `json:"import_id"`
+	EnvelopeDigest   string             `json:"envelope_digest"`
+	TrustID          string             `json:"trust_id"`
+	TrustRevision    uint64             `json:"trust_revision"`
+	IssuerDomain     string             `json:"issuer_domain"`
+	Source           PrincipalIdentity  `json:"source"`
+	Target           PrincipalIdentity  `json:"target"`
+	AgentResource    GovernanceResource `json:"agent_resource"`
+	BindingDigest    string             `json:"binding_digest"`
+	Skill            string             `json:"skill"`
+	RootID           string             `json:"root_id"`
+	ExpiresAtMs      int64              `json:"expires_at_ms"`
+	AcceptedAtMs     int64              `json:"accepted_at_ms"`
+	ExecutionStarted bool               `json:"execution_started"`
+}
+type FederationExportDelivery struct {
+	Status      string                         `json:"status"`
+	Receipt     *FederationImportReceipt       `json:"receipt,omitempty"`
+	Task        map[string]any                 `json:"task,omitempty"`
+	Stage       string                         `json:"stage,omitempty"`
+	Code        string                         `json:"code,omitempty"`
+	Abandonment *FederationDeliveryAbandonment `json:"abandonment,omitempty"`
+}
+type FederationExportReceipt struct {
+	AttemptID     string                   `json:"attempt_id"`
+	AttemptStatus string                   `json:"attempt_status"`
+	DeliveryID    string                   `json:"delivery_id"`
+	Delivery      FederationExportDelivery `json:"delivery"`
+}
+type FederationDeliveryEvidenceStatus struct {
+	Status           string                         `json:"status"`
+	ClaimExpiresAtMs *int64                         `json:"claim_expires_at_ms,omitempty"`
+	Stage            string                         `json:"stage,omitempty"`
+	Code             string                         `json:"code,omitempty"`
+	Abandonment      *FederationDeliveryAbandonment `json:"abandonment,omitempty"`
+}
+type FederationDeliveryAbandonment struct {
+	DispositionID        string            `json:"disposition_id"`
+	Operator             PrincipalIdentity `json:"operator"`
+	AuthorityIncarnation string            `json:"authority_incarnation"`
+	AuthorityGeneration  uint64            `json:"authority_generation"`
+	Reason               string            `json:"reason"`
+	RecordedAtMs         int64             `json:"recorded_at_ms"`
+}
+type AbandonFederationDeliveryRequest struct {
+	Namespace     string `json:"namespace"`
+	Tenant        string `json:"tenant"`
+	DispositionID string `json:"disposition_id"`
+	Reason        string `json:"reason"`
+}
+type ReconcileFederationDeliveryRequest struct {
+	Namespace   string `json:"namespace"`
+	Tenant      string `json:"tenant"`
+	ProofBase64 string `json:"proof_base64"`
+}
+type FederationDeliveryFinalityEvidence struct {
+	Stage                string            `json:"stage"`
+	Accepted             bool              `json:"accepted"`
+	SourceID             string            `json:"source_id"`
+	QualificationRef     string            `json:"qualification_ref"`
+	VerifierRevision     string            `json:"verifier_revision"`
+	ProofDigest          string            `json:"proof_digest"`
+	Operator             PrincipalIdentity `json:"operator"`
+	AuthorityIncarnation string            `json:"authority_incarnation"`
+	AuthorityGeneration  uint64            `json:"authority_generation"`
+	AcceptedAtMs         int64             `json:"accepted_at_ms"`
+}
+type FederationFinalityCorrelation struct {
+	DeliveryID        string            `json:"delivery_id"`
+	Stage             string            `json:"stage"`
+	ParentExecutionID string            `json:"parent_execution_id"`
+	Source            PrincipalIdentity `json:"source"`
+	AdapterRevision   string            `json:"adapter_revision"`
+	BindingDigest     string            `json:"binding_digest"`
+	EnvelopeDigest    string            `json:"envelope_digest"`
+	InvocationDigest  string            `json:"invocation_digest"`
+	ImportID          string            `json:"import_id"`
+	InvocationNonce   string            `json:"invocation_nonce"`
+	AgentID           string            `json:"agent_id"`
+	MessageID         string            `json:"message_id"`
+}
+type FederationDeliveryEvidence struct {
+	DeliveryID            string                               `json:"delivery_id"`
+	ParentExecutionID     string                               `json:"parent_execution_id"`
+	Source                PrincipalIdentity                    `json:"source"`
+	AgentID               string                               `json:"agent_id"`
+	MessageID             string                               `json:"message_id"`
+	TrustID               string                               `json:"trust_id"`
+	TrustRevision         uint64                               `json:"trust_revision"`
+	KeyID                 string                               `json:"key_id"`
+	IssuerEpoch           uint64                               `json:"issuer_epoch"`
+	CreatedAtMs           int64                                `json:"created_at_ms"`
+	ExpiresAtMs           int64                                `json:"expires_at_ms"`
+	Expired               bool                                 `json:"expired"`
+	ExactReplayIdempotent bool                                 `json:"exact_replay_idempotent"`
+	Capability            *FederationCapabilityEvidence        `json:"capability"`
+	Status                FederationDeliveryEvidenceStatus     `json:"status"`
+	Reconciliations       []FederationDeliveryFinalityEvidence `json:"reconciliations"`
+}
+type FederationCapabilityEvidence struct {
+	CardDigest           string `json:"card_digest"`
+	KeyID                string `json:"key_id"`
+	IssuerEpoch          uint64 `json:"issuer_epoch"`
+	ExpiresAtMs          int64  `json:"expires_at_ms"`
+	ProtocolRevision     string `json:"protocol_revision"`
+	AuthenticationScheme string `json:"authentication_scheme"`
+	CredentialRevision   string `json:"credential_revision"`
+}
+type FederationDeliveryEvidencePage struct {
+	Deliveries []FederationDeliveryEvidence `json:"deliveries"`
+	NextCursor *string                      `json:"next_cursor"`
+}
+type FederationTrustView struct {
+	Trust   FederationTrustDeclaration `json:"trust"`
+	Revoked bool                       `json:"revoked"`
+}
 
 // Exactly the fields appropriate to Kind must be set; the server rejects unknown fields.
 type GovernanceIntervention struct {
@@ -85,24 +258,26 @@ type GovernanceRouteView struct {
 	Closed bool             `json:"closed"`
 }
 type GovernanceManagementBounds struct {
-	Subjects        []PrincipalIdentity `json:"subjects"`
-	CanIssuePermits bool                `json:"can_issue_permits"`
-	CanIntervene    bool                `json:"can_intervene"`
-	CanReadHistory  bool                `json:"can_read_history,omitempty"`
-	CanReconcile    bool                `json:"can_reconcile,omitempty"`
-	ValidFromMs     int64               `json:"valid_from_ms"`
-	Limits          GovernanceLimits    `json:"limits"`
+	Subjects            []PrincipalIdentity `json:"subjects"`
+	CanIssuePermits     bool                `json:"can_issue_permits"`
+	CanIntervene        bool                `json:"can_intervene"`
+	CanReadHistory      bool                `json:"can_read_history,omitempty"`
+	CanReconcile        bool                `json:"can_reconcile,omitempty"`
+	CanManageFederation bool                `json:"can_manage_federation,omitempty"`
+	ValidFromMs         int64               `json:"valid_from_ms"`
+	Limits              GovernanceLimits    `json:"limits"`
 }
 type GovernanceScopeView struct {
-	Management      GovernanceManagementBounds `json:"management"`
-	Namespace       string                     `json:"namespace"`
-	Tenant          string                     `json:"tenant"`
-	Incarnation     string                     `json:"incarnation"`
-	Generation      uint64                     `json:"generation"`
-	Routes          []GovernanceRouteView      `json:"routes"`
-	Permits         []GovernancePermitView     `json:"permits"`
-	ClosedResources []GovernanceResource       `json:"closed_resources"`
-	RevokedSubjects []string                   `json:"revoked_subjects"`
+	Management       GovernanceManagementBounds `json:"management"`
+	Namespace        string                     `json:"namespace"`
+	Tenant           string                     `json:"tenant"`
+	Incarnation      string                     `json:"incarnation"`
+	Generation       uint64                     `json:"generation"`
+	Routes           []GovernanceRouteView      `json:"routes"`
+	Permits          []GovernancePermitView     `json:"permits"`
+	ClosedResources  []GovernanceResource       `json:"closed_resources"`
+	RevokedSubjects  []string                   `json:"revoked_subjects"`
+	FederationTrusts []FederationTrustView      `json:"federation_trusts,omitempty"`
 }
 
 func (c *Client) Governance(ctx context.Context, namespace, tenant string) (*GovernanceScopeView, error) {
@@ -122,6 +297,191 @@ func (c *Client) PublishGovernancePermit(ctx context.Context, request PublishGov
 	var result GovernanceChangeReceipt
 	err = json.Unmarshal(data, &result)
 	return &result, err
+}
+func (c *Client) PublishFederationTrust(ctx context.Context, request PublishFederationTrustRequest) (*GovernanceChangeReceipt, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernancePublishFederationTrust, nil, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var result GovernanceChangeReceipt
+	err = json.Unmarshal(data, &result)
+	return &result, err
+}
+func (c *Client) RevokeFederationTrust(ctx context.Context, request RevokeFederationTrustRequest) (*GovernanceChangeReceipt, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceRevokeFederationTrust, nil, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var result GovernanceChangeReceipt
+	err = json.Unmarshal(data, &result)
+	return &result, err
+}
+
+// FederationCapabilities fetches the audience-bound signed card for one current peer agent.
+func (c *Client) FederationCapabilities(ctx context.Context, namespace, tenant, agent string) (*SignedFederationCapabilityCard, error) {
+	value, err := c.PlatformRequest(ctx, OpFederationCapabilities, map[string]string{
+		"namespace": namespace, "tenant": tenant, "agent": agent,
+	}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var card SignedFederationCapabilityCard
+	if err := json.Unmarshal(value, &card); err != nil {
+		return nil, err
+	}
+	if card.Payload == "" || len(card.Signature) != 128 {
+		return nil, fmt.Errorf("invalid signed federation capability card")
+	}
+	return &card, nil
+}
+
+// FederationDeliveryEvidence pages sanitized retained outbound delivery records.
+func (c *Client) FederationDeliveryEvidence(ctx context.Context, namespace, tenant string, after *string, limit *int) (*FederationDeliveryEvidencePage, error) {
+	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
+	if after != nil {
+		query.Set("after", *after)
+	}
+	if limit != nil {
+		query.Set("limit", strconv.Itoa(*limit))
+	}
+	data, err := c.PlatformRequest(ctx, OpGovernanceFederationDeliveryEvidence, nil, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	var page FederationDeliveryEvidencePage
+	if err = json.Unmarshal(data, &page); err != nil {
+		return nil, err
+	}
+	for _, delivery := range page.Deliveries {
+		if delivery.DeliveryID == "" || delivery.ParentExecutionID == "" {
+			return nil, fmt.Errorf("federation delivery evidence identity mismatch")
+		}
+	}
+	return &page, nil
+}
+
+// AbandonFederationDelivery stops local recovery without asserting a peer outcome.
+func (c *Client) AbandonFederationDelivery(ctx context.Context, deliveryID string, request AbandonFederationDeliveryRequest) (*FederationDeliveryEvidence, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceAbandonFederationDelivery,
+		map[string]string{"delivery_id": deliveryID}, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var evidence FederationDeliveryEvidence
+	err = json.Unmarshal(data, &evidence)
+	return &evidence, err
+}
+
+// FederationFinalityCorrelation returns correlation for the currently ambiguous stage.
+func (c *Client) FederationFinalityCorrelation(ctx context.Context, namespace, tenant, deliveryID string) (*FederationFinalityCorrelation, error) {
+	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
+	data, err := c.PlatformRequest(ctx, OpGovernanceFederationFinalityCorrelation,
+		map[string]string{"delivery_id": deliveryID}, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	var correlation FederationFinalityCorrelation
+	if err = json.Unmarshal(data, &correlation); err != nil {
+		return nil, err
+	}
+	if correlation.DeliveryID != deliveryID || (correlation.Stage != "import" && correlation.Stage != "invoke") {
+		return nil, fmt.Errorf("federation finality correlation identity mismatch")
+	}
+	return &correlation, nil
+}
+
+// ReconcileFederationDelivery accepts qualified evidence without sending or replaying the delivery.
+func (c *Client) ReconcileFederationDelivery(ctx context.Context, deliveryID string, request ReconcileFederationDeliveryRequest) (*FederationDeliveryEvidence, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceReconcileFederationDelivery,
+		map[string]string{"delivery_id": deliveryID}, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var evidence FederationDeliveryEvidence
+	if err = json.Unmarshal(data, &evidence); err != nil {
+		return nil, err
+	}
+	if evidence.DeliveryID != deliveryID {
+		return nil, fmt.Errorf("federation reconciliation evidence identity mismatch")
+	}
+	return &evidence, nil
+}
+
+func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant string, envelope SignedFederationEnvelopeDeclaration) (*FederationImportReceipt, error) {
+	data, err := c.PlatformRequest(ctx, OpFederationImportEnvelope,
+		map[string]string{"namespace": namespace, "tenant": tenant}, nil,
+		struct {
+			Envelope SignedFederationEnvelopeDeclaration `json:"envelope"`
+		}{envelope})
+	if err != nil {
+		return nil, err
+	}
+	var result FederationImportReceipt
+	if err = json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	if result.Namespace != namespace || result.Tenant != tenant || result.ExecutionStarted {
+		return nil, fmt.Errorf("federation import receipt identity or execution state mismatch")
+	}
+	return &result, nil
+}
+
+// InvokeFederatedAgent executes or replays one exact message under signed imported federation authority.
+func (c *Client) InvokeFederatedAgent(ctx context.Context, namespace, tenant, agent string, invocation SignedFederationInvocationDeclaration, message map[string]any) (map[string]any, error) {
+	data, err := c.PlatformRequest(ctx, OpFederationInvokeAgent,
+		map[string]string{"namespace": namespace, "tenant": tenant, "agent": agent}, nil,
+		struct {
+			Invocation SignedFederationInvocationDeclaration `json:"invocation"`
+			Message    map[string]any                        `json:"message"`
+		}{invocation, message})
+	if err != nil {
+		return nil, err
+	}
+	var task map[string]any
+	if err = json.Unmarshal(data, &task); err != nil {
+		return nil, err
+	}
+	id, ok := task["id"].(string)
+	if task["namespace"] != namespace || task["tenant"] != tenant || !ok || id == "" {
+		return nil, fmt.Errorf("federated task receipt identity mismatch")
+	}
+	return task, nil
+}
+
+// ExportFederatedMessage submits one host-qualified export from an accepted local agent task.
+func (c *Client) ExportFederatedMessage(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationExportMessage, namespace, tenant, agent, taskID, profile, message)
+}
+
+// ObserveFederatedExport reads retained delivery evidence without issuing network traffic.
+func (c *Client) ObserveFederatedExport(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationObserveExportMessage, namespace, tenant, agent, taskID, profile, message)
+}
+
+// ReplayFederatedExport explicitly replays an exact request through a qualified idempotent peer.
+func (c *Client) ReplayFederatedExport(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationReplayExportMessage, namespace, tenant, agent, taskID, profile, message)
+}
+
+func (c *Client) federationExportRequest(ctx context.Context, operation PlatformOperation, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	data, err := c.PlatformRequest(ctx, operation,
+		map[string]string{"namespace": namespace, "tenant": tenant, "agent": agent, "task_id": taskID, "profile": profile}, nil,
+		struct {
+			Message map[string]any `json:"message"`
+		}{message})
+	if err != nil {
+		return nil, err
+	}
+	var receipt FederationExportReceipt
+	if err = json.Unmarshal(data, &receipt); err != nil {
+		return nil, err
+	}
+	validAttempt := receipt.AttemptStatus == "in_flight" || receipt.AttemptStatus == "settled" || receipt.AttemptStatus == "uncertain"
+	validDelivery := receipt.Delivery.Status == "registered" || receipt.Delivery.Status == "import_uncertain" || receipt.Delivery.Status == "imported" || receipt.Delivery.Status == "invoke_uncertain" || receipt.Delivery.Status == "accepted" || receipt.Delivery.Status == "rejected"
+	if receipt.AttemptID == "" || receipt.DeliveryID == "" || !validAttempt || !validDelivery {
+		return nil, fmt.Errorf("federation export receipt identity mismatch")
+	}
+	return &receipt, nil
 }
 func (c *Client) InterveneGovernance(ctx context.Context, request GovernanceInterventionRequest) (*GovernanceChangeReceipt, error) {
 	data, err := c.PlatformRequest(ctx, OpGovernanceIntervene, nil, nil, request)

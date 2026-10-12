@@ -1,6 +1,6 @@
 use acteon_core::{
     Action, ActionOutcome, ExecutionContextReference, PrincipalIdentity, PrincipalKind,
-    ProviderResponse, ResourceKind, ResourceRef,
+    ProviderResponse, ResourceKind, ResourceRef, TaskMessage, TaskRole,
 };
 use acteon_crypto::{PayloadEncryptor, parse_master_key};
 use acteon_executor::governed::abort::{
@@ -24,6 +24,12 @@ use acteon_governance::context::{
 use acteon_governance::permit::{ExecutionPermit, PermitIssuanceCeiling, PermitReference};
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, COORDINATOR_KIND, CoordinatorLimits, RootBudgetLimits,
+    federation::{
+        EvaluatedFederationTrustPublication, FederatedDelegationImport, FederationEnvelope,
+        FederationEnvelopeSigner, FederationGrantCeiling, FederationImportReference,
+        FederationInvocation, FederationTrust, FederationTrustIssuanceCeiling,
+        SignedFederationInvocation,
+    },
 };
 use acteon_provider::{DynProvider, ProviderError};
 use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
@@ -357,6 +363,279 @@ fn completed(status: &GovernedProviderStatus) {
             outcome: ActionOutcome::Executed(_)
         }
     ));
+}
+
+fn foreign_envelope(
+    ceiling: FederationGrantCeiling,
+    ingress_effect: acteon_governance::context::AcceptedEffect,
+    effect: acteon_governance::context::AcceptedEffect,
+    limits: RootBudgetLimits,
+) -> FederationEnvelope {
+    FederationEnvelope::new(
+        "foreign-job-1",
+        "partner-key-2026",
+        1,
+        "partner.example",
+        "acteon.city.example",
+        "partner-ed25519-1",
+        1,
+        90,
+        100,
+        5_000,
+        ceiling.source,
+        ceiling.target,
+        ceiling.agent_resource,
+        ceiling.binding_digest,
+        ceiling.skill,
+        ingress_effect,
+        vec![effect],
+        limits,
+        1,
+    )
+}
+
+async fn federated_invocation(
+    fixture: &mut Fixture,
+    signer: &FederationEnvelopeSigner,
+) -> (SignedFederationInvocation, FederationTrust) {
+    let message = TaskMessage::text("foreign-message-1", TaskRole::User, "inspect incident");
+    fixture.action.payload = serde_json::json!({"a2a_message":message});
+    let effect = bound(Arc::new(Counting::new(Mode::Success)), fixture.known)
+        .effect()
+        .clone();
+    let agent_resource =
+        ResourceRef::new(ResourceKind::Agent, "city", "tenant", "local-worker").unwrap();
+    let mut ingress_resources = vec![agent_resource.clone()];
+    ingress_resources.extend(effect.resources.clone());
+    ingress_resources.sort();
+    let ingress_effect = acteon_governance::context::AcceptedEffect {
+        operation: "agent.invoke".into(),
+        resources: ingress_resources,
+    };
+    let limits = RootBudgetLimits {
+        max_units: 4,
+        max_concurrent: 1,
+        deadline_ms: 5_000,
+    };
+    let ceiling = FederationGrantCeiling {
+        source: PrincipalIdentity::new("foreign-agent", PrincipalKind::Agent).unwrap(),
+        target: actor(),
+        agent_resource: agent_resource.clone(),
+        binding_digest: "a".repeat(64),
+        skill: "work".into(),
+        ingress_effect: ingress_effect.clone(),
+        effects: vec![effect.clone()],
+        limits: limits.clone(),
+        max_depth: 1,
+    };
+    let trust = FederationTrust {
+        id: "partner-key-2026".into(),
+        revision: 1,
+        foreign_domain: "partner.example".into(),
+        local_audience: "acteon.city.example".into(),
+        key_id: "partner-ed25519-1".into(),
+        verifying_key: signer.verifying_key_hex(),
+        minimum_issuer_epoch: 1,
+        max_revocation_staleness_ms: 5_000,
+        max_clock_skew_ms: 20,
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+        approved: vec![ceiling.clone()],
+    };
+    let issuance = FederationTrustIssuanceCeiling {
+        issuer: PrincipalIdentity::new("federation-admin", PrincipalKind::Human).unwrap(),
+        approved: vec![trust.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    let published_trust = trust.clone();
+    fixture
+        .coordinator
+        .publish_federation_trust(EvaluatedFederationTrustPublication {
+            change_id: "publish-partner-key",
+            trust,
+            expected_revision: 0,
+            ceiling: &issuance,
+            evaluated_authority: &fixture.coordinator.snapshot().await.unwrap().stamp(),
+            reason: "reviewed test partner",
+            clock: fixture.clock.as_ref(),
+        })
+        .await
+        .unwrap();
+    let envelope = foreign_envelope(ceiling, ingress_effect, effect, limits);
+    let imported = fixture
+        .coordinator
+        .import_federated_delegation(FederatedDelegationImport {
+            signed: &signer.sign(&envelope).unwrap(),
+            expected_authority: &fixture.coordinator.snapshot().await.unwrap().stamp(),
+            clock: fixture.clock.as_ref(),
+        })
+        .await
+        .unwrap();
+    let invocation = signer
+        .sign_invocation(&FederationInvocation::new(
+            "foreign-invocation-1",
+            FederationImportReference {
+                id: imported.id,
+                envelope_digest: imported.envelope_digest,
+            },
+            message,
+            100,
+            4_900,
+        ))
+        .unwrap();
+    (invocation, published_trust)
+}
+
+#[tokio::test]
+async fn signed_federated_input_executes_once_through_the_governed_provider_boundary() {
+    let provider = Arc::new(Counting::new(Mode::Success));
+    let mut f = management_fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        false,
+        config(),
+    )
+    .await;
+    let signer = FederationEnvelopeSigner::from_secret([9; 32]);
+    let (invocation, trust) = federated_invocation(&mut f, &signer).await;
+    let driver = f.driver(provider.clone(), None);
+
+    let first = driver
+        .execute_federated(&invocation, &f.action, &actor())
+        .await
+        .unwrap();
+    completed(&first.status);
+    assert_eq!(first.attempts, 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    let replay = driver
+        .execute_federated(&invocation, &f.action, &actor())
+        .await
+        .unwrap();
+    completed(&replay.status);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let start = f
+        .coordinator
+        .snapshot()
+        .await
+        .unwrap()
+        .starts
+        .get(&invocation.attempt_id(0).unwrap())
+        .unwrap()
+        .clone();
+    assert!(start.operation_evidence.is_some());
+    assert_eq!(
+        start.request_digest,
+        governed_provider_input_digest(&f.action).unwrap()
+    );
+
+    let ceiling = FederationTrustIssuanceCeiling {
+        issuer: PrincipalIdentity::new("federation-admin", PrincipalKind::Human).unwrap(),
+        approved: vec![trust],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .revoke_federation_trust_evaluated(
+            "revoke-partner-key",
+            "partner-key-2026",
+            1,
+            &ceiling,
+            &f.coordinator.snapshot().await.unwrap().stamp(),
+            "partner trust revoked",
+            f.clock.as_ref(),
+        )
+        .await
+        .unwrap();
+    let after_revocation = driver
+        .execute_federated(&invocation, &f.action, &actor())
+        .await
+        .unwrap();
+    completed(&after_revocation.status);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let history = f
+        .history(None)
+        .inspect_execution(first.execution_id, &actor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(history.operation_integrity, OperationIntegrity::Sealed);
+    assert_eq!(
+        history.attempts[0].attempt_id,
+        invocation.attempt_id(0).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn federated_input_mismatch_and_invalid_signature_never_reach_the_provider() {
+    let provider = Arc::new(Counting::new(Mode::Success));
+    let mut f = management_fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        false,
+        config(),
+    )
+    .await;
+    let signer = FederationEnvelopeSigner::from_secret([8; 32]);
+    let (invocation, _) = federated_invocation(&mut f, &signer).await;
+    let driver = f.driver(provider.clone(), None);
+    let mut changed = f.action.clone();
+    changed.payload = serde_json::json!({"value":"unsigned replacement"});
+    assert!(matches!(
+        driver
+            .execute_federated(&invocation, &changed, &actor())
+            .await,
+        Err(GovernedProviderError::Ownership)
+    ));
+
+    let mut forged = invocation.clone();
+    forged.signature.replace_range(0..2, "00");
+    assert!(matches!(
+        driver.execute_federated(&forged, &f.action, &actor()).await,
+        Err(GovernedProviderError::Admission(_))
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn federated_known_rejection_retries_with_distinct_budgeted_attempts() {
+    let provider = Arc::new(Counting::new(Mode::RejectFirst));
+    let mut f = management_fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        true,
+        config(),
+    )
+    .await;
+    let signer = FederationEnvelopeSigner::from_secret([7; 32]);
+    let (invocation, _) = federated_invocation(&mut f, &signer).await;
+    let receipt = f
+        .driver(provider.clone(), None)
+        .execute_federated(&invocation, &f.action, &actor())
+        .await
+        .unwrap();
+    completed(&receipt.status);
+    assert_eq!(receipt.attempts, 2);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    let snapshot = f.coordinator.snapshot().await.unwrap();
+    assert!(
+        snapshot
+            .starts
+            .contains_key(&invocation.attempt_id(0).unwrap())
+    );
+    assert!(
+        snapshot
+            .starts
+            .contains_key(&invocation.attempt_id(1).unwrap())
+    );
+    let root = snapshot
+        .federation_imports
+        .values()
+        .next()
+        .and_then(|imported| snapshot.roots.get(&imported.root_id))
+        .unwrap();
+    assert_eq!(root.spent_units, 2);
 }
 #[tokio::test]
 async fn replacement_replays_original_result_and_action_without_a_second_send() {

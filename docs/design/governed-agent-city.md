@@ -90,7 +90,7 @@ The baseline already has substantial reusable infrastructure:
 | Durability | CAS-backed dispatch receipts, worker tasks, recovery, result handoffs, execution history | Persisted authority lineage, intervention reconciliation, delegation receipts |
 | Governance substrate | Bounded CAS coordinator and exact typed resource references; not integrated into effects | Verified authority evaluation, atomic root reservations and common effect checkpoints |
 | Agent registry | Scoped agents, capability filters, heartbeats, administrative suspension/ban, individual cards | Governed candidate discovery and validated destination resolution |
-| A2A | JSON-RPC/REST task submission, reads, cancellation, SSE and discovery | Destination selection, runtime handoff, outbound peer invocation and remote-task reconciliation |
+| A2A | Tenant Task service plus exact-agent governed admission, listing, streaming and truthful cancellation; REST service receipts, peer invocation, federation and discovery | Governed push parity on the exact-agent interface and full external conformance |
 | Messaging | Agent inbox addressing, bus subscriptions, conversations and receipts | Governed publish/delivery and preserved sender/delegation authority |
 | Clients | Rust, Python, TypeScript, Go, Java clients; generated finite-operation catalog | First-class typed APIs for permits, closures, resources and delegation |
 
@@ -98,9 +98,17 @@ Important implementation details constrain the plan:
 
 - The inspected checkout contains Admin, Operator, Executor, and Viewer. Executor separates dispatch from the OperationsManage ceiling. Existing action grants already constrain namespace, tenant, provider, and action type. Stable principal metadata is retained through admission receipts and chains on this branch; complete durable per-effect authority is still proposed.
 - `CallerIdentity` is server-local. Its conversion to the core `Caller` is an audit identity, not a complete authorization context suitable for deferred execution.
-- A2A `method_message_send` creates a Submitted task or appends task history. It does not resolve a target agent or invoke its runtime. Accepted `configuration` and `metadata` fields are currently ignored.
-- A2A shares state, audit and streaming infrastructure, but task submission does not automatically traverse ordinary dispatch rules and quotas.
-- The A2A lifecycle check concerns the authenticated caller's bound agent. Destination authorization needs an additional check.
+- Tenant-level A2A `SendMessage` remains a general Task-ledger operation. Exact-agent `SendMessage` is separately addressed at `/a2a/{namespace}/{tenant}/agents/{agent}` and enters the configured agent-service runtime under current source and destination authority.
+- The exact-agent adapter covers finite send, input continuation, observation,
+  extended-card retrieval, official SSE streaming and protocol cancellation.
+  Stream admission and every emitted update preserve authenticated source
+  provenance. Cancellation commits the coordinator fence first and distinguishes
+  requested from confirmed finality. Exact-agent listing is source-scoped,
+  filter- and identity-bound, and state-backend paginated. Governed push
+  configuration uses the same original-task boundary plus management authority;
+  its remaining gap is a durable ordered delivery outbox on the configured state
+  backend.
+- Agent callers must retain the opaque source-context receipt returned at admission. This distinguishes separate jobs sharing one principal and credential without exposing authority material to model-controlled payloads.
 - Existing suspension and ban are useful agent-specific controls. They are not generic resource closures with drain, pause and cancellation semantics.
 - Tenant-level discovery can aggregate multiple cards. Delegation must resolve an individual agent card so skills remain associated with their owning endpoint.
 - Existing dispatch receipts explicitly distinguish acceptance from exactly-once external effects. Worker terminal records already serve as recoverable result outboxes. Extend those patterns rather than introduce an unrelated execution system.
@@ -359,7 +367,16 @@ If the peer accepts a request but its response is lost, the sender may not know 
 
 ### Inbound execution
 
-Add a configured agent-to-runtime binding so a Submitted task can be handed to a chain, worker, swarm provider, or external runtime under the same execution context. Define explicit agent addressing in a native endpoint and a documented A2A extension or agent-specific endpoint. Preserve current tenant-level submission semantics unless an operator configures a default target; never select an arbitrary card from an aggregate.
+The configured agent-to-runtime binding and exact agent-specific JSON-RPC
+endpoint now hand a new `SendMessage` to the governed provider runtime under
+source and recipient execution contexts. Tenant-level submission remains a
+separate Task-ledger surface, and no aggregate card is selected implicitly.
+
+Complete the same authority-preserving adapter for listing, streaming, push
+configuration and cancellation. Cancellation must distinguish a durable
+future-start fence, a confirmed provider abort and an uncertain external
+effect; only a confirmed terminal outcome may be projected as an A2A canceled
+Task.
 
 Task continuation, required-input responses, cancellation and artifact retrieval need ownership/participant authorization. Keep safety operations such as operator cancellation available when an actor is suspended, without granting the suspended actor general mutation authority.
 

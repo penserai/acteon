@@ -1,8 +1,8 @@
 //! Actual governed provider calls behind durable agent-task acceptance.
 use acteon_core::{
     Action, AgentCard, PauseKind, PrincipalIdentity, PrincipalKind, ProviderResponse, ResourceKind,
-    ResourceRef, Skill, TASK_CHALLENGE_ID_METADATA_KEY, TaskMessage, TaskRole, TaskState,
-    bus_agent_card::Interface,
+    ResourceRef, Skill, StreamEventType, TASK_CHALLENGE_ID_METADATA_KEY, TaskMessage, TaskRole,
+    TaskState, bus_agent_card::Interface,
 };
 use acteon_executor::{
     ExecutorConfig, RetryStrategy,
@@ -21,6 +21,7 @@ use acteon_gateway::{
     TaskEngine, TaskScope,
     agent_runtime::{
         ACCEPTANCE_KIND, AgentProviderRuntime, AgentRuntimeDependencies, CONTINUATION_KIND,
+        accepted_agent_requires_federation_authentication,
     },
 };
 use acteon_governance::{
@@ -34,6 +35,12 @@ use acteon_governance::{
     delegation_policy::{
         DelegationGrant, DelegationGrantReference, DelegationIssuanceCeiling,
         EvaluatedDelegationPublication,
+    },
+    federation::{
+        EvaluatedFederationTrustPublication, FederatedDelegationImport, FederationEnvelope,
+        FederationEnvelopeSigner, FederationGrantCeiling, FederationImportReference,
+        FederationInvocation, FederationTrust, FederationTrustIssuanceCeiling,
+        SignedFederationInvocation,
     },
     permit::{ExecutionPermit, PermitIssuanceCeiling, PermitReference},
 };
@@ -308,6 +315,8 @@ impl Fixture {
                 coordinator,
                 contexts,
                 clock,
+                stream_tx: None,
+                audit: None,
             },
             Self::binding(card, bound),
             bound.clone(),
@@ -331,6 +340,32 @@ impl Fixture {
             &self.card,
             &self.bound,
         )
+    }
+    fn runtime_with_stream(
+        &self,
+        stream_tx: tokio::sync::broadcast::Sender<acteon_core::StreamEvent>,
+    ) -> AgentProviderRuntime {
+        AgentProviderRuntime::new_trusted(
+            AgentRuntimeDependencies {
+                state: self.state.clone(),
+                coordinator: self.coordinator.clone(),
+                contexts: self.contexts.clone(),
+                clock: self.clock.clone(),
+                stream_tx: Some(stream_tx),
+                audit: None,
+            },
+            Self::binding(&self.card, &self.bound),
+            self.bound.clone(),
+            ExecutorConfig {
+                max_retries: 0,
+                max_concurrent: 1,
+                execution_timeout: Duration::from_secs(1),
+                retry_strategy: RetryStrategy::Constant {
+                    delay: Duration::ZERO,
+                },
+            },
+        )
+        .unwrap()
     }
     async fn new(ambiguous: bool) -> Self {
         Self::new_with_state(
@@ -572,6 +607,210 @@ async fn independent_clients_recover_registered_continuation(
         f.child.execution_id().to_string()
     );
     assert_eq!(snapshot.roots[&continuation_id.to_string()].spent_units, 1);
+}
+
+async fn signed_federated_message(
+    fixture: &Fixture,
+) -> (
+    SignedFederationInvocation,
+    FederationTrust,
+    FederationTrustIssuanceCeiling,
+) {
+    let signer = FederationEnvelopeSigner::from_secret([19; 32]);
+    let binding = Fixture::binding(&fixture.card, &fixture.bound);
+    let ceiling = FederationGrantCeiling {
+        source: actor("foreign-agent"),
+        target: actor("worker"),
+        agent_resource: resource(ResourceKind::Agent, "notifier"),
+        binding_digest: binding.digest().into(),
+        skill: "notify".into(),
+        ingress_effect: binding.ingress_effect().clone(),
+        effects: vec![fixture.bound.effect().clone()],
+        limits: limits(),
+        max_depth: 1,
+    };
+    let trust = FederationTrust {
+        id: "foreign-key-1".into(),
+        revision: 1,
+        foreign_domain: "foreign.example".into(),
+        local_audience: "acteon.city.example".into(),
+        key_id: "foreign-ed25519-1".into(),
+        verifying_key: signer.verifying_key_hex(),
+        minimum_issuer_epoch: 1,
+        max_revocation_staleness_ms: 10_000,
+        max_clock_skew_ms: 20,
+        valid_from_ms: 0,
+        deadline_ms: 11_000,
+        approved: vec![ceiling.clone()],
+    };
+    let issuance = FederationTrustIssuanceCeiling {
+        issuer: actor("operator"),
+        approved: vec![trust.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 11_000,
+    };
+    fixture
+        .coordinator
+        .publish_federation_trust(EvaluatedFederationTrustPublication {
+            change_id: "publish-foreign-key",
+            trust: trust.clone(),
+            expected_revision: 0,
+            ceiling: &issuance,
+            evaluated_authority: &fixture.coordinator.snapshot().await.unwrap().stamp(),
+            reason: "reviewed foreign domain",
+            clock: fixture.clock.as_ref(),
+        })
+        .await
+        .unwrap();
+    let envelope = FederationEnvelope::new(
+        "foreign-task-1",
+        "foreign-key-1",
+        1,
+        "foreign.example",
+        "acteon.city.example",
+        "foreign-ed25519-1",
+        1,
+        90,
+        100,
+        10_000,
+        ceiling.source,
+        ceiling.target,
+        ceiling.agent_resource,
+        ceiling.binding_digest,
+        ceiling.skill,
+        ceiling.ingress_effect,
+        ceiling.effects,
+        ceiling.limits,
+        1,
+    );
+    let signed_envelope = signer.sign(&envelope).unwrap();
+    let imported = fixture
+        .coordinator
+        .import_federated_delegation(FederatedDelegationImport {
+            signed: &signed_envelope,
+            expected_authority: &fixture.coordinator.snapshot().await.unwrap().stamp(),
+            clock: fixture.clock.as_ref(),
+        })
+        .await
+        .unwrap();
+    let signed_invocation = signer
+        .sign_invocation(&FederationInvocation::new(
+            "foreign-call-1",
+            FederationImportReference {
+                id: imported.id,
+                envelope_digest: imported.envelope_digest,
+            },
+            fixture.message.clone(),
+            100,
+            9_000,
+        ))
+        .unwrap();
+    (signed_invocation, trust, issuance)
+}
+
+#[tokio::test]
+async fn governed_agent_runtime_publishes_task_transitions_to_the_shared_stream() {
+    let fixture = Fixture::new(false).await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let runtime = fixture.runtime_with_stream(tx);
+    fixture.accept(&runtime).await;
+    let completed = runtime.resume(fixture.child.execution_id()).await.unwrap();
+    assert_eq!(completed.task.status.state, TaskState::Completed);
+
+    let mut states = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        assert_eq!(event.namespace, "city");
+        assert_eq!(event.tenant, "tenant");
+        assert_eq!(event.action_id.as_deref(), Some(completed.task.id.as_str()));
+        if let StreamEventType::TaskTransitioned { to, .. } = event.event_type {
+            states.push(to);
+        }
+    }
+    assert_eq!(states, vec![TaskState::Working, TaskState::Completed]);
+}
+
+#[tokio::test]
+async fn federated_agent_acceptance_requires_authenticated_resume_and_replays_after_revocation() {
+    let fixture = Fixture::new(false).await;
+    let runtime = fixture.runtime();
+    let (signed, _trust, issuance) = signed_federated_message(&fixture).await;
+    let mut tampered_value = serde_json::to_value(&fixture.message).unwrap();
+    tampered_value["parts"][0]["text"] = serde_json::json!("different request");
+    let tampered: TaskMessage = serde_json::from_value(tampered_value).unwrap();
+    assert!(matches!(
+        runtime.accept_federated(&signed, &tampered).await,
+        Err(acteon_gateway::agent_runtime::AgentRuntimeError::Execution(
+            GovernedProviderError::Ownership
+        ))
+    ));
+    assert_eq!(fixture.counter.calls.load(Ordering::SeqCst), 0);
+    let task = runtime
+        .accept_federated(&signed, &fixture.message)
+        .await
+        .unwrap();
+    let task_id = uuid::Uuid::parse_str(&task.id).unwrap();
+    let acceptance_key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(ACCEPTANCE_KIND.into()),
+        task.id.clone(),
+    );
+    let raw = fixture.state.get(&acceptance_key).await.unwrap().unwrap();
+    assert!(accepted_agent_requires_federation_authentication(&raw).unwrap());
+    let mut corrupted: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    corrupted["initial_task"]["history"][0]["parts"][0]["text"] =
+        serde_json::json!("substituted after acceptance");
+    corrupted["action"]["payload"]["a2a_message"]["parts"][0]["text"] =
+        serde_json::json!("substituted after acceptance");
+    let corrupted_action: Action = serde_json::from_value(corrupted["action"].clone()).unwrap();
+    corrupted["reference"]["request_digest"] =
+        serde_json::json!(governed_provider_input_digest(&corrupted_action).unwrap());
+    fixture
+        .state
+        .set(&acceptance_key, &corrupted.to_string(), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime.resume_federated(task_id, &signed).await,
+        Err(acteon_gateway::agent_runtime::AgentRuntimeError::Conflict)
+    ));
+    fixture
+        .state
+        .set(&acceptance_key, &raw, None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime.resume(task_id).await,
+        Err(acteon_gateway::agent_runtime::AgentRuntimeError::Invalid)
+    ));
+    let concurrent = fixture.runtime();
+    let (left, right) = tokio::join!(
+        runtime.resume_federated(task_id, &signed),
+        concurrent.resume_federated(task_id, &signed)
+    );
+    assert_eq!(left.unwrap().task.status.state, TaskState::Completed);
+    assert_eq!(right.unwrap().task.status.state, TaskState::Completed);
+    assert_eq!(fixture.counter.calls.load(Ordering::SeqCst), 1);
+    fixture
+        .coordinator
+        .revoke_federation_trust_evaluated(
+            "revoke-foreign-key",
+            "foreign-key-1",
+            1,
+            &issuance,
+            &fixture.coordinator.snapshot().await.unwrap().stamp(),
+            "foreign relationship ended",
+            fixture.clock.as_ref(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .accept_federated(&signed, &fixture.message)
+        .await
+        .unwrap();
+    let replay = runtime.resume_federated(task_id, &signed).await.unwrap();
+    assert_eq!(replay.task.status.state, TaskState::Completed);
+    assert_eq!(fixture.counter.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -875,6 +1114,64 @@ async fn replacement_runtime_replays_original_task_and_result_without_a_new_call
     assert_eq!(result.task.status.state, TaskState::Completed);
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn governed_acceptance_materializes_initial_push_config_atomically_and_binds_replay() {
+    let f = Fixture::new(false).await;
+    let task_id = f.child.execution_id().to_string();
+    let config = acteon_core::TaskPushNotificationConfig::new(
+        "inline-callback",
+        &task_id,
+        "city",
+        "tenant",
+        "https://callbacks.example/a2a",
+    );
+    let runtime = f.runtime();
+    runtime
+        .accept_with_push_configs(
+            &f.child,
+            &permits("worker"),
+            &f.message,
+            vec![config.clone()],
+        )
+        .await
+        .unwrap();
+
+    let engine = TaskEngine::new(f.state.clone()).with_clock(f.clock.clone());
+    let stored = engine
+        .get_push_config(
+            &TaskScope::new("city", "tenant"),
+            &task_id,
+            "inline-callback",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.url, config.url);
+
+    // Timestamp differences do not change the immutable callback intent, so a
+    // normal retried request replays the accepted task.
+    let equivalent = acteon_core::TaskPushNotificationConfig::new(
+        "inline-callback",
+        &task_id,
+        "city",
+        "tenant",
+        "https://callbacks.example/a2a",
+    );
+    f.runtime()
+        .accept_with_push_configs(&f.child, &permits("worker"), &f.message, vec![equivalent])
+        .await
+        .unwrap();
+
+    let mut changed = config;
+    changed.url = "https://attacker.example/a2a".into();
+    assert!(matches!(
+        f.runtime()
+            .accept_with_push_configs(&f.child, &permits("worker"), &f.message, vec![changed],)
+            .await,
+        Err(acteon_gateway::agent_runtime::AgentRuntimeError::Conflict)
+    ));
+}
 #[tokio::test]
 async fn lost_acceptance_or_task_acknowledgement_recovers_the_original_identity() {
     for kind in [KeyKind::Custom(ACCEPTANCE_KIND.into()), KeyKind::A2aTask] {
@@ -1090,12 +1387,11 @@ async fn a_forged_terminal_task_projection_cannot_certify_a_provider_outcome() {
         f.child.execution_id().to_string(),
     );
     let original = f.state.get(&key).await.unwrap().unwrap();
-    let mut task: acteon_core::Task = serde_json::from_str(&original).unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&original).unwrap();
+    let mut task: acteon_core::Task = serde_json::from_value(stored["task"].clone()).unwrap();
     task.status.state = TaskState::Completed;
-    f.state
-        .set(&key, &serde_json::to_string(&task).unwrap(), None)
-        .await
-        .unwrap();
+    stored["task"] = serde_json::to_value(&task).unwrap();
+    f.state.set(&key, &stored.to_string(), None).await.unwrap();
     assert!(
         Box::pin(runtime.resume(f.child.execution_id()))
             .await
@@ -1106,13 +1402,12 @@ async fn a_forged_terminal_task_projection_cannot_certify_a_provider_outcome() {
     Box::pin(runtime.resume(f.child.execution_id()))
         .await
         .unwrap();
-    let mut task: acteon_core::Task =
+    let mut stored: serde_json::Value =
         serde_json::from_str(&f.state.get(&key).await.unwrap().unwrap()).unwrap();
+    let mut task: acteon_core::Task = serde_json::from_value(stored["task"].clone()).unwrap();
     task.status.state = TaskState::Failed;
-    f.state
-        .set(&key, &serde_json::to_string(&task).unwrap(), None)
-        .await
-        .unwrap();
+    stored["task"] = serde_json::to_value(&task).unwrap();
+    f.state.set(&key, &stored.to_string(), None).await.unwrap();
     assert!(
         Box::pin(runtime.resume(f.child.execution_id()))
             .await
@@ -1631,7 +1926,8 @@ async fn requester_stop_is_durable_idempotent_and_prevents_queued_effects() {
         .await
         .unwrap();
     assert!(stopped.future_starts_blocked);
-    assert_eq!(stopped.task.status.state, TaskState::Submitted);
+    assert!(stopped.cancellation_confirmed);
+    assert_eq!(stopped.task.status.state, TaskState::Canceled);
     let generation = f.coordinator.snapshot().await.unwrap().generation;
     let restarted = f.runtime();
     assert!(
@@ -1645,11 +1941,10 @@ async fn requester_stop_is_durable_idempotent_and_prevents_queued_effects() {
         f.coordinator.snapshot().await.unwrap().generation,
         generation
     );
-    assert!(
-        Box::pin(restarted.resume(f.child.execution_id()))
-            .await
-            .is_err()
-    );
+    let replayed = Box::pin(restarted.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert_eq!(replayed.task.status.state, TaskState::Canceled);
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
     let state = f.coordinator.snapshot().await.unwrap();
     assert!(state.starts.is_empty());
@@ -1724,11 +2019,12 @@ async fn requester_stop_reports_only_reconciliation_verified_provider_abort() {
         stopped.provider_abort,
         Some(ProviderAbortStatus::Reconciled { .. })
     ));
-    assert_eq!(stopped.task.status.state, TaskState::Failed);
+    assert!(stopped.cancellation_confirmed);
+    assert_eq!(stopped.task.status.state, TaskState::Canceled);
     assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
     f.counter.release.add_permits(1);
     let late = running.await.unwrap().unwrap();
-    assert_eq!(late.task.status.state, TaskState::Failed);
+    assert_eq!(late.task.status.state, TaskState::Canceled);
     assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -1795,11 +2091,10 @@ async fn requester_stop_recovers_a_lost_control_write_acknowledgement() {
                 .unwrap()
                 .future_starts_blocked
         );
-        assert!(
-            Box::pin(replacement.resume(f.child.execution_id()))
-                .await
-                .is_err()
-        );
+        let replayed = Box::pin(replacement.resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        assert_eq!(replayed.task.status.state, TaskState::Canceled);
         assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
     }
 }

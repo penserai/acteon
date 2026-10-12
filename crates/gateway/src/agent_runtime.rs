@@ -5,15 +5,16 @@
 use std::sync::Arc;
 
 use acteon_core::{
-    Action, ActionOutcome, Artifact, ExecutionContextReference, TASK_CHALLENGE_ID_METADATA_KEY,
-    Task, TaskAuthorizationRequirement, TaskMessage, TaskPart, TaskRole, TaskState,
+    Action, ActionOutcome, Artifact, ExecutionContextReference, StreamEvent,
+    TASK_CHALLENGE_ID_METADATA_KEY, Task, TaskAuthorizationRequirement, TaskMessage, TaskPart,
+    TaskRole, TaskState,
 };
 use acteon_executor::{
     ExecutorConfig,
     delegation::ApprovedPeerBinding,
     governed::{
         BoundProvider, GovernedProviderError, GovernedProviderExecutor, GovernedProviderReceipt,
-        GovernedProviderStatus, governed_provider_input_digest,
+        GovernedProviderStatus, federated_execution_reference, governed_provider_input_digest,
     },
 };
 use acteon_governance::{
@@ -22,6 +23,7 @@ use acteon_governance::{
         ChildContextAdmission, ContextError, ExecutionContextHandle, TrustedContextStore,
         VerifiedExecutionContext,
     },
+    federation::SignedFederationInvocation,
     permit::{PermitReference, matches_effect, permit_revision_tag},
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
@@ -42,6 +44,8 @@ pub struct AgentRuntimeDependencies {
     pub coordinator: AuthorityCoordinator,
     pub contexts: Arc<TrustedContextStore>,
     pub clock: Arc<dyn Clock>,
+    pub stream_tx: Option<tokio::sync::broadcast::Sender<StreamEvent>>,
+    pub audit: Option<Arc<dyn acteon_audit::store::AuditStore>>,
 }
 
 /// Identify accepted governed work from its durable journal, including when a
@@ -93,13 +97,19 @@ struct Acceptance {
     binding_digest: String,
     reference: ExecutionContextReference,
     permits: Vec<PermitReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    federation_invocation: Option<SignedFederationInvocation>,
     action: Action,
     initial_task: Task,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    initial_push_configs: Vec<acteon_core::TaskPushNotificationConfig>,
 }
 
 #[derive(Deserialize)]
 struct AcceptanceRoutingHint {
     binding_digest: String,
+    #[serde(default)]
+    federation_invocation: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -136,6 +146,49 @@ struct CurrentOperation<'a> {
     action: &'a Action,
 }
 
+fn initial_push_configs_match(
+    left: &[acteon_core::TaskPushNotificationConfig],
+    right: &[acteon_core::TaskPushNotificationConfig],
+) -> Result<bool, serde_json::Error> {
+    fn stable_projection(
+        configs: &[acteon_core::TaskPushNotificationConfig],
+    ) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+        configs
+            .iter()
+            .map(|config| {
+                let mut value = serde_json::to_value(config)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("createdAt");
+                    object.remove("updatedAt");
+                }
+                Ok(value)
+            })
+            .collect()
+    }
+    Ok(stable_projection(left)? == stable_projection(right)?)
+}
+
+fn normalize_initial_push_configs(
+    mut configs: Vec<acteon_core::TaskPushNotificationConfig>,
+    task: &Task,
+) -> Result<Vec<acteon_core::TaskPushNotificationConfig>, AgentRuntimeError> {
+    configs.sort_by(|left, right| left.id.cmp(&right.id));
+    if configs.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    for config in &configs {
+        config.validate().map_err(|_| AgentRuntimeError::Invalid)?;
+        if config.task_id != task.id
+            || config.namespace != task.namespace
+            || config.tenant != task.tenant
+            || config.created_at > config.updated_at
+        {
+            return Err(AgentRuntimeError::Invalid);
+        }
+    }
+    Ok(configs)
+}
+
 /// Read the bounded binding selector used by a trusted recovery host. This is
 /// only a routing hint; the selected runtime must decode and verify the complete
 /// immutable acceptance before returning data or starting an effect.
@@ -153,6 +206,19 @@ pub fn accepted_agent_binding_digest(raw: &str) -> Result<String, AgentRuntimeEr
         return Err(AgentRuntimeError::Invalid);
     }
     Ok(hint.binding_digest)
+}
+
+/// Federation acceptances require a fresh authenticated peer request before
+/// any unregistered provider attempt. Recovery drivers use this routing hint to
+/// skip them; the selected runtime still verifies the complete journal.
+pub fn accepted_agent_requires_federation_authentication(
+    raw: &str,
+) -> Result<bool, AgentRuntimeError> {
+    if raw.len() > MAX_ACCEPTANCE_BYTES {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    let hint: AcceptanceRoutingHint = serde_json::from_str(raw)?;
+    Ok(hint.federation_invocation.is_some())
 }
 
 /// An individual agent bound to one qualified provider operation. Other runtime
@@ -181,6 +247,10 @@ pub struct AgentTaskReceipt {
 pub struct AgentTaskStopReceipt {
     pub task: Task,
     pub future_starts_blocked: bool,
+    /// True only when durable evidence proves that this Task has no remaining
+    /// provider effect: either no attempt was registered before the fence or a
+    /// qualified reconciliation receipt proved no effect.
+    pub cancellation_confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_abort: Option<acteon_executor::governed::abort::ProviderAbortStatus>,
 }
@@ -201,7 +271,9 @@ impl AgentProviderRuntime {
         if bound.catalog_version().is_none()
             || provider_effects != 1
             || plan.direct_effects().iter().any(|effect| {
-                !matches_effect(effect, bound.effect()) && effect.operation != "agent.invoke"
+                !matches_effect(effect, bound.effect())
+                    && effect.operation != "agent.invoke"
+                    && effect.operation != "federation.export"
             })
         {
             return Err(AgentRuntimeError::Invalid);
@@ -216,8 +288,14 @@ impl AgentProviderRuntime {
             None,
         )?
         .require_credential_authority();
-        let tasks =
+        let mut tasks =
             TaskEngine::new(dependencies.state.clone()).with_clock(dependencies.clock.clone());
+        if let Some(audit) = dependencies.audit.clone() {
+            tasks = tasks.with_audit(audit);
+        }
+        if let Some(stream_tx) = dependencies.stream_tx.clone() {
+            tasks = tasks.with_stream_tx(stream_tx);
+        }
         Ok(Self {
             dependencies,
             binding,
@@ -495,9 +573,25 @@ impl AgentProviderRuntime {
             .initial_task
             .validate()
             .map_err(|_| AgentRuntimeError::Invalid)?;
-        permit_revision_tag(&accepted.permits)?;
         let mut message = accepted.initial_task.history[0].clone();
         message.task_id = None;
+        if let Some(invocation) = &accepted.federation_invocation {
+            let signed = invocation.invocation()?;
+            if serde_json::to_value(&signed.message)? != serde_json::to_value(&message)?
+                || !accepted.permits.is_empty()
+                || federated_execution_reference(
+                    invocation,
+                    accepted.reference.namespace(),
+                    accepted.reference.tenant(),
+                    self.binding.target().clone(),
+                    &governed_provider_input_digest(&accepted.action)?,
+                )? != accepted.reference
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+        } else {
+            permit_revision_tag(&accepted.permits)?;
+        }
         if governed_provider_input_digest(&self.prepare_message(&message)?)?
             != accepted.reference.request_digest()
         {
@@ -507,6 +601,9 @@ impl AgentProviderRuntime {
     }
 
     async fn verify(&self, accepted: &Acceptance) -> Result<(), AgentRuntimeError> {
+        if accepted.federation_invocation.is_some() {
+            return Ok(());
+        }
         let context = self
             .dependencies
             .contexts
@@ -538,6 +635,21 @@ impl AgentProviderRuntime {
         permits: &[PermitReference],
         message: &TaskMessage,
     ) -> Result<Task, AgentRuntimeError> {
+        self.accept_with_push_configs(context, permits, message, Vec::new())
+            .await
+    }
+
+    /// Persist a governed acceptance and materialize its Task together with
+    /// initial callback configurations. Keeping the configurations in the
+    /// immutable acceptance closes the crash window between accepting work and
+    /// creating its callback cursors, including recovery and replay.
+    pub async fn accept_with_push_configs(
+        &self,
+        context: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        message: &TaskMessage,
+        initial_push_configs: Vec<acteon_core::TaskPushNotificationConfig>,
+    ) -> Result<Task, AgentRuntimeError> {
         let action = self.prepare_message(message)?;
         let reference = context.reference()?;
         if reference.principal() != self.binding.target()
@@ -559,13 +671,16 @@ impl AgentProviderRuntime {
         initial.task_id = Some(task.id.clone());
         task.append_history_at(initial, self.dependencies.clock.now())
             .map_err(|_| AgentRuntimeError::Invalid)?;
+        let initial_push_configs = normalize_initial_push_configs(initial_push_configs, &task)?;
         let proposed = Acceptance {
             schema: 1,
             binding_digest: self.binding.digest().into(),
             reference,
             permits: selected,
+            federation_invocation: None,
             action,
             initial_task: task,
+            initial_push_configs,
         };
         self.verify(&proposed).await?;
         let key = self.key(proposed.reference.execution_id());
@@ -606,6 +721,10 @@ impl AgentProviderRuntime {
             || original.permits != proposed.permits
             || governed_provider_input_digest(&original.action)?
                 != governed_provider_input_digest(&proposed.action)?
+            || !initial_push_configs_match(
+                &original.initial_push_configs,
+                &proposed.initial_push_configs,
+            )?
         {
             return Err(AgentRuntimeError::Conflict);
         }
@@ -616,9 +735,150 @@ impl AgentProviderRuntime {
         Ok(self.observe(original.reference.execution_id()).await?.task)
     }
 
+    /// Replay an existing immutable acceptance without requiring the service's
+    /// former admission permits. This path cannot create work, so retained
+    /// service epochs can answer exact retries after their live declaration is
+    /// removed.
+    pub async fn replay_acceptance(
+        &self,
+        context: &VerifiedExecutionContext,
+        message: &TaskMessage,
+        initial_push_configs: Vec<acteon_core::TaskPushNotificationConfig>,
+    ) -> Result<Task, AgentRuntimeError> {
+        let action = self.prepare_message(message)?;
+        let reference = context.reference()?;
+        if reference.principal() != self.binding.target()
+            || governed_provider_input_digest(&action)? != reference.request_digest()
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let key = self.key(reference.execution_id());
+        let raw = self
+            .dependencies
+            .state
+            .get(&key)
+            .await?
+            .ok_or(AgentRuntimeError::Missing)?;
+        let original = self.decode(&raw)?;
+        let normalized =
+            normalize_initial_push_configs(initial_push_configs, &original.initial_task)?;
+        if original.reference != reference
+            || governed_provider_input_digest(&original.action)?
+                != governed_provider_input_digest(&action)?
+            || !initial_push_configs_match(&original.initial_push_configs, &normalized)?
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let task = self.materialize(&original).await?;
+        if !task.status.state.is_terminal() {
+            return Ok(task);
+        }
+        Ok(self.observe(original.reference.execution_id()).await?.task)
+    }
+
+    /// Persist one task admitted by a current signed federation invocation.
+    /// This starts no provider effect. The authenticated host must immediately
+    /// call `resume_federated`; generic background recovery deliberately skips
+    /// this acceptance because it cannot reauthenticate the foreign peer.
+    pub async fn accept_federated(
+        &self,
+        invocation: &SignedFederationInvocation,
+        message: &TaskMessage,
+    ) -> Result<Task, AgentRuntimeError> {
+        let action = self.prepare_message(message)?;
+        let resource = self.binding.agent_resource();
+        let reference = federated_execution_reference(
+            invocation,
+            resource.namespace(),
+            resource.tenant(),
+            self.binding.target().clone(),
+            &governed_provider_input_digest(&action)?,
+        )?;
+        let mut task = Task::new_at(
+            reference.execution_id().to_string(),
+            reference.namespace(),
+            reference.tenant(),
+            self.dependencies.clock.now(),
+        );
+        task.context_id.clone_from(&message.context_id);
+        task.metadata.insert(
+            GOVERNED_TASK_METADATA_KEY.into(),
+            serde_json::json!({"execution_id":reference.execution_id(), "binding_digest":self.binding.digest()}),
+        );
+        let mut initial = message.clone();
+        initial.task_id = Some(task.id.clone());
+        task.append_history_at(initial, self.dependencies.clock.now())
+            .map_err(|_| AgentRuntimeError::Invalid)?;
+        let proposed = Acceptance {
+            schema: 1,
+            binding_digest: self.binding.digest().into(),
+            reference,
+            permits: Vec::new(),
+            federation_invocation: Some(invocation.clone()),
+            action,
+            initial_task: task,
+            initial_push_configs: Vec::new(),
+        };
+        self.verify(&proposed).await?;
+        let key = self.key(proposed.reference.execution_id());
+        if let Some(raw) = self.dependencies.state.get(&key).await? {
+            let original = self.decode(&raw)?;
+            if original.reference != proposed.reference
+                || original.federation_invocation != proposed.federation_invocation
+                || governed_provider_input_digest(&original.action)?
+                    != governed_provider_input_digest(&proposed.action)?
+                || !original.initial_push_configs.is_empty()
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            return self.materialize(&original).await;
+        }
+        let prepared = self
+            .executor
+            .prepare_federated(invocation, &proposed.action, self.binding.target())
+            .await?;
+        if prepared != proposed.reference {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let payload = serde_json::to_string(&proposed)?;
+        if payload.len() > MAX_ACCEPTANCE_BYTES {
+            return Err(AgentRuntimeError::Invalid);
+        }
+        let raw = if self
+            .dependencies
+            .state
+            .check_and_set(&key, &payload, None)
+            .await?
+        {
+            payload
+        } else {
+            self.dependencies
+                .state
+                .get(&key)
+                .await?
+                .ok_or(AgentRuntimeError::Missing)?
+        };
+        let original = self.decode(&raw)?;
+        if original.reference != proposed.reference
+            || original.federation_invocation != proposed.federation_invocation
+            || governed_provider_input_digest(&original.action)?
+                != governed_provider_input_digest(&proposed.action)?
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        self.materialize(&original).await
+    }
+
     async fn materialize(&self, accepted: &Acceptance) -> Result<Task, AgentRuntimeError> {
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
-        match self.tasks.create_task(accepted.initial_task.clone()).await {
+        match self
+            .tasks
+            .create_task_with_push_configs(
+                accepted.initial_task.clone(),
+                accepted.initial_push_configs.clone(),
+            )
+            .await
+        {
             Ok(task) => Ok(task),
             Err(TaskEngineError::AlreadyExists(_)) => {
                 let task = self
@@ -1136,8 +1396,31 @@ impl AgentProviderRuntime {
             .abort_restricted(&accepted.reference, recipient.principal())
             .await?
             .map(|receipt| receipt.abort);
-        let observed = self.observe(task_id).await?;
+        let mut observed = self.observe(task_id).await?;
+        // Once the coordinator fence is durable, the absence of an execution
+        // record proves that this accepted operation cannot start. Project the
+        // protocol Task as Canceled. Existing or uncertain attempts remain in
+        // their observed state until qualified finality proves no effect.
+        if observed.execution.is_none() && !observed.task.status.state.is_terminal() {
+            let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+            if let Ok(task) = self
+                .tasks
+                .transition_task(&scope, &task_id.to_string(), TaskState::Canceled, None)
+                .await
+            {
+                observed.task = task;
+            } else {
+                // A competing identical stop may have won the Task CAS.
+                // Re-read through the governed invariant and accept only
+                // its confirmed canceled projection.
+                observed = self.observe(task_id).await?;
+                if observed.task.status.state != TaskState::Canceled {
+                    return Err(AgentRuntimeError::Conflict);
+                }
+            }
+        }
         Ok(AgentTaskStopReceipt {
+            cancellation_confirmed: observed.task.status.state == TaskState::Canceled,
             task: observed.task,
             future_starts_blocked: observed.future_starts_blocked,
             provider_abort,
@@ -1149,11 +1432,51 @@ impl AgentProviderRuntime {
         accepted: &Acceptance,
     ) -> Result<bool, AgentRuntimeError> {
         let snapshot = self.dependencies.coordinator.snapshot().await?;
+        let root_id = if let Some(signed) = &accepted.federation_invocation {
+            let invocation = signed.invocation()?;
+            snapshot
+                .federation_imports
+                .get(&invocation.import.id)
+                .filter(|record| record.envelope_digest == invocation.import.envelope_digest)
+                .ok_or(AgentRuntimeError::Conflict)?
+                .root_id
+                .clone()
+        } else {
+            accepted.reference.execution_id().to_string()
+        };
         let root = snapshot
             .roots
-            .get(&accepted.reference.execution_id().to_string())
+            .get(&root_id)
             .ok_or(AgentRuntimeError::Conflict)?;
         Ok(root.cancelled)
+    }
+
+    async fn execution_future_starts_blocked(
+        &self,
+        execution_id: &str,
+    ) -> Result<bool, AgentRuntimeError> {
+        let snapshot = self.dependencies.coordinator.snapshot().await?;
+        let root_id = if snapshot.roots.contains_key(execution_id) {
+            execution_id
+        } else {
+            snapshot
+                .starts
+                .values()
+                .find(|start| {
+                    start
+                        .operation_evidence
+                        .as_ref()
+                        .is_some_and(|seal| seal.id == execution_id)
+                })
+                .and_then(|start| start.reservation.as_ref())
+                .map(|reservation| reservation.root_id.as_str())
+                .ok_or(AgentRuntimeError::Conflict)?
+        };
+        Ok(snapshot
+            .roots
+            .get(root_id)
+            .ok_or(AgentRuntimeError::Conflict)?
+            .cancelled)
     }
 
     /// Read and repair evidence without invoking a provider or reserving capacity.
@@ -1192,9 +1515,17 @@ impl AgentProviderRuntime {
             }
             None => None,
         };
+        let future_starts_blocked = self.future_starts_blocked(&accepted).await?;
         if task.status.state.is_terminal()
-            && !execution.as_ref().is_some_and(|receipt| matches!(&receipt.status,
-                GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))) {
+            && !(task.status.state == TaskState::Canceled
+                && execution.is_none()
+                && future_starts_blocked)
+            && !execution.as_ref().is_some_and(|receipt| {
+                matches!(&receipt.status,
+                GovernedProviderStatus::Completed { outcome }
+                    if task.status.state == terminal_state(outcome, future_starts_blocked))
+            })
+        {
             return Err(AgentRuntimeError::Conflict);
         }
         match execution {
@@ -1202,11 +1533,15 @@ impl AgentProviderRuntime {
                 self.project_execution(&scope, &accepted.initial_task, task, execution)
                     .await
             }
-            None if task.status.state.is_terminal() => Err(AgentRuntimeError::Conflict),
+            None if task.status.state.is_terminal()
+                && !(task.status.state == TaskState::Canceled && future_starts_blocked) =>
+            {
+                Err(AgentRuntimeError::Conflict)
+            }
             None => Ok(AgentTaskReceipt {
                 task,
                 execution: None,
-                future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+                future_starts_blocked,
                 continuation_pending,
             }),
         }
@@ -1224,11 +1559,93 @@ impl AgentProviderRuntime {
         self.binding.digest()
     }
 
+    /// Stable task identifier for an exact signed foreign message. Correlation
+    /// alone grants no observation or execution authority.
+    pub fn federated_task_id(
+        &self,
+        invocation: &SignedFederationInvocation,
+        message: &TaskMessage,
+    ) -> Result<uuid::Uuid, AgentRuntimeError> {
+        let action = self.prepare_message(message)?;
+        let signed = invocation.invocation().map_err(AgentRuntimeError::from)?;
+        if serde_json::to_value(&signed.message)? != serde_json::to_value(message)? {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let resource = self.binding.agent_resource();
+        Ok(federated_execution_reference(
+            invocation,
+            resource.namespace(),
+            resource.tenant(),
+            self.binding.target().clone(),
+            &governed_provider_input_digest(&action)?,
+        )?
+        .execution_id())
+    }
+
+    /// Resume only under the same signed intent supplied by a freshly
+    /// authenticated federation request. This is never called by the generic
+    /// recovery driver.
+    pub async fn resume_federated(
+        &self,
+        task_id: uuid::Uuid,
+        invocation: &SignedFederationInvocation,
+    ) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        if accepted.federation_invocation.as_ref() != Some(invocation)
+            || self.load_continuation_versioned(&accepted).await?.is_some()
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+        let mut task = self.materialize(&accepted).await?;
+        let previous = self
+            .executor
+            .inspect(&accepted.reference, self.binding.target())
+            .await?;
+        if task.status.state.is_terminal() {
+            let execution = previous.ok_or(AgentRuntimeError::Conflict)?;
+            return self
+                .project_execution(&scope, &accepted.initial_task, task, execution)
+                .await;
+        }
+        if !matches!(task.status.state, TaskState::Submitted | TaskState::Working) {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        if task.status.state == TaskState::Submitted {
+            task = self
+                .tasks
+                .start_governed_task(&scope, &accepted.initial_task)
+                .await?;
+        }
+        let execution = match previous {
+            Some(receipt)
+                if matches!(
+                    receipt.status,
+                    GovernedProviderStatus::Completed { .. }
+                        | GovernedProviderStatus::InFlight { .. }
+                        | GovernedProviderStatus::ReconciliationRequired { .. }
+                ) =>
+            {
+                receipt
+            }
+            _ => {
+                self.executor
+                    .execute_federated(invocation, &accepted.action, self.binding.target())
+                    .await?
+            }
+        };
+        self.project_execution(&scope, &accepted.initial_task, task, execution)
+            .await
+    }
+
     /// Recover original accepted work. Provider execution retains its existing
     /// immutable operation/attempt journal and coordinator start checkpoint.
     #[allow(clippy::too_many_lines)]
     pub async fn resume(&self, task_id: uuid::Uuid) -> Result<AgentTaskReceipt, AgentRuntimeError> {
         let accepted = self.load_acceptance(task_id).await?;
+        if accepted.federation_invocation.is_some() {
+            return Err(AgentRuntimeError::Invalid);
+        }
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
         let mut task = self.materialize(&accepted).await?;
         let mut continuation = self
@@ -1258,11 +1675,15 @@ impl AgentProviderRuntime {
             .inspect(current.reference, self.binding.target())
             .await?;
         // Terminal/paused Task projections do not authorize additional work.
+        let future_starts_blocked = self.future_starts_blocked(&accepted).await?;
         if task.status.state != TaskState::Submitted && task.status.state != TaskState::Working {
             if task.status.state.is_terminal()
+                && !(task.status.state == TaskState::Canceled
+                    && previous.is_none()
+                    && future_starts_blocked)
                 && !previous.as_ref().is_some_and(|r| match &r.status {
                     GovernedProviderStatus::Completed { outcome } => {
-                        task.status.state == terminal_state(outcome)
+                        task.status.state == terminal_state(outcome, future_starts_blocked)
                     }
                     _ => false,
                 })
@@ -1293,13 +1714,25 @@ impl AgentProviderRuntime {
                 .executor
                 .inspect(current.reference, self.binding.target())
                 .await?;
-            if !latest.as_ref().is_some_and(|r| match &r.status {
+            let confirmed_local_cancel = task.status.state == TaskState::Canceled
+                && latest.is_none()
+                && future_starts_blocked;
+            let matching_completion = latest.as_ref().is_some_and(|r| match &r.status {
                 GovernedProviderStatus::Completed { outcome } => {
-                    task.status.state == terminal_state(outcome)
+                    task.status.state == terminal_state(outcome, future_starts_blocked)
                 }
                 _ => false,
-            }) {
+            });
+            if !confirmed_local_cancel && !matching_completion {
                 return Err(AgentRuntimeError::Conflict);
+            }
+            if latest.is_none() {
+                return Ok(AgentTaskReceipt {
+                    task,
+                    execution: None,
+                    future_starts_blocked,
+                    continuation_pending: false,
+                });
             }
             return self
                 .project_execution(
@@ -1357,14 +1790,8 @@ impl AgentProviderRuntime {
                     task,
                     execution: Some(execution),
                     future_starts_blocked: self
-                        .dependencies
-                        .coordinator
-                        .snapshot()
-                        .await?
-                        .roots
-                        .get(&expected.id)
-                        .ok_or(AgentRuntimeError::Conflict)?
-                        .cancelled,
+                        .execution_future_starts_blocked(&expected.id)
+                        .await?,
                     continuation_pending: false,
                 });
             }
@@ -1376,7 +1803,8 @@ impl AgentProviderRuntime {
             } else {
                 serde_json::json!({"execution_id":expected.id,"result_in_governed_history":true})
             };
-            let next = terminal_state(outcome);
+            let future_starts_blocked = self.execution_future_starts_blocked(&expected.id).await?;
+            let next = terminal_state(outcome, future_starts_blocked);
             let artifact = Artifact::new("governed-result", vec![TaskPart::data(result)]);
             if task.status.state == next
                 && task.artifacts.len() == 1
@@ -1386,14 +1814,8 @@ impl AgentProviderRuntime {
                     task,
                     execution: Some(execution),
                     future_starts_blocked: self
-                        .dependencies
-                        .coordinator
-                        .snapshot()
-                        .await?
-                        .roots
-                        .get(&expected.id)
-                        .ok_or(AgentRuntimeError::Conflict)?
-                        .cancelled,
+                        .execution_future_starts_blocked(&expected.id)
+                        .await?,
                     continuation_pending: false,
                 });
             }
@@ -1405,24 +1827,20 @@ impl AgentProviderRuntime {
         Ok(AgentTaskReceipt {
             task,
             execution: Some(execution),
-            future_starts_blocked: self
-                .dependencies
-                .coordinator
-                .snapshot()
-                .await?
-                .roots
-                .get(&expected.id)
-                .ok_or(AgentRuntimeError::Conflict)?
-                .cancelled,
+            future_starts_blocked: self.execution_future_starts_blocked(&expected.id).await?,
             continuation_pending: false,
         })
     }
 }
 
-fn terminal_state(outcome: &ActionOutcome) -> TaskState {
-    if matches!(outcome, ActionOutcome::Executed(_)) {
-        TaskState::Completed
-    } else {
-        TaskState::Failed
+fn terminal_state(outcome: &ActionOutcome, cancellation_requested: bool) -> TaskState {
+    match outcome {
+        ActionOutcome::Executed(_) => TaskState::Completed,
+        ActionOutcome::Failed(error)
+            if cancellation_requested && error.code == "RECONCILED_NO_EFFECT" =>
+        {
+            TaskState::Canceled
+        }
+        _ => TaskState::Failed,
     }
 }

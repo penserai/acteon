@@ -1,8 +1,8 @@
-# Authenticated agent services implementation checkpoint
+# Authenticated governed agent services checkpoint
 
-October 6, 2026. This branch preserves work in progress on configured agent
-services following the durable agent task runtime released in PR #432.
-It is not ready to merge or advertise as a complete A2A service.
+Updated October 11, 2026. This checkpoint records the implemented configured
+agent-service surface and the remaining release gates following the durable
+agent task runtime released in PR #432.
 
 Implemented so far:
 
@@ -21,6 +21,13 @@ Implemented so far:
 - Legacy tenant A2A read, append, cancel, events, and push configuration cannot
   access governed service tasks. The boundary reads durable acceptance rather
   than trusting display metadata.
+- The exact-agent JSON-RPC boundary supports schema-closed A2A 1.0 push
+  configuration create/get/list/delete and inline registration. Every operation
+  reuses original-task authorization and requires operations-management
+  permission; agent principals also need the exact host receipt. Stored rows
+  are revalidated on read and delivery. All five SDKs expose typed task-bound
+  helpers. Delivery callbacks now carry official `StreamResponse` bodies and
+  the specified token and authentication headers.
 - Requester-isolated observation authenticates the original source credential.
   Agent callers must also present the exact source context returned by admission.
   Observation repairs known completion receipts without starting provider work.
@@ -78,12 +85,15 @@ message identity and inspect durable evidence rather than constructing new work.
   task and its descendant budget subtree. `POST
   /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the same
   private authentication and source-context requirements as observation. Its
-  response contains the original task and `future_starts_blocked: true`.
+  response contains the original task, `future_starts_blocked: true`, and a
+  separate `cancellation_confirmed` finality verdict.
   An optional typed `provider_abort` reports `restricted_only`, `uncertain`, or
   reconciliation-verified finality. The durable abort journal is written before
   one adapter call; crashes and lost responses are never resent automatically.
   This does not refund spent budget, release unresolved capacity, or replace a
-  known result with a `cancelled` task. Lost restriction acknowledgements are
+  known provider result with a canceled task. A local non-start or qualified
+  no-effect proof is projected as `canceled`; unsupported and uncertain aborts
+  remain nonterminal. Lost restriction acknowledgements are
   recovered by stopping the same original task again. Recovery scheduling skips
   durably stopped work.
 
@@ -157,9 +167,9 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete remote A2A event cursors, input/auth responses and cancellation
-  lifecycle work. Governed snapshot refresh now covers polling and terminal
-  result projection.
+- Complete remote A2A event cursors and input/auth response lifecycle work.
+  Governed snapshot refresh and exact-agent listing now cover polling,
+  filtered pagination, cancellation, and terminal result projection.
 - Extend lifecycle SDK/UI integration as outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 

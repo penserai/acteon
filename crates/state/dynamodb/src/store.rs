@@ -6,7 +6,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 
 use acteon_state::error::StateError;
 use acteon_state::key::{KeyKind, StateKey};
-use acteon_state::store::{CasResult, StateStore};
+use acteon_state::store::{CasResult, StateScanPage, StateStore};
 
 use crate::config::DynamoConfig;
 use crate::table::{build_pk, build_sk};
@@ -618,6 +618,96 @@ impl StateStore for DynamoStateStore {
         Ok(results)
     }
 
+    async fn scan_keys_page(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let canonical_scope = format!("{namespace}:{tenant}:");
+        let canonical_prefix = match prefix {
+            Some(prefix) => format!("{canonical_scope}{kind}:{prefix}"),
+            None => format!("{canonical_scope}{kind}:"),
+        };
+        if after.is_some_and(|cursor| !cursor.starts_with(&canonical_prefix)) {
+            return Err(StateError::Backend("invalid state scan page cursor".into()));
+        }
+        let pk = format!("{}:{namespace}:{tenant}", self.prefix);
+        let sk_prefix = match prefix {
+            Some(prefix) => format!("{kind}:{prefix}"),
+            None => format!("{kind}:"),
+        };
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let mut exclusive_start_key = after.map(|cursor| {
+            std::collections::HashMap::from([
+                ("pk".into(), AttributeValue::S(pk.clone())),
+                (
+                    "sk".into(),
+                    AttributeValue::S(
+                        cursor
+                            .strip_prefix(&canonical_scope)
+                            .expect("validated scoped cursor")
+                            .into(),
+                    ),
+                ),
+            ])
+        });
+        let mut entries = Vec::new();
+        while entries.len() <= limit {
+            let remaining = i32::try_from(limit + 1 - entries.len())
+                .map_err(|_| StateError::Backend("invalid state scan page limit".into()))?;
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk AND begins_with(sk, :sk_prefix)")
+                .expression_attribute_values(":pk", AttributeValue::S(pk.clone()))
+                .expression_attribute_values(":sk_prefix", AttributeValue::S(sk_prefix.clone()))
+                .expression_attribute_values(":now", AttributeValue::N(now_epoch.to_string()))
+                .filter_expression("attribute_not_exists(expires_at) OR expires_at > :now")
+                .limit(remaining);
+            if let Some(key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(key));
+            }
+            let response = query
+                .send()
+                .await
+                .map_err(|error| StateError::Backend(error.to_string()))?;
+            for item in response.items() {
+                let Some(AttributeValue::S(sk)) = item.get("sk") else {
+                    continue;
+                };
+                let value = match item.get("value") {
+                    Some(AttributeValue::S(value) | AttributeValue::N(value)) => value.clone(),
+                    _ => continue,
+                };
+                entries.push((format!("{namespace}:{tenant}:{sk}"), value));
+                if entries.len() > limit {
+                    break;
+                }
+            }
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() || entries.len() > limit {
+                break;
+            }
+        }
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        let next_cursor = has_more.then(|| entries[entries.len() - 1].0.clone());
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
+    }
+
     async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
         // For DynamoDB, we need to scan the entire table and filter by kind.
         // This is expensive but necessary for global scans.
@@ -682,6 +772,102 @@ impl StateStore for DynamoStateStore {
         }
 
         Ok(results)
+    }
+
+    async fn scan_keys_by_kind_page(
+        &self,
+        kind: KeyKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let exclusive_start_key = after
+            .map(|cursor| {
+                let [cursor_prefix, cursor_kind, pk, sk]: [String; 4] =
+                    serde_json::from_str(cursor).map_err(|_| {
+                        StateError::Backend("invalid state scan page cursor".into())
+                    })?;
+                if cursor_prefix != self.prefix
+                    || cursor_kind != kind.to_string()
+                    || pk.is_empty()
+                    || sk.is_empty()
+                    || pk.len() > 2_048
+                    || sk.len() > 1_024
+                {
+                    return Err(StateError::Backend("invalid state scan page cursor".into()));
+                }
+                Ok(std::collections::HashMap::from([
+                    ("pk".into(), AttributeValue::S(pk)),
+                    ("sk".into(), AttributeValue::S(sk)),
+                ]))
+            })
+            .transpose()?;
+        let sk_prefix = format!("{kind}:");
+        let pk_prefix = format!("{}:", self.prefix);
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let mut scan = self
+            .client
+            .scan()
+            .table_name(&self.table_name)
+            .filter_expression(
+                "begins_with(pk, :pk_prefix) AND begins_with(sk, :sk_prefix) AND \
+                 (attribute_not_exists(expires_at) OR expires_at > :now)",
+            )
+            .expression_attribute_values(":pk_prefix", AttributeValue::S(pk_prefix))
+            .expression_attribute_values(":sk_prefix", AttributeValue::S(sk_prefix))
+            .expression_attribute_values(":now", AttributeValue::N(now_epoch.to_string()))
+            .limit(
+                i32::try_from(limit)
+                    .map_err(|_| StateError::Backend("invalid state scan page limit".into()))?,
+            );
+        if let Some(key) = exclusive_start_key {
+            scan = scan.set_exclusive_start_key(Some(key));
+        }
+        let response = scan
+            .send()
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        let mut entries = Vec::new();
+        for item in response.items() {
+            let Some(AttributeValue::S(pk)) = item.get("pk") else {
+                continue;
+            };
+            let Some(AttributeValue::S(sk)) = item.get("sk") else {
+                continue;
+            };
+            let value = match item.get("value") {
+                Some(AttributeValue::S(value) | AttributeValue::N(value)) => value.clone(),
+                _ => continue,
+            };
+            let namespace_tenant = pk
+                .strip_prefix(&format!("{}:", self.prefix))
+                .ok_or_else(|| StateError::Backend("invalid state row prefix".into()))?;
+            entries.push((format!("{namespace_tenant}:{sk}"), value));
+        }
+        let next_cursor = response
+            .last_evaluated_key()
+            .filter(|key| !key.is_empty())
+            .map(|key| {
+                let pk = match key.get("pk") {
+                    Some(AttributeValue::S(value)) => value.clone(),
+                    _ => return Err(StateError::Backend("invalid DynamoDB page cursor".into())),
+                };
+                let sk = match key.get("sk") {
+                    Some(AttributeValue::S(value)) => value.clone(),
+                    _ => return Err(StateError::Backend("invalid DynamoDB page cursor".into())),
+                };
+                serde_json::to_string(&[self.prefix.clone(), kind.to_string(), pk, sk])
+                    .map_err(|error| StateError::Serialization(error.to_string()))
+            })
+            .transpose()?;
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
     }
 
     async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import unicodedata
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 from uuid import UUID
 
@@ -17,6 +19,17 @@ from .models import PermitReference
 AGENT_SOURCE_CONTEXT_HEADER = "x-acteon-agent-source-context"
 AGENT_EXECUTION_CONTEXT_HEADER = "x-acteon-execution-context"
 EXECUTION_PERMITS_HEADER = "x-acteon-execution-permits"
+AgentServiceTaskState = Literal[
+    "TASK_STATE_UNSPECIFIED",
+    "TASK_STATE_SUBMITTED",
+    "TASK_STATE_WORKING",
+    "TASK_STATE_COMPLETED",
+    "TASK_STATE_FAILED",
+    "TASK_STATE_CANCELED",
+    "TASK_STATE_INPUT_REQUIRED",
+    "TASK_STATE_AUTH_REQUIRED",
+    "TASK_STATE_REJECTED",
+]
 
 
 def _source(value: str | None) -> str:
@@ -45,6 +58,59 @@ class AgentServiceReceipt:
     task_id: str
     source_context: str = field(repr=False)
     task: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentServiceTaskPage:
+    """Schema-validated official A2A task page for one exact agent."""
+
+    tasks: tuple[dict[str, Any], ...]
+    next_page_token: str
+    page_size: int
+    total_size: int
+
+
+@dataclass(frozen=True)
+class AgentServicePushAuthentication:
+    """HTTP authentication included on official A2A webhook deliveries."""
+
+    scheme: str
+    credentials: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class AgentServicePushConfigInput:
+    """Bounded input for one exact-agent push configuration."""
+
+    url: str
+    id: str | None = None
+    token: str | None = field(default=None, repr=False)
+    authentication: AgentServicePushAuthentication | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class AgentServicePushConfig:
+    """Schema-validated exact-agent push configuration."""
+
+    id: str
+    task_id: str
+    url: str
+    token: str | None = field(default=None, repr=False)
+    authentication: AgentServicePushAuthentication | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class AgentServicePushConfigPage:
+    configs: tuple[AgentServicePushConfig, ...]
+    next_page_token: str
+
+
+@dataclass(frozen=True)
+class AgentServiceA2aFrame:
+    """One official StreamResponse plus out-of-band admission provenance."""
+
+    result: dict[str, Any]
+    source_context: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -77,10 +143,11 @@ def _parent_headers(parent: AgentServiceParent | None) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class AgentServiceStopReceipt:
-    """Future starts are blocked; provider finality is reported separately."""
+    """Cancellation intent with confirmed finality reported separately."""
 
     task: dict[str, Any]
     future_starts_blocked: bool
+    cancellation_confirmed: bool
     provider_abort: AgentServiceProviderAbort | None = None
 
 
@@ -494,11 +561,19 @@ def _response_value(response: httpx.Response) -> Any:
 
 def _stop(response: httpx.Response, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
     value = _response_value(response)
-    if not isinstance(value, dict) or value.get("future_starts_blocked") is not True:
+    if (
+        not isinstance(value, dict)
+        or value.get("future_starts_blocked") is not True
+        or not isinstance(value.get("cancellation_confirmed"), bool)
+    ):
+        raise ActeonError("agent service stop acknowledgement missing or malformed")
+    task = _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id)
+    if value["cancellation_confirmed"] and task.get("status", {}).get("state") != "canceled":
         raise ActeonError("agent service stop acknowledgement missing or malformed")
     return AgentServiceStopReceipt(
-        _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id),
+        task,
         True,
+        value["cancellation_confirmed"],
         _provider_abort(value.get("provider_abort")),
     )
 
@@ -527,8 +602,288 @@ def _base(namespace: str, tenant: str, agent: str) -> str:
     return f"/a2a/{_segment(namespace)}/{_segment(tenant)}/agents/{_segment(agent)}/v1"
 
 
+def _rpc_base(namespace: str, tenant: str, agent: str) -> str:
+    return f"/a2a/{_segment(namespace)}/{_segment(tenant)}/agents/{_segment(agent)}"
+
+
+def _a2a_result(data: str, request_id: str, source: str | None) -> AgentServiceA2aFrame:
+    try:
+        value = json.loads(data)
+    except (json.JSONDecodeError, ValueError) as decode_error:
+        raise ActeonError(f"invalid A2A SSE frame: {decode_error}") from decode_error
+    if (
+        not isinstance(value, dict)
+        or value.get("jsonrpc") != "2.0"
+        or value.get("id") != request_id
+    ):
+        raise ActeonError("A2A SSE frame request identity mismatch")
+    if isinstance(value.get("error"), dict):
+        error = value["error"]
+        raise ActeonError(
+            f"A2A error {error.get('code', 'A2A')}: {error.get('message', 'stream failed')}"
+        )
+    result = value.get("result")
+    if not isinstance(result, dict):
+        raise ActeonError("A2A SSE frame has no object result")
+    return AgentServiceA2aFrame(result, source)
+
+
+def _list_params(
+    *,
+    context_id: str | None,
+    status: str | None,
+    page_size: int | None,
+    page_token: str | None,
+    history_length: int | None,
+    status_timestamp_after: datetime | None,
+    include_artifacts: bool,
+) -> dict[str, Any]:
+    states = {
+        "TASK_STATE_UNSPECIFIED",
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_AUTH_REQUIRED",
+        "TASK_STATE_REJECTED",
+    }
+    if status is not None and status not in states:
+        raise ValueError("invalid A2A task status")
+    if page_size is not None and not 1 <= page_size <= 100:
+        raise ValueError("page_size must be between 1 and 100")
+    if page_token is not None and len(page_token) > 8192:
+        raise ValueError("page_token is too large")
+    if history_length is not None and not 0 <= history_length <= 2_147_483_647:
+        raise ValueError("history_length must fit a signed 32-bit integer")
+    params: dict[str, Any] = {}
+    for key, value in (
+        ("contextId", context_id),
+        ("status", status),
+        ("pageSize", page_size),
+        ("pageToken", page_token),
+        ("historyLength", history_length),
+    ):
+        if value is not None:
+            params[key] = value
+    if status_timestamp_after is not None:
+        params["statusTimestampAfter"] = status_timestamp_after.isoformat().replace("+00:00", "Z")
+    if include_artifacts:
+        params["includeArtifacts"] = True
+    return params
+
+
+def _task_page(value: dict[str, Any]) -> AgentServiceTaskPage:
+    if set(value) != {"tasks", "nextPageToken", "pageSize", "totalSize"}:
+        raise ActeonError("agent service A2A task page fields are invalid")
+    tasks = value.get("tasks")
+    token = value.get("nextPageToken")
+    page_size = value.get("pageSize")
+    total_size = value.get("totalSize")
+    if (
+        not isinstance(tasks, list)
+        or not isinstance(token, str)
+        or len(token) > 8192
+        or not isinstance(page_size, int)
+        or isinstance(page_size, bool)
+        or not 1 <= page_size <= 100
+        or not isinstance(total_size, int)
+        or isinstance(total_size, bool)
+        or total_size < len(tasks)
+        or len(tasks) > page_size
+    ):
+        raise ActeonError("agent service A2A task page is malformed")
+    typed: list[dict[str, Any]] = []
+    task_states = {
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_AUTH_REQUIRED",
+        "TASK_STATE_REJECTED",
+    }
+    for task in tasks:
+        if (
+            not isinstance(task, dict)
+            or not isinstance(task.get("id"), str)
+            or not task["id"]
+            or not isinstance(task.get("status"), dict)
+            or task["status"].get("state") not in task_states
+            or "namespace" in task
+            or "tenant" in task
+            or (
+                isinstance(task.get("metadata"), dict)
+                and "acteon_governed_execution" in task["metadata"]
+            )
+        ):
+            raise ActeonError("agent service A2A task projection is invalid")
+        typed.append(task)
+    return AgentServiceTaskPage(tuple(typed), token, page_size, total_size)
+
+
+def _list_source_headers(
+    namespace: str,
+    tenant: str,
+    agent: str,
+    source: AgentServiceReceipt | None,
+) -> dict[str, str]:
+    headers = dict(_A2A_HEADERS)
+    if source is None:
+        return headers
+    if (source.namespace, source.tenant, source.agent) != (namespace, tenant, agent):
+        raise ValueError("agent service ListTasks receipt does not match the route")
+    headers[AGENT_SOURCE_CONTEXT_HEADER] = _source(source.source_context)
+    return headers
+
+
+def _push_source_headers(
+    namespace: str,
+    tenant: str,
+    agent: str,
+    task_id: str,
+    source: AgentServiceReceipt | None,
+) -> dict[str, str]:
+    headers = dict(_A2A_HEADERS)
+    if source is None:
+        return headers
+    if (source.namespace, source.tenant, source.agent, source.task_id) != (
+        namespace,
+        tenant,
+        agent,
+        task_id,
+    ):
+        raise ValueError("agent service push receipt does not match the route or task")
+    headers[AGENT_SOURCE_CONTEXT_HEADER] = _source(source.source_context)
+    return headers
+
+
+def _push_input(value: AgentServicePushConfigInput, task_id: str) -> dict[str, Any]:
+    if not task_id or not value.url:
+        raise ValueError("task_id and push URL must not be empty")
+    if value.token is not None and len(value.token) > 4096:
+        raise ValueError("push token is too large")
+    result: dict[str, Any] = {"taskId": task_id, "url": value.url}
+    if value.id is not None:
+        result["id"] = value.id
+    if value.token is not None:
+        result["token"] = value.token
+    if value.authentication is not None:
+        authentication = value.authentication
+        if (
+            not authentication.scheme.strip()
+            or len(authentication.scheme) > 256
+            or (authentication.credentials is not None and len(authentication.credentials) > 4096)
+        ):
+            raise ValueError("push authentication is invalid")
+        result["authentication"] = {"scheme": authentication.scheme}
+        if authentication.credentials is not None:
+            result["authentication"]["credentials"] = authentication.credentials
+    return result
+
+
+def _push_config(value: dict[str, Any], task_id: str) -> AgentServicePushConfig:
+    allowed = {"id", "taskId", "url", "token", "authentication"}
+    if set(value) - allowed:
+        raise ActeonError("agent service A2A push configuration fields are invalid")
+    config_id = value.get("id")
+    url = value.get("url")
+    token = value.get("token")
+    auth = value.get("authentication")
+    if (
+        not isinstance(config_id, str)
+        or not config_id
+        or value.get("taskId") != task_id
+        or not isinstance(url, str)
+        or not url
+        or (token is not None and (not isinstance(token, str) or len(token) > 4096))
+        or (auth is not None and not isinstance(auth, dict))
+    ):
+        raise ActeonError("agent service A2A push configuration is invalid")
+    authentication = None
+    if isinstance(auth, dict):
+        if set(auth) - {"scheme", "credentials"}:
+            raise ActeonError("agent service A2A push authentication is invalid")
+        scheme = auth.get("scheme")
+        credentials = auth.get("credentials")
+        if (
+            not isinstance(scheme, str)
+            or not scheme.strip()
+            or len(scheme) > 256
+            or (
+                credentials is not None
+                and (not isinstance(credentials, str) or len(credentials) > 4096)
+            )
+        ):
+            raise ActeonError("agent service A2A push authentication is invalid")
+        authentication = AgentServicePushAuthentication(scheme, credentials)
+    return AgentServicePushConfig(config_id, task_id, url, token, authentication)
+
+
+def _push_page(value: dict[str, Any], task_id: str) -> AgentServicePushConfigPage:
+    if set(value) != {"configs", "nextPageToken"}:
+        raise ActeonError("agent service A2A push page fields are invalid")
+    configs = value.get("configs")
+    token = value.get("nextPageToken")
+    if (
+        not isinstance(configs, list)
+        or not isinstance(token, str)
+        or len(token) > 8192
+        or any(not isinstance(config, dict) for config in configs)
+    ):
+        raise ActeonError("agent service A2A push page is invalid")
+    return AgentServicePushConfigPage(
+        tuple(_push_config(cast(dict[str, Any], config), task_id) for config in configs),
+        token,
+    )
+
+
+def _sse_data(lines: Iterator[str]) -> Iterator[str]:
+    data: list[str] = []
+    size = 0
+    for line in lines:
+        if line == "":
+            if data:
+                yield "\n".join(data)
+            data = []
+            size = 0
+        elif line.startswith("data:"):
+            value = line[len("data:") :].lstrip()
+            size += len(value.encode("utf-8"))
+            if size > 2 * 1024 * 1024:
+                raise ActeonError("A2A SSE frame exceeds 2 MiB")
+            data.append(value)
+    if data:
+        yield "\n".join(data)
+
+
+async def _async_sse_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
+    data: list[str] = []
+    size = 0
+    async for line in lines:
+        if line == "":
+            if data:
+                yield "\n".join(data)
+            data = []
+            size = 0
+        elif line.startswith("data:"):
+            value = line[len("data:") :].lstrip()
+            size += len(value.encode("utf-8"))
+            if size > 2 * 1024 * 1024:
+                raise ActeonError("A2A SSE frame exceeds 2 MiB")
+            data.append(value)
+    if data:
+        yield "\n".join(data)
+
+
 class _AgentServicesMixin:
     if TYPE_CHECKING:
+        base_url: str
+        _client: httpx.Client
+
+        def _headers(self) -> dict[str, str]: ...
 
         def _request(
             self,
@@ -557,6 +912,293 @@ class _AgentServicesMixin:
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
+
+    def agent_service_send_streaming_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        message: dict[str, Any],
+        *,
+        parent: AgentServiceParent | None = None,
+    ) -> Iterator[AgentServiceA2aFrame]:
+        """Invoke one exact governed agent using official A2A SSE."""
+        message_id = message.get("messageId")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("streaming message requires messageId")
+        request_id = f"stream:{message_id}"
+        headers = {**self._headers(), **_parent_headers(parent), "Accept": "text/event-stream"}
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SendStreamingMessage",
+            "params": {"message": message},
+        }
+        with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                response.read()
+                raise HttpError(response.status_code, response.text or "agent A2A stream failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                response.read()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            source = _source(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER))
+            for data in _sse_data(response.iter_lines()):
+                yield _a2a_result(data, request_id, source)
+
+    def agent_service_subscribe_task(
+        self, receipt: AgentServiceReceipt
+    ) -> Iterator[AgentServiceA2aFrame]:
+        """Subscribe to one retained governed Task using official A2A SSE."""
+        request_id = f"subscribe:{receipt.task_id}"
+        headers = {
+            **self._headers(),
+            **_A2A_HEADERS,
+            "Accept": "text/event-stream",
+            AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+        }
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SubscribeToTask",
+            "params": {"id": receipt.task_id},
+        }
+        with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                response.read()
+                raise HttpError(response.status_code, response.text or "agent A2A subscribe failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                response.read()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            for data in _sse_data(response.iter_lines()):
+                yield _a2a_result(data, request_id, None)
+
+    def agent_service_cancel_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
+        """Request official A2A cancellation and preserve pending finality metadata."""
+        request_id = f"cancel:{receipt.task_id}"
+        response = self._client.post(
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "CancelTask",
+                "params": {"id": receipt.task_id},
+            },
+            headers={
+                **self._headers(),
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        task = _a2a_result(response.text, request_id, None).result
+        if task.get("id") != receipt.task_id or not isinstance(task.get("status"), dict):
+            raise ActeonError("agent service A2A cancellation task identity mismatch")
+        return task
+
+    def agent_service_list_tasks(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+        context_id: str | None = None,
+        status: AgentServiceTaskState | None = None,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        history_length: int | None = None,
+        status_timestamp_after: datetime | None = None,
+        include_artifacts: bool = False,
+    ) -> AgentServiceTaskPage:
+        """List Tasks visible to the current source through the exact agent."""
+        request_id = f"list:{agent}"
+        params = _list_params(
+            context_id=context_id,
+            status=status,
+            page_size=page_size,
+            page_token=page_token,
+            history_length=history_length,
+            status_timestamp_after=status_timestamp_after,
+            include_artifacts=include_artifacts,
+        )
+        response = self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "ListTasks",
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_list_source_headers(namespace, tenant, agent, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _task_page(_a2a_result(response.text, request_id, None).result)
+
+    def _agent_service_push_rpc(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        method: str,
+        params: dict[str, Any],
+        source: AgentServiceReceipt | None,
+    ) -> dict[str, Any]:
+        request_id = f"push:{method}:{task_id}"
+        response = self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_push_source_headers(namespace, tenant, agent, task_id, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _a2a_result(response.text, request_id, None).result
+
+    def agent_service_create_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config: AgentServicePushConfigInput,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        """Create/update a config using an operations-management credential."""
+        result = self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "CreateTaskPushNotificationConfig",
+            _push_input(config, task_id),
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if config.id is not None and parsed.id != config.id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    def agent_service_get_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        result = self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "GetTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if parsed.id != config_id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    def agent_service_list_push_configs(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        *,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfigPage:
+        if page_size is not None and not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        if page_token is not None and len(page_token) > 8192:
+            raise ValueError("page_token is too large")
+        params: dict[str, Any] = {"taskId": task_id}
+        if page_size is not None:
+            params["pageSize"] = page_size
+        if page_token is not None:
+            params["pageToken"] = page_token
+        return _push_page(
+            self._agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "ListTaskPushNotificationConfigs",
+                params,
+                source,
+            ),
+            task_id,
+        )
+
+    def agent_service_delete_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> None:
+        result = self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "DeleteTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        if result:
+            raise ActeonError("agent service A2A delete result is invalid")
 
     def agent_service_send_peer(
         self,
@@ -817,6 +1459,10 @@ class _AgentServicesMixin:
 
 class _AsyncAgentServicesMixin:
     if TYPE_CHECKING:
+        base_url: str
+        _client: httpx.AsyncClient
+
+        def _headers(self) -> dict[str, str]: ...
 
         async def _request(
             self,
@@ -845,6 +1491,292 @@ class _AsyncAgentServicesMixin:
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
+
+    async def agent_service_send_streaming_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        message: dict[str, Any],
+        *,
+        parent: AgentServiceParent | None = None,
+    ) -> AsyncIterator[AgentServiceA2aFrame]:
+        """Invoke one exact governed agent using official A2A SSE."""
+        message_id = message.get("messageId")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("streaming message requires messageId")
+        request_id = f"stream:{message_id}"
+        headers = {**self._headers(), **_parent_headers(parent), "Accept": "text/event-stream"}
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SendStreamingMessage",
+            "params": {"message": message},
+        }
+        async with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                await response.aread()
+                raise HttpError(response.status_code, response.text or "agent A2A stream failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                await response.aread()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            source = _source(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER))
+            async for data in _async_sse_data(response.aiter_lines()):
+                yield _a2a_result(data, request_id, source)
+
+    async def agent_service_subscribe_task(
+        self, receipt: AgentServiceReceipt
+    ) -> AsyncIterator[AgentServiceA2aFrame]:
+        """Subscribe to one retained governed Task using official A2A SSE."""
+        request_id = f"subscribe:{receipt.task_id}"
+        headers = {
+            **self._headers(),
+            **_A2A_HEADERS,
+            "Accept": "text/event-stream",
+            AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+        }
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SubscribeToTask",
+            "params": {"id": receipt.task_id},
+        }
+        async with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                await response.aread()
+                raise HttpError(response.status_code, response.text or "agent A2A subscribe failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                await response.aread()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            async for data in _async_sse_data(response.aiter_lines()):
+                yield _a2a_result(data, request_id, None)
+
+    async def agent_service_cancel_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
+        """Request official A2A cancellation and preserve pending finality metadata."""
+        request_id = f"cancel:{receipt.task_id}"
+        response = await self._client.post(
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "CancelTask",
+                "params": {"id": receipt.task_id},
+            },
+            headers={
+                **self._headers(),
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        task = _a2a_result(response.text, request_id, None).result
+        if task.get("id") != receipt.task_id or not isinstance(task.get("status"), dict):
+            raise ActeonError("agent service A2A cancellation task identity mismatch")
+        return task
+
+    async def agent_service_list_tasks(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+        context_id: str | None = None,
+        status: AgentServiceTaskState | None = None,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        history_length: int | None = None,
+        status_timestamp_after: datetime | None = None,
+        include_artifacts: bool = False,
+    ) -> AgentServiceTaskPage:
+        """List Tasks visible to the current source through the exact agent."""
+        request_id = f"list:{agent}"
+        params = _list_params(
+            context_id=context_id,
+            status=status,
+            page_size=page_size,
+            page_token=page_token,
+            history_length=history_length,
+            status_timestamp_after=status_timestamp_after,
+            include_artifacts=include_artifacts,
+        )
+        response = await self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "ListTasks",
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_list_source_headers(namespace, tenant, agent, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _task_page(_a2a_result(response.text, request_id, None).result)
+
+    async def _agent_service_push_rpc(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        method: str,
+        params: dict[str, Any],
+        source: AgentServiceReceipt | None,
+    ) -> dict[str, Any]:
+        request_id = f"push:{method}:{task_id}"
+        response = await self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_push_source_headers(namespace, tenant, agent, task_id, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _a2a_result(response.text, request_id, None).result
+
+    async def agent_service_create_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config: AgentServicePushConfigInput,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        result = await self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "CreateTaskPushNotificationConfig",
+            _push_input(config, task_id),
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if config.id is not None and parsed.id != config.id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    async def agent_service_get_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfig:
+        result = await self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "GetTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        parsed = _push_config(result, task_id)
+        if parsed.id != config_id:
+            raise ActeonError("agent service A2A push config identity mismatch")
+        return parsed
+
+    async def agent_service_list_push_configs(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        *,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        source: AgentServiceReceipt | None = None,
+    ) -> AgentServicePushConfigPage:
+        if page_size is not None and not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        if page_token is not None and len(page_token) > 8192:
+            raise ValueError("page_token is too large")
+        params: dict[str, Any] = {"taskId": task_id}
+        if page_size is not None:
+            params["pageSize"] = page_size
+        if page_token is not None:
+            params["pageToken"] = page_token
+        return _push_page(
+            await self._agent_service_push_rpc(
+                namespace,
+                tenant,
+                agent,
+                task_id,
+                "ListTaskPushNotificationConfigs",
+                params,
+                source,
+            ),
+            task_id,
+        )
+
+    async def agent_service_delete_push_config(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        config_id: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+    ) -> None:
+        result = await self._agent_service_push_rpc(
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            "DeleteTaskPushNotificationConfig",
+            {"taskId": task_id, "id": config_id},
+            source,
+        )
+        if result:
+            raise ActeonError("agent service A2A delete result is invalid")
 
     async def agent_service_send_peer(
         self,

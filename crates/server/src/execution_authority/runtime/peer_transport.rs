@@ -361,7 +361,7 @@ impl ExecutionAuthorityRuntime {
         .await
     }
 
-    async fn agent_peer_tool_parent(
+    pub(super) async fn agent_peer_tool_parent(
         &self,
         namespace: &str,
         tenant: &str,

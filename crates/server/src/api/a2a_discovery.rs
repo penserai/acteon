@@ -9,7 +9,9 @@
 //!   the agent's lean record at [`KeyKind::BusAgent`] gains
 //!   `has_agent_card = true` so the hot heartbeat / list / route
 //!   path can short-circuit without loading the verbose card body.
-//! - **Public discovery** — `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`.
+//! - **Public discovery** — the legacy stored-card view at
+//!   `GET /a2a/{namespace}/{tenant}/.well-known/agent.json` and the A2A 1.0
+//!   `ProtoJSON` projection at `GET .../.well-known/agent-card.json`.
 //!   Per the A2A spec, agent discovery is public and unauthenticated.
 //!   Acteon serves one A2A endpoint per `(namespace, tenant)`; the
 //!   discovery response is the single card if the tenant has one
@@ -104,7 +106,7 @@ fn agent_key(namespace: &str, tenant: &str, agent_id: &str) -> StateKey {
     StateKey::new(namespace, tenant, KeyKind::BusAgent, agent_id)
 }
 
-async fn load_card(
+pub(crate) async fn load_card(
     store: &Arc<dyn StateStore>,
     namespace: &str,
     tenant: &str,
@@ -323,6 +325,168 @@ pub async fn discover_agent(
     }
 }
 
+/// `GET /a2a/{namespace}/{tenant}/.well-known/agent-card.json`
+///
+/// Projects Acteon's richer durable card into the schema-closed A2A 1.0
+/// `ProtoJSON` discovery shape. Internal ownership, timestamps and input schemas
+/// intentionally remain private. Keeping this as a wire projection lets
+/// existing stored cards survive protocol upgrades without a destructive
+/// state migration.
+pub async fn discover_agent_v1(
+    State(state): State<AppState>,
+    Path((namespace, tenant)): Path<(String, String)>,
+) -> Response {
+    match resolve_tenant_card(&state, &namespace, &tenant).await {
+        Ok(Some(card)) => {
+            let projected = project_v1_card(&card);
+            if projected["supportedInterfaces"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+            {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "the published card has no JSONRPC interface qualified for A2A 1.0"
+                            .into(),
+                    }),
+                )
+                    .into_response();
+            }
+            (StatusCode::OK, Json(projected)).into_response()
+        }
+        Ok(None) => not_found(format!(
+            "no agent registered with a published card under {namespace}/{tenant}",
+        )),
+        Err(e) => internal(format!("scan agent_cards: {e}")),
+    }
+}
+
+pub(crate) fn project_v1_card(card: &AgentCard) -> serde_json::Value {
+    let supported_interfaces = card
+        .interfaces
+        .iter()
+        .filter(|interface| matches!(interface.kind.as_str(), "json-rpc" | "jsonrpc"))
+        .map(|interface| {
+            serde_json::json!({
+                "url": interface.url,
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut output_modes = card
+        .skills
+        .iter()
+        .flat_map(|skill| skill.output_media_types.iter().cloned())
+        .collect::<Vec<_>>();
+    output_modes.sort();
+    output_modes.dedup();
+    if output_modes.is_empty() {
+        output_modes.push("text/plain".to_string());
+    }
+
+    let skills = card
+        .skills
+        .iter()
+        .map(|skill| {
+            serde_json::json!({
+                "id": skill.name,
+                "name": skill.name,
+                "description": skill.description.as_deref().unwrap_or(&skill.name),
+                "tags": [],
+                "inputModes": ["application/json", "text/plain"],
+                "outputModes": if skill.output_media_types.is_empty() {
+                    vec!["text/plain".to_string()]
+                } else {
+                    skill.output_media_types.clone()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let security_schemes = card
+        .security_schemes
+        .iter()
+        .map(|(name, scheme)| (name.clone(), project_v1_security_scheme(scheme)))
+        .collect::<serde_json::Map<_, _>>();
+    let security_requirements = card
+        .security_schemes
+        .keys()
+        .map(|name| {
+            let mut schemes = serde_json::Map::new();
+            schemes.insert(name.clone(), serde_json::json!({"list": []}));
+            serde_json::json!({"schemes": schemes})
+        })
+        .collect::<Vec<_>>();
+    let extensions = card
+        .extensions
+        .iter()
+        .map(|extension| {
+            serde_json::json!({
+                "uri": extension.uri,
+                "description": format!("Protocol extension {}", extension.version),
+                "required": extension.required,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut value = serde_json::json!({
+        "name": card.name,
+        "description": card.description.as_deref().unwrap_or(&card.name),
+        "supportedInterfaces": supported_interfaces,
+        "version": card.version,
+        "capabilities": {
+            "streaming": card.capabilities.streaming,
+            "pushNotifications": card.capabilities.push_notifications,
+            "extendedAgentCard": card.capabilities.extended_agent_card,
+            "extensions": extensions,
+        },
+        "securitySchemes": security_schemes,
+        "securityRequirements": security_requirements,
+        "defaultInputModes": ["application/json", "text/plain"],
+        "defaultOutputModes": output_modes,
+        "skills": skills,
+    });
+    if let Some(provider) = &card.provider
+        && let Some(url) = &provider.url
+    {
+        value["provider"] = serde_json::json!({
+            "organization": provider.name,
+            "url": url,
+        });
+    }
+    value
+}
+
+fn project_v1_security_scheme(scheme: &SecurityScheme) -> serde_json::Value {
+    match scheme {
+        SecurityScheme::ApiKey { name, location } => serde_json::json!({
+            "apiKeySecurityScheme": {"name": name, "location": location},
+        }),
+        SecurityScheme::HttpAuth {
+            scheme_name,
+            bearer_format,
+        } => serde_json::json!({
+            "httpAuthSecurityScheme": {
+                "scheme": scheme_name,
+                "bearerFormat": bearer_format,
+            },
+        }),
+        SecurityScheme::OAuth2 { flows } => serde_json::json!({
+            "oauth2SecurityScheme": {"flows": flows},
+        }),
+        SecurityScheme::OpenIdConnect {
+            open_id_connect_url,
+        } => serde_json::json!({
+            "openIdConnectSecurityScheme": {"openIdConnectUrl": open_id_connect_url},
+        }),
+        SecurityScheme::MutualTls => serde_json::json!({
+            "mtlsSecurityScheme": {},
+        }),
+    }
+}
+
 /// Load every `AgentCard` registered under (`namespace`, `tenant`) and
 /// reduce them to a single discovery card — verbatim when exactly one
 /// card is published, otherwise via [`aggregate_tenant_card`].
@@ -518,6 +682,61 @@ mod tests {
             ..Default::default()
         };
         c
+    }
+
+    #[test]
+    fn v1_projection_is_schema_closed_protojson() {
+        let mut card = sample_card("route-planner");
+        card.capabilities.push_notifications = true;
+        card.description = Some("Plans governed routes".into());
+        card.interfaces.push(acteon_core::AgentCardInterface {
+            kind: "json-rpc".into(),
+            url: "https://example.test/a2a/agents/demo".into(),
+        });
+        let mut skill = acteon_core::Skill::new("plan-route");
+        skill.description = Some("Plans one route".into());
+        skill.output_media_types = vec!["application/json".into()];
+        card.skills.push(skill);
+        card.security_schemes.insert(
+            "bearer".into(),
+            SecurityScheme::HttpAuth {
+                scheme_name: "Bearer".into(),
+                bearer_format: Some("JWT".into()),
+            },
+        );
+
+        let value = project_v1_card(&card);
+        assert_eq!(
+            value["supportedInterfaces"][0]["protocolBinding"],
+            "JSONRPC"
+        );
+        assert_eq!(value["supportedInterfaces"][0]["protocolVersion"], "1.0");
+        assert_eq!(value["skills"][0]["id"], "plan-route");
+        assert_eq!(value["capabilities"]["streaming"], true);
+        assert_eq!(value["capabilities"]["pushNotifications"], true);
+        assert_eq!(
+            value["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"],
+            "Bearer"
+        );
+        assert_eq!(
+            value["securityRequirements"][0]["schemes"]["bearer"]["list"],
+            serde_json::json!([])
+        );
+        for private in [
+            "agentId",
+            "namespace",
+            "tenant",
+            "createdAt",
+            "updatedAt",
+            "interfaces",
+            "extensions",
+            "signature",
+        ] {
+            assert!(
+                value.get(private).is_none(),
+                "leaked private field {private}"
+            );
+        }
     }
 
     async fn write_card(store: &Arc<dyn StateStore>, card: &AgentCard) {

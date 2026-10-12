@@ -1,20 +1,18 @@
 //! A2A Task push-notification configurations (Phase 4 of the A2A
 //! protocol). A push config binds a webhook URL to a single A2A Task;
-//! when the task emits a streaming event (transition, history append,
-//! artifact update) the delivery worker POSTs the event envelope to
+//! when the task emits a status or artifact update, the delivery worker
+//! projects the durable task into an A2A `StreamResponse` and POSTs it to
 //! every config registered for that task.
 //!
-//! The config row is the durable, addressable record — CRUD over
+//! The Task envelope is the durable, addressable record — CRUD over
 //! JSON-RPC (`tasks/pushNotificationConfig/{set,get,list,delete}`)
 //! and REST (`/v1/tasks/{id}/pushNotificationConfigs[/{cfgId}]`). The
 //! delivery worker is a separate module that consumes the gateway's
-//! stream broadcast.
+//! stream broadcast as a low-latency wake-up and repairs from state.
 //!
-//! Storage layout (see `KeyKind::A2aTaskPushConfig`):
-//! - one row per config, addressed `{task_id}:{config_id}`;
-//! - `scan_keys` with a `task_id:` prefix lists every config bound to
-//!   the task in one call (and so `delete_task` can sweep all of them
-//!   without a separate index row).
+//! Pre-envelope releases stored one `A2aTaskPushConfig` row per config.
+//! Upgrade code imports those rows into the Task envelope; the old key kind
+//! remains readable only for migration compatibility.
 //!
 //! Validation is conservative: HTTPS-only by default (an opt-in flag
 //! is reserved for local-loop testing in the delivery worker, not on
@@ -58,14 +56,13 @@ pub enum DlqFailureKind {
 
 /// One Dead-Letter-Queue entry recorded when a push-notification
 /// delivery exhausts its retry budget or is permanently rejected by
-/// the receiver. Persisted at `KeyKind::A2aPushDlq` keyed
-/// `{task_id}:{entry_id}` so a prefix-scan by task id lists every
-/// failed delivery for one task.
+/// the receiver. New delivery workers embed it in the durable Task envelope;
+/// the storage identity helper remains for reading pre-envelope rows.
 ///
 /// The `Debug` impl redacts both `event_json` and `last_error`
 /// because each can carry tenant payload bytes a log consumer wasn't
 /// authorized to see.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PushDeliveryDlqEntry {
@@ -75,6 +72,14 @@ pub struct PushDeliveryDlqEntry {
     pub config_id: String,
     /// The Task the event was scoped to.
     pub task_id: String,
+    /// Ordered Task-envelope sequence when this row comes from durable A2A
+    /// callback delivery. Legacy standalone rows omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    /// Stable delivery identity paired with `sequence`. Receivers can use it
+    /// to recognize an at-least-once replay after lease takeover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
     /// Namespace + tenant of the task. Stored on the row so a
     /// cross-tenant DLQ scan stays self-describing.
     pub namespace: String,
@@ -96,7 +101,7 @@ pub struct PushDeliveryDlqEntry {
     /// Wall-clock time of the last failed attempt (i.e., when the
     /// row was written).
     pub last_failed_at: DateTime<Utc>,
-    /// Serialized `StreamEvent` envelope. Truncated to
+    /// Serialized callback payload (or a legacy `StreamEvent`). Truncated to
     /// [`MAX_DLQ_EVENT_BYTES`]; truncated entries get a marker
     /// suffix so consumers can detect it.
     pub event_json: String,
@@ -108,6 +113,8 @@ impl fmt::Debug for PushDeliveryDlqEntry {
             .field("id", &self.id)
             .field("config_id", &self.config_id)
             .field("task_id", &self.task_id)
+            .field("sequence", &self.sequence)
+            .field("event_id", &self.event_id)
             .field("namespace", &self.namespace)
             .field("tenant", &self.tenant)
             .field("url", &self.url)
@@ -145,11 +152,43 @@ impl PushDeliveryDlqEntry {
         attempts: u32,
         event_json: String,
     ) -> Self {
-        let now = Utc::now();
+        Self::new_at(
+            id,
+            config_id,
+            task_id,
+            namespace,
+            tenant,
+            url,
+            failure_kind,
+            last_error,
+            attempts,
+            event_json,
+            Utc::now(),
+        )
+    }
+
+    /// Build a bounded DLQ entry using the caller's authoritative clock.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)] // 1:1 with the persisted row
+    pub fn new_at(
+        id: impl Into<String>,
+        config_id: impl Into<String>,
+        task_id: impl Into<String>,
+        namespace: impl Into<String>,
+        tenant: impl Into<String>,
+        url: impl Into<String>,
+        failure_kind: DlqFailureKind,
+        last_error: impl Into<String>,
+        attempts: u32,
+        event_json: String,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             id: id.into(),
             config_id: config_id.into(),
             task_id: task_id.into(),
+            sequence: None,
+            event_id: None,
             namespace: namespace.into(),
             tenant: tenant.into(),
             url: url.into(),
@@ -160,6 +199,14 @@ impl PushDeliveryDlqEntry {
             last_failed_at: now,
             event_json: truncate(event_json, MAX_DLQ_EVENT_BYTES),
         }
+    }
+
+    /// Attach the ordered delivery identity used by Task-embedded dead letters.
+    #[must_use]
+    pub fn with_delivery_identity(mut self, sequence: u64, event_id: impl Into<String>) -> Self {
+        self.sequence = Some(sequence);
+        self.event_id = Some(event_id.into());
+        self
     }
 
     /// Storage key shape: `{task_id}:{entry_id}`. The `task_id`
@@ -195,9 +242,12 @@ fn truncate(mut s: String, cap: usize) -> String {
 /// the wild are almost always misconfiguration.
 pub const MAX_PUSH_URL_BYTES: usize = 2_048;
 
-/// Maximum length of the optional bearer token. Bound at 4 KiB so a
+/// Maximum length of the optional notification token. Bound at 4 KiB so a
 /// caller cannot smuggle a multi-MB blob through this field.
 pub const MAX_PUSH_TOKEN_BYTES: usize = 4_096;
+
+/// Maximum length of protocol authentication credentials stored with a config.
+pub const MAX_PUSH_AUTH_CREDENTIAL_BYTES: usize = 4_096;
 
 /// Maximum length of a free-form security-scheme alias the caller can
 /// pin onto a config. The schemes themselves are referenced by name —
@@ -230,6 +280,10 @@ pub enum TaskPushConfigValidationError {
     /// One of the authentication scheme aliases exceeded
     /// [`MAX_PUSH_SCHEME_ALIAS_BYTES`].
     SchemeAliasTooLong(usize),
+    /// An authentication scheme was empty.
+    EmptyScheme,
+    /// Authentication credentials exceeded [`MAX_PUSH_AUTH_CREDENTIAL_BYTES`].
+    CredentialsTooLong(usize),
 }
 
 impl fmt::Display for TaskPushConfigValidationError {
@@ -258,6 +312,11 @@ impl fmt::Display for TaskPushConfigValidationError {
             Self::SchemeAliasTooLong(n) => write!(
                 f,
                 "scheme alias must be at most {MAX_PUSH_SCHEME_ALIAS_BYTES} bytes (got {n})"
+            ),
+            Self::EmptyScheme => write!(f, "authentication scheme must not be empty"),
+            Self::CredentialsTooLong(n) => write!(
+                f,
+                "authentication credentials must be at most {MAX_PUSH_AUTH_CREDENTIAL_BYTES} bytes (got {n})"
             ),
         }
     }
@@ -321,8 +380,8 @@ pub struct TaskPushNotificationConfig {
     /// Destination URL the delivery worker POSTs streamed events to.
     /// Must be `http://` or `https://`.
     pub url: String,
-    /// Optional bearer token sent in an `Authorization: Bearer …`
-    /// header on every POST. Treated as a secret — never logged.
+    /// Optional correlation/authenticity token sent in the
+    /// `X-A2A-Notification-Token` header. Treated as a secret — never logged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// Optional richer authentication metadata pointing at one or
@@ -429,9 +488,19 @@ impl TaskPushNotificationConfig {
                 ));
             }
             for s in &auth.schemes {
+                if s.trim().is_empty() {
+                    return Err(TaskPushConfigValidationError::EmptyScheme);
+                }
                 if s.len() > MAX_PUSH_SCHEME_ALIAS_BYTES {
                     return Err(TaskPushConfigValidationError::SchemeAliasTooLong(s.len()));
                 }
+            }
+            if let Some(credentials) = &auth.credentials
+                && credentials.len() > MAX_PUSH_AUTH_CREDENTIAL_BYTES
+            {
+                return Err(TaskPushConfigValidationError::CredentialsTooLong(
+                    credentials.len(),
+                ));
             }
         }
         Ok(())
@@ -519,6 +588,29 @@ mod tests {
         assert!(matches!(
             c.validate(),
             Err(TaskPushConfigValidationError::TooManySchemes(_))
+        ));
+    }
+
+    #[test]
+    fn validate_bounds_authentication_header_material() {
+        let mut empty = fresh("c1", "t1", "https://example.org/h");
+        empty.authentication = Some(PushAuthentication {
+            schemes: vec![" ".into()],
+            credentials: None,
+        });
+        assert_eq!(
+            empty.validate(),
+            Err(TaskPushConfigValidationError::EmptyScheme)
+        );
+
+        let mut oversized = fresh("c1", "t1", "https://example.org/h");
+        oversized.authentication = Some(PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("x".repeat(MAX_PUSH_AUTH_CREDENTIAL_BYTES + 1)),
+        });
+        assert!(matches!(
+            oversized.validate(),
+            Err(TaskPushConfigValidationError::CredentialsTooLong(_))
         ));
     }
 

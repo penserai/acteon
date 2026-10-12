@@ -6,8 +6,10 @@ import httpx
 import pytest
 
 from acteon_client import (
+    AbandonFederationDeliveryRequest,
     ActeonClient,
     AsyncActeonClient,
+    FederationTrustDeclaration,
     GovernanceInterventionRequest,
     GovernanceLimits,
     GovernancePermitDeclaration,
@@ -15,12 +17,20 @@ from acteon_client import (
     GovernanceResourceChange,
     GovernanceRoute,
     PrincipalIdentity,
+    PublishFederationTrustRequest,
     PublishGovernancePermitRequest,
+    ReconcileFederationDeliveryRequest,
+    RevokeFederationTrustRequest,
+    SignedFederationEnvelopeDeclaration,
+    SignedFederationInvocationDeclaration,
 )
 from acteon_client.errors import HttpError
 
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/governance-management.json").read_text()
+)
+FEDERATION = json.loads(
+    (Path(__file__).parents[2] / "contract-fixtures/federation-management.json").read_text()
 )
 
 
@@ -84,7 +94,9 @@ def test_sync_governance():
             **FIXTURE["scope"]["management"],
             "can_read_history": False,
             "can_reconcile": False,
+            "can_manage_federation": False,
         },
+        "federation_trusts": [],
     }
     assert asdict(client.publish_governance_permit(publication)) == FIXTURE["receipt"]
     assert asdict(client.intervene_governance(intervention)) == FIXTURE["receipt"]
@@ -105,11 +117,170 @@ async def test_async_governance():
                 **FIXTURE["scope"]["management"],
                 "can_read_history": False,
                 "can_reconcile": False,
+                "can_manage_federation": False,
             },
+            "federation_trusts": [],
         }
         assert asdict(await client.publish_governance_permit(publication)) == FIXTURE["receipt"]
         assert asdict(await client.intervene_governance(intervention)) == FIXTURE["receipt"]
     assert_wire(seen)
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.asyncio
+async def test_federation_management_and_inert_import_wire(async_client):
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        if request.url.path.endswith("/correlation"):
+            response = FEDERATION["finality_correlation"]
+        elif request.url.path.endswith(":reconcile"):
+            response = FEDERATION["reconciled_evidence"]
+        elif request.url.path.endswith(":abandon"):
+            response = FEDERATION["abandoned_evidence"]
+        elif request.url.path == "/v1/governance/federation/deliveries":
+            response = FEDERATION["delivery_evidence_page"]
+        elif "/federation/exports/" in request.url.path:
+            response = FEDERATION["export_receipt"]
+        elif request.url.path.endswith("message:send"):
+            response = {"id": "federated-task", "namespace": "prod", "tenant": "acme"}
+        elif request.url.path.endswith("envelopes:import"):
+            response = FEDERATION["import_receipt"]
+        elif request.url.path.endswith("/capabilities"):
+            response = FEDERATION["signed_capability_card"]
+        else:
+            response = FEDERATION["change_receipt"]
+        return httpx.Response(200, json=response)
+
+    wire = FEDERATION["publication"]
+    publication = PublishFederationTrustRequest(
+        wire["namespace"],
+        wire["tenant"],
+        wire["change_id"],
+        wire["expected_revision"],
+        FederationTrustDeclaration.from_dict(wire["trust"]),
+        wire["reason"],
+    )
+    revocation = RevokeFederationTrustRequest(**FEDERATION["revocation"])
+    envelope = SignedFederationEnvelopeDeclaration(**FEDERATION["envelope"])
+    invocation = SignedFederationInvocationDeclaration("signed-payload", "a" * 128)
+    message = {"messageId": "message-1", "role": "user", "parts": [{"text": "inspect"}]}
+    export_args = (
+        "prod",
+        "acme",
+        "maya",
+        "11111111-1111-4111-8111-111111111111",
+        "remote-triage",
+        FEDERATION["export_message"],
+    )
+    transport = httpx.MockTransport(respond)
+    cls = AsyncActeonClient if async_client else ActeonClient
+    client = cls("https://acteon.example", api_key="federation-key")
+    if async_client:
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(transport=transport)
+    else:
+        client._client.close()
+        client._client = httpx.Client(transport=transport)
+    try:
+        if async_client:
+            results = [
+                await client.publish_federation_trust(publication),
+                await client.revoke_federation_trust(revocation),
+                await client.federation_capabilities("prod", "acme", "maya"),
+                await client.import_federation_envelope("prod", "acme", envelope),
+                await client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
+                await client.export_federated_message(*export_args),
+                await client.observe_federated_export(*export_args),
+                await client.replay_federated_export(*export_args),
+                await client.federation_delivery_evidence("prod", "acme", limit=25),
+                await client.abandon_federation_delivery(
+                    FEDERATION["abandoned_evidence"]["delivery_id"],
+                    AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
+                ),
+                await client.federation_finality_correlation(
+                    "prod", "acme", FEDERATION["finality_correlation"]["delivery_id"]
+                ),
+                await client.reconcile_federation_delivery(
+                    FEDERATION["reconciled_evidence"]["delivery_id"],
+                    ReconcileFederationDeliveryRequest(**FEDERATION["reconcile_request"]),
+                ),
+            ]
+        else:
+            results = [
+                client.publish_federation_trust(publication),
+                client.revoke_federation_trust(revocation),
+                client.federation_capabilities("prod", "acme", "maya"),
+                client.import_federation_envelope("prod", "acme", envelope),
+                client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
+                client.export_federated_message(*export_args),
+                client.observe_federated_export(*export_args),
+                client.replay_federated_export(*export_args),
+                client.federation_delivery_evidence("prod", "acme", limit=25),
+                client.abandon_federation_delivery(
+                    FEDERATION["abandoned_evidence"]["delivery_id"],
+                    AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
+                ),
+                client.federation_finality_correlation(
+                    "prod", "acme", FEDERATION["finality_correlation"]["delivery_id"]
+                ),
+                client.reconcile_federation_delivery(
+                    FEDERATION["reconciled_evidence"]["delivery_id"],
+                    ReconcileFederationDeliveryRequest(**FEDERATION["reconcile_request"]),
+                ),
+            ]
+        assert asdict(results[0]) == FEDERATION["change_receipt"]
+        assert asdict(results[1]) == FEDERATION["change_receipt"]
+        assert asdict(results[2]) == FEDERATION["signed_capability_card"]
+        assert asdict(results[3]) == FEDERATION["import_receipt"]
+        assert not results[3].execution_started
+        assert results[4]["id"] == "federated-task"
+        assert all(asdict(result) == FEDERATION["export_receipt"] for result in results[5:8])
+        assert asdict(results[8]) == FEDERATION["delivery_evidence_page"]
+        assert asdict(results[9]) == FEDERATION["abandoned_evidence"]
+        assert asdict(results[10]) == FEDERATION["finality_correlation"]
+        assert asdict(results[11]) == FEDERATION["reconciled_evidence"]
+        assert [request.method for request in seen] == (
+            ["POST", "POST", "GET"] + ["POST"] * 5 + ["GET", "POST", "GET", "POST"]
+        )
+        assert json.loads(seen[0].content) == FEDERATION["publication"]
+        assert json.loads(seen[1].content) == FEDERATION["revocation"]
+        assert seen[2].url.path.endswith("/capabilities")
+        assert json.loads(seen[3].content) == {"envelope": FEDERATION["envelope"]}
+        assert seen[3].url.path == "/a2a/prod/acme/federation/envelopes:import"
+        assert seen[4].url.path == "/a2a/prod/acme/federation/agents/maya/v1/message:send"
+        assert json.loads(seen[4].content) == {
+            "invocation": {"payload": "signed-payload", "signature": "a" * 128},
+            "message": message,
+        }
+        assert [request.url.path.rsplit("message:", 1)[-1] for request in seen[5:8]] == [
+            "send",
+            "observe",
+            "replay",
+        ]
+        assert all(
+            json.loads(request.content) == {"message": FEDERATION["export_message"]}
+            for request in seen[5:8]
+        )
+        assert dict(seen[8].url.params) == {
+            "namespace": "prod",
+            "tenant": "acme",
+            "limit": "25",
+        }
+        assert seen[9].url.path.endswith(
+            f"/{FEDERATION['abandoned_evidence']['delivery_id']}:abandon"
+        )
+        assert json.loads(seen[9].content) == FEDERATION["abandon_request"]
+        assert seen[10].url.path.endswith("/correlation")
+        assert dict(seen[10].url.params) == {"namespace": "prod", "tenant": "acme"}
+        assert json.loads(seen[11].content) == FEDERATION["reconcile_request"]
+        assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
+    finally:
+        if async_client:
+            await client.close()
+        else:
+            client.close()
 
 
 @pytest.mark.parametrize("status", [401, 403, 409, 503])

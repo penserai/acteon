@@ -42,6 +42,12 @@
     "permission": null
   },
   {
+    "name": "a2a_discovery_discover_agent_v1",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+    "permission": null
+  },
+  {
     "name": "a2a_discovery_get_agent_card",
     "method": "GET",
     "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
@@ -130,6 +136,12 @@
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
     "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_rpc",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}",
+    "permission": "AuditRead"
   },
   {
     "name": "agent_services_task_authorization_request",
@@ -750,9 +762,63 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "federation_capabilities",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "federation_export_message",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "federation_import_envelope",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "federation_invoke_agent",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "federation_observe_export_message",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "federation_replay_export_message",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+    "permission": "Dispatch"
+  },
+  {
     "name": "governance_accept_reconciliation",
     "method": "POST",
     "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_federation_delivery_action",
+    "method": "POST",
+    "path": "/v1/governance/federation/deliveries/{delivery_action}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_federation_delivery_evidence",
+    "method": "GET",
+    "path": "/v1/governance/federation/deliveries",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_federation_finality_correlation",
+    "method": "GET",
+    "path": "/v1/governance/federation/deliveries/{delivery_id}/correlation",
     "permission": "OperationsManage"
   },
   {
@@ -780,6 +846,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_publish_federation_trust",
+    "method": "POST",
+    "path": "/v1/governance/federation/trusts",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "governance_publish_permit",
     "method": "POST",
     "path": "/v1/governance/permits",
@@ -795,6 +867,12 @@
     "name": "governance_registry_projection",
     "method": "GET",
     "path": "/v1/governance/registry/{agent_id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_revoke_federation_trust",
+    "method": "POST",
+    "path": "/v1/governance/federation/trusts/revoke",
     "permission": "OperationsManage"
   },
   {

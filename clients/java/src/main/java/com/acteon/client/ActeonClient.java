@@ -92,6 +92,173 @@ public class ActeonClient implements AutoCloseable {
             return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
+    /** Invoke one exact governed agent through official A2A streaming. */
+    public AgentServiceA2aStream agentServiceSendStreamingMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
+        return agentServiceSendStreamingMessage(namespace, tenant, agent, message, null);
+    }
+    /** Invoke one exact governed child through official A2A streaming. */
+    public AgentServiceA2aStream agentServiceSendStreamingMessage(String namespace, String tenant, String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
+        Object messageId = message.get("messageId");
+        if (!(messageId instanceof String id) || id.isEmpty())
+            throw new IllegalArgumentException("streaming message requires messageId");
+        String requestId = "stream:" + id;
+        return agentServiceA2aStreamRequest(
+            AgentServiceReceipt.rpcBase(namespace, tenant, agent), requestId,
+            Map.of("jsonrpc", "2.0", "id", requestId, "method", "SendStreamingMessage",
+                "params", Map.of("message", message)), null, parent, true);
+    }
+    /** Subscribe to one retained governed Task through official A2A streaming. */
+    public AgentServiceA2aStream agentServiceSubscribeTask(AgentServiceReceipt receipt) throws ActeonException {
+        String requestId = "subscribe:" + receipt.taskId();
+        return agentServiceA2aStreamRequest(
+            AgentServiceReceipt.rpcBase(receipt.namespace(), receipt.tenant(), receipt.agent()),
+            requestId, Map.of("jsonrpc", "2.0", "id", requestId, "method", "SubscribeToTask",
+                "params", Map.of("id", receipt.taskId())),
+            AgentServiceReceipt.source(receipt.sourceContext()), null, false);
+    }
+    /** Request official A2A cancellation while preserving pending finality metadata. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceCancelTask(AgentServiceReceipt receipt) throws ActeonException {
+        String requestId = "cancel:" + receipt.taskId();
+        var response = agentServiceRequest(
+            "POST", AgentServiceReceipt.rpcBase(receipt.namespace(), receipt.tenant(), receipt.agent()),
+            Map.of("jsonrpc", "2.0", "id", requestId, "method", "CancelTask",
+                "params", Map.of("id", receipt.taskId())),
+            AgentServiceReceipt.source(receipt.sourceContext()), null);
+        try {
+            var rpc = objectMapper.readTree(response.body());
+            if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
+                throw new ActeonException("agent service A2A response request identity mismatch");
+            if (rpc.path("error").isObject())
+                throw new ActeonException("A2A error " + rpc.path("error").path("code") + ": " + rpc.path("error").path("message").asText());
+            var task = rpc.path("result");
+            if (!task.isObject() || !receipt.taskId().equals(task.path("id").asText()) || !task.path("status").isObject())
+                throw new ActeonException("agent service A2A cancellation task identity mismatch");
+            return task;
+        } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
+    }
+    /** List only Tasks visible to the current source through one exact governed agent. */
+    public AgentServiceTaskPage agentServiceListTasks(
+        String namespace, String tenant, String agent, AgentServiceListOptions options
+    ) throws ActeonException {
+        if (options == null) options = AgentServiceListOptions.defaults();
+        if (options.pageSize() != null && (options.pageSize() < 1 || options.pageSize() > 100))
+            throw new IllegalArgumentException("pageSize must be between 1 and 100");
+        if (options.historyLength() != null && options.historyLength() < 0)
+            throw new IllegalArgumentException("historyLength must be non-negative");
+        if (options.pageToken() != null && options.pageToken().length() > 8192)
+            throw new IllegalArgumentException("pageToken is too large");
+        String source = null;
+        if (options.source() != null) {
+            var receipt = options.source();
+            if (!namespace.equals(receipt.namespace()) || !tenant.equals(receipt.tenant())
+                || !agent.equals(receipt.agent()))
+                throw new IllegalArgumentException("agent service ListTasks receipt does not match the route");
+            source = AgentServiceReceipt.source(receipt.sourceContext());
+        }
+        var params = new HashMap<String, Object>();
+        if (options.contextId() != null) params.put("contextId", options.contextId());
+        if (options.status() != null) params.put("status", options.status().wire());
+        if (options.pageSize() != null) params.put("pageSize", options.pageSize());
+        if (options.pageToken() != null) params.put("pageToken", options.pageToken());
+        if (options.historyLength() != null) params.put("historyLength", options.historyLength());
+        if (options.statusTimestampAfter() != null)
+            params.put("statusTimestampAfter", options.statusTimestampAfter().toString());
+        if (options.includeArtifacts()) params.put("includeArtifacts", true);
+        String requestId = "list:" + agent;
+        var envelope = new HashMap<String, Object>();
+        envelope.put("jsonrpc", "2.0"); envelope.put("id", requestId);
+        envelope.put("method", "ListTasks"); envelope.put("params", params);
+        var response = agentServiceRequest(
+            "POST", AgentServiceReceipt.rpcBase(namespace, tenant, agent), envelope, source, null);
+        try {
+            var rpc = objectMapper.readTree(response.body());
+            if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
+                throw new ActeonException("agent service A2A response request identity mismatch");
+            if (rpc.path("error").isObject())
+                throw new ActeonException("A2A error " + rpc.path("error").path("code") + ": " + rpc.path("error").path("message").asText());
+            return AgentServiceTaskPage.parse(rpc.path("result"));
+        } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
+        catch (IllegalArgumentException e) { throw new ActeonException(e.getMessage(), e); }
+    }
+    /** Create or update one official A2A push configuration under task authority. */
+    public AgentServicePushConfig agentServiceCreatePushConfig(
+        String namespace, String tenant, String agent, String taskId,
+        AgentServicePushConfigInput input, AgentServiceReceipt source
+    ) throws ActeonException {
+        var params = pushConfigInput(taskId, input);
+        return AgentServicePushConfig.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
+            "CreateTaskPushNotificationConfig", params, source), taskId, input.id());
+    }
+    /** Read one management-only push configuration, including secret material. */
+    public AgentServicePushConfig agentServiceGetPushConfig(
+        String namespace, String tenant, String agent, String taskId, String configId,
+        AgentServiceReceipt source
+    ) throws ActeonException {
+        return AgentServicePushConfig.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
+            "GetTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source), taskId, configId);
+    }
+    /** List exact-agent push configurations under the original task authority. */
+    public AgentServicePushConfigPage agentServiceListPushConfigs(
+        String namespace, String tenant, String agent, String taskId,
+        Integer pageSize, String pageToken, AgentServiceReceipt source
+    ) throws ActeonException {
+        if (pageSize != null && (pageSize < 1 || pageSize > 100))
+            throw new IllegalArgumentException("pageSize must be between 1 and 100");
+        if (pageToken != null && pageToken.length() > 8192)
+            throw new IllegalArgumentException("pageToken is too large");
+        var params = new HashMap<String, Object>(); params.put("taskId", taskId);
+        if (pageSize != null) params.put("pageSize", pageSize);
+        if (pageToken != null) params.put("pageToken", pageToken);
+        return AgentServicePushConfigPage.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
+            "ListTaskPushNotificationConfigs", params, source), taskId);
+    }
+    /** Delete one exact-agent push configuration. Repeating deletion is safe. */
+    public void agentServiceDeletePushConfig(
+        String namespace, String tenant, String agent, String taskId, String configId,
+        AgentServiceReceipt source
+    ) throws ActeonException {
+        var result = agentServicePushRpc(namespace, tenant, agent, taskId,
+            "DeleteTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source);
+        if (!result.isObject() || result.size() != 0)
+            throw new ActeonException("agent service A2A delete result is invalid");
+    }
+    private Map<String, Object> pushConfigInput(String taskId, AgentServicePushConfigInput input) {
+        if (taskId == null || taskId.isEmpty() || input == null)
+            throw new IllegalArgumentException("task ID and push configuration are required");
+        var params = new HashMap<String, Object>(); params.put("taskId", taskId); params.put("url", input.url());
+        if (input.id() != null) params.put("id", input.id());
+        if (input.token() != null) params.put("token", input.token());
+        if (input.authentication() != null) {
+            var auth = new HashMap<String, Object>(); auth.put("scheme", input.authentication().scheme());
+            if (input.authentication().credentials() != null) auth.put("credentials", input.authentication().credentials());
+            params.put("authentication", auth);
+        }
+        return params;
+    }
+    private com.fasterxml.jackson.databind.JsonNode agentServicePushRpc(
+        String namespace, String tenant, String agent, String taskId, String method,
+        Map<String, Object> params, AgentServiceReceipt source
+    ) throws ActeonException {
+        String sourceContext = null;
+        if (source != null) {
+            if (!namespace.equals(source.namespace()) || !tenant.equals(source.tenant())
+                || !agent.equals(source.agent()) || !taskId.equals(source.taskId()))
+                throw new IllegalArgumentException("agent service push receipt does not match the route or task");
+            sourceContext = AgentServiceReceipt.source(source.sourceContext());
+        }
+        String requestId = "push:" + method + ":" + taskId;
+        var response = agentServiceRequest("POST", AgentServiceReceipt.rpcBase(namespace, tenant, agent),
+            Map.of("jsonrpc", "2.0", "id", requestId, "method", method, "params", params), sourceContext, null);
+        try {
+            var rpc = objectMapper.readTree(response.body());
+            if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
+                throw new ActeonException("agent service A2A response request identity mismatch");
+            if (rpc.path("error").isObject())
+                throw new ActeonException("A2A error " + rpc.path("error").path("code") + ": " + rpc.path("error").path("message").asText());
+            if (!rpc.path("result").isObject()) throw new ActeonException("agent service A2A response has no object result");
+            return rpc.path("result");
+        } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
+    }
     /** List current source-authorized registry options. Descriptions are untrusted data. */
     public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");
@@ -199,10 +366,14 @@ public class ActeonClient implements AutoCloseable {
         var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
         try {
             var value = objectMapper.readTree(response.body());
-            if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue())
+            if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue()
+                    || !value.path("cancellation_confirmed").isBoolean())
                 throw new ActeonException("agent service stop acknowledgement missing or malformed");
             var task = AgentServiceReceipt.verifyTask(value.path("task"), receipt.namespace(), receipt.tenant(), receipt.taskId());
-            return new AgentServiceStopReceipt(task, true, AgentServiceProviderAbort.parse(value.path("provider_abort")));
+            boolean confirmed = value.path("cancellation_confirmed").booleanValue();
+            if (confirmed && !"canceled".equals(task.path("status").path("state").asText()))
+                throw new ActeonException("agent service stop acknowledgement missing or malformed");
+            return new AgentServiceStopReceipt(task, true, confirmed, AgentServiceProviderAbort.parse(value.path("provider_abort")));
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
 
@@ -250,6 +421,57 @@ public class ActeonClient implements AutoCloseable {
             return response;
         } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
+    }
+
+    private AgentServiceA2aStream agentServiceA2aStreamRequest(
+            String path, String requestId, Object body, String source,
+            AgentServiceParent parent, boolean requireSource) throws ActeonException {
+        if (httpClient.followRedirects() != HttpClient.Redirect.NEVER)
+            throw new ActeonException("agent services require redirects disabled");
+        try {
+            var builder = requestBuilder(path)
+                .header(A2A.VERSION_HEADER, A2A.PROTOCOL_VERSION)
+                .header("Accept", "text/event-stream");
+            if (source != null) builder.header(AgentServiceReceipt.SOURCE_CONTEXT_HEADER, source);
+            if (parent != null) {
+                String context = parent.executionContext();
+                if (context == null || context.isEmpty() || context.length() > 8192
+                        || !context.matches("[A-Za-z0-9_-]+"))
+                    throw new IllegalArgumentException("parent execution context is malformed");
+                if (parent.permits().isEmpty()) throw new IllegalArgumentException("parent permits are required");
+                builder.header("x-acteon-execution-context", context);
+                builder.header("x-acteon-execution-permits", objectMapper.writeValueAsString(parent.permits()));
+            }
+            var request = builder.POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() != 200) {
+                try (var stream = response.body()) {
+                    throw new HttpException(response.statusCode(), new String(stream.readAllBytes(), StandardCharsets.UTF_8));
+                }
+            }
+            if (!response.headers().firstValue(A2A.VERSION_HEADER).orElse("").equals(A2A.PROTOCOL_VERSION)) {
+                response.body().close();
+                throw new ActeonException("agent service A2A stream version missing or unsupported");
+            }
+            if (!response.headers().firstValue("Content-Type").orElse("").toLowerCase().startsWith("text/event-stream")) {
+                response.body().close();
+                throw new ActeonException("agent service did not return an A2A SSE stream");
+            }
+            String returnedSource;
+            try {
+                returnedSource = requireSource
+                    ? AgentServiceReceipt.source(response.headers().firstValue(AgentServiceReceipt.SOURCE_CONTEXT_HEADER).orElse(null))
+                    : null;
+            } catch (RuntimeException error) {
+                response.body().close();
+                throw error;
+            }
+            return new AgentServiceA2aStream(response.body(), requestId, returnedSource);
+        } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
     }
 
     private final String baseUrl;
@@ -486,6 +708,161 @@ public class ActeonClient implements AutoCloseable {
         var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, null, null, request);
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
         catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
+    }
+    public Governance.ChangeReceipt publishFederationTrust(Governance.PublishFederationTrustRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
+    }
+    public Governance.ChangeReceipt revokeFederationTrust(Governance.RevokeFederationTrustRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
+    }
+    /** List sanitized outbound delivery evidence under reconciliation authority. */
+    public Governance.FederationDeliveryEvidencePage federationDeliveryEvidence(String namespace,
+        String tenant, String after, Integer limit) throws ActeonException {
+        Map<String, List<String>> query = new HashMap<>();
+        query.put("namespace", List.of(namespace));
+        query.put("tenant", List.of(tenant));
+        if (after != null) query.put("after", List.of(after));
+        if (limit != null) query.put("limit", List.of(limit.toString()));
+        var node = platformRequest(PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
+            null, query, null);
+        try {
+            var page = objectMapper.treeToValue(node, Governance.FederationDeliveryEvidencePage.class);
+            if (page.deliveries() == null || page.deliveries().stream().anyMatch(delivery ->
+                delivery.deliveryId() == null || delivery.deliveryId().isEmpty()
+                    || delivery.parentExecutionId() == null || delivery.parentExecutionId().isEmpty())) {
+                throw new ConnectionException("Federation delivery evidence identity mismatch", null);
+            }
+            return page;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation delivery evidence", e);
+        }
+    }
+    /** Stop local recovery without asserting peer success or rejection. */
+    public Governance.FederationDeliveryEvidence abandonFederationDelivery(String deliveryId,
+        Governance.AbandonFederationDeliveryRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+            Map.of("delivery_id", deliveryId), null, request);
+        try {
+            return objectMapper.treeToValue(node, Governance.FederationDeliveryEvidence.class);
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation abandonment evidence", e);
+        }
+    }
+    /** Return immutable correlation for the currently ambiguous peer stage. */
+    public Governance.FederationFinalityCorrelation federationFinalityCorrelation(String namespace,
+        String tenant, String deliveryId) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
+            Map.of("delivery_id", deliveryId),
+            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+        try {
+            var correlation = objectMapper.treeToValue(node, Governance.FederationFinalityCorrelation.class);
+            if (!deliveryId.equals(correlation.deliveryId())
+                || !("import".equals(correlation.stage()) || "invoke".equals(correlation.stage()))) {
+                throw new ConnectionException("Federation finality correlation identity mismatch", null);
+            }
+            return correlation;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation finality correlation", e);
+        }
+    }
+    /** Accept qualified peer finality without sending or replaying the delivery. */
+    public Governance.FederationDeliveryEvidence reconcileFederationDelivery(String deliveryId,
+        Governance.ReconcileFederationDeliveryRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY,
+            Map.of("delivery_id", deliveryId), null, request);
+        try {
+            var evidence = objectMapper.treeToValue(node, Governance.FederationDeliveryEvidence.class);
+            if (!deliveryId.equals(evidence.deliveryId())) {
+                throw new ConnectionException("Federation reconciliation evidence identity mismatch", null);
+            }
+            return evidence;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation reconciliation evidence", e);
+        }
+    }
+    /** Fetch the audience-bound signed capability card for one current peer agent. */
+    public Governance.SignedFederationCapabilityCard federationCapabilities(String namespace,
+        String tenant, String agent) throws ActeonException {
+        var node = platformRequest(PlatformOperation.FEDERATION_CAPABILITIES,
+            Map.of("namespace", namespace, "tenant", tenant, "agent", agent), null, null);
+        try {
+            var card = objectMapper.treeToValue(node, Governance.SignedFederationCapabilityCard.class);
+            if (card.payload() == null || card.payload().isEmpty()
+                || card.signature() == null || card.signature().length() != 128) {
+                throw new ConnectionException("Invalid signed federation capability card", null);
+            }
+            return card;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation capability card", e);
+        }
+    }
+    /** Authenticate as a configured peer and retain imported authority without executing it. */
+    public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
+        Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {
+        var node = platformRequest(PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
+            Map.of("namespace", namespace, "tenant", tenant), null, Map.of("envelope", envelope));
+        try {
+            var receipt = objectMapper.treeToValue(node, Governance.FederationImportReceipt.class);
+            if (!namespace.equals(receipt.namespace()) || !tenant.equals(receipt.tenant()) || receipt.executionStarted()) {
+                throw new ConnectionException("Federation import receipt identity or execution state mismatch", null);
+            }
+            return receipt;
+        } catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
+    }
+    /** Execute or replay one exact message under signed imported federation authority. */
+    public com.fasterxml.jackson.databind.JsonNode invokeFederatedAgent(String namespace, String tenant,
+        String agent, Governance.SignedFederationInvocationDeclaration invocation,
+        Map<String, Object> message) throws ActeonException {
+        var task = platformRequest(PlatformOperation.FEDERATION_INVOKE_AGENT,
+            Map.of("namespace", namespace, "tenant", tenant, "agent", agent), null,
+            Map.of("invocation", invocation, "message", message));
+        if (!namespace.equals(task.path("namespace").asText())
+            || !tenant.equals(task.path("tenant").asText())
+            || task.path("id").asText().isEmpty()) {
+            throw new ConnectionException("Federated task receipt identity mismatch", null);
+        }
+        return task;
+    }
+    /** Submit one host-qualified export from an accepted local agent task. */
+    public Governance.FederationExportReceipt exportFederatedMessage(String namespace, String tenant,
+        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_EXPORT_MESSAGE,
+            namespace, tenant, agent, taskId, profile, message);
+    }
+    /** Observe retained export evidence without issuing network traffic. */
+    public Governance.FederationExportReceipt observeFederatedExport(String namespace, String tenant,
+        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
+            namespace, tenant, agent, taskId, profile, message);
+    }
+    /** Explicitly replay the exact request through a qualified idempotent destination. */
+    public Governance.FederationExportReceipt replayFederatedExport(String namespace, String tenant,
+        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
+            namespace, tenant, agent, taskId, profile, message);
+    }
+    private Governance.FederationExportReceipt federationExportRequest(PlatformOperation operation,
+        String namespace, String tenant, String agent, String taskId, String profile,
+        Map<String, Object> message) throws ActeonException {
+        var node = platformRequest(operation,
+            Map.of("namespace", namespace, "tenant", tenant, "agent", agent,
+                "task_id", taskId, "profile", profile), null, Map.of("message", message));
+        try {
+            var receipt = objectMapper.treeToValue(node, Governance.FederationExportReceipt.class);
+            var attempt = receipt.attemptStatus();
+            var delivery = receipt.delivery();
+            if (receipt.attemptId() == null || receipt.attemptId().isEmpty()
+                || receipt.deliveryId() == null || receipt.deliveryId().isEmpty()
+                || !("in_flight".equals(attempt) || "settled".equals(attempt) || "uncertain".equals(attempt))
+                || delivery == null || delivery.path("status").asText().isEmpty()) {
+                throw new ConnectionException("Federation export receipt identity mismatch", null);
+            }
+            return receipt;
+        } catch (IOException e) { throw new ConnectionException("Malformed federation export response", e); }
     }
     public Governance.ChangeReceipt interveneGovernance(Governance.InterventionRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_INTERVENE, null, null, request);

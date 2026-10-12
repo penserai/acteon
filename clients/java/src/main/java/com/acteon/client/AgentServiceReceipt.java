@@ -17,7 +17,10 @@ public record AgentServiceReceipt(String namespace, String tenant, String agent,
         return A2A.segment(value);
     }
     static String base(String namespace, String tenant, String agent) {
-        return "/a2a/"+segment(namespace)+"/"+segment(tenant)+"/agents/"+segment(agent)+"/v1";
+        return rpcBase(namespace, tenant, agent)+"/v1";
+    }
+    static String rpcBase(String namespace, String tenant, String agent) {
+        return "/a2a/"+segment(namespace)+"/"+segment(tenant)+"/agents/"+segment(agent);
     }
     static JsonNode verifyTask(JsonNode task, String namespace, String tenant, String id) {
         if (task == null || !task.isObject() || !task.path("id").isTextual() || task.path("id").asText().isEmpty()

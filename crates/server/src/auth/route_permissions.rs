@@ -110,4 +110,43 @@ mod tests {
             assert_eq!(route.permission, Some(Permission::Dispatch));
         }
     }
+
+    #[test]
+    fn governed_agent_rpc_allows_reads_then_enforces_writes_in_handler() {
+        let route = ROUTES
+            .iter()
+            .find(|route| {
+                route.method == "POST" && route.path == "/a2a/{namespace}/{tenant}/agents/{agent}"
+            })
+            .expect("missing governed agent RPC permission inventory entry");
+        assert_eq!(route.permission, Some(Permission::AuditRead));
+    }
+
+    #[test]
+    fn federation_separates_peer_admission_from_trust_management() {
+        for (path, permission) in [
+            (
+                "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+                Permission::Dispatch,
+            ),
+            (
+                "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+                Permission::Dispatch,
+            ),
+            (
+                "/v1/governance/federation/trusts",
+                Permission::OperationsManage,
+            ),
+            (
+                "/v1/governance/federation/trusts/revoke",
+                Permission::OperationsManage,
+            ),
+        ] {
+            let route = ROUTES
+                .iter()
+                .find(|route| route.method == "POST" && route.path == path)
+                .unwrap_or_else(|| panic!("missing permission inventory entry for {path}"));
+            assert_eq!(route.permission, Some(permission));
+        }
+    }
 }

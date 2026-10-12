@@ -24,8 +24,9 @@ use super::reconciliation::{
 };
 use super::{
     Evidence, GovernedProviderError, GovernedProviderReceipt, GovernedProviderStatus, MAX_ATTEMPTS,
-    OPERATION_KIND, Operation, attempt_id, decode_record, governed_provider_input_digest,
-    operation_key, result_key, validate_evidence,
+    OPERATION_KIND, Operation, attempt_id, decode_record, federation_import,
+    governed_provider_input_digest, operation_attempt_id, operation_key, result_key,
+    validate_evidence,
 };
 
 /// Distinguishes a complete start-time seal from older, narrower evidence.
@@ -160,14 +161,6 @@ impl HistoricalProviderStore {
         if snapshot.namespace != reference.namespace() || snapshot.tenant != reference.tenant() {
             return Err(GovernedProviderError::Ownership);
         }
-        let context = self
-            .contexts
-            .recover_reference_for_observation(reference)
-            .await
-            .map_err(|_| GovernedProviderError::Unavailable)?;
-        if context.authority_stamp().incarnation != snapshot.incarnation {
-            return Err(GovernedProviderError::Conflict);
-        }
         let Some(raw) = self
             .state
             .get(&operation_key(reference))
@@ -180,8 +173,22 @@ impl HistoricalProviderStore {
             return Ok(None);
         };
         let (op, digest): (Operation, _) = decode_record(&raw, self.encryptor.as_deref())?;
-        validate_operation(&op, reference, &context)?;
-        self.project(&op, &digest, &context, &snapshot)
+        let context = if op.federation_invocation.is_some() {
+            validate_federated_operation(&op, reference, &snapshot)?;
+            None
+        } else {
+            let context = self
+                .contexts
+                .recover_reference_for_observation(reference)
+                .await
+                .map_err(|_| GovernedProviderError::Unavailable)?;
+            if context.authority_stamp().incarnation != snapshot.incarnation {
+                return Err(GovernedProviderError::Conflict);
+            }
+            validate_operation(&op, reference, &context)?;
+            Some(context)
+        };
+        self.project(&op, &digest, context.as_ref(), &snapshot)
             .await
             .map(Some)
     }
@@ -216,7 +223,7 @@ impl HistoricalProviderStore {
         let Some(pin) = &start.evidence else {
             return Ok(None);
         };
-        let e: Evidence = self.pinned(&result_key(&op.context, ordinal), pin).await?;
+        let e: Evidence = self.pinned(&result_key(op, ordinal)?, pin).await?;
         validate_evidence(&e, op, ordinal, &start.token)?;
         Ok(Some(e))
     }
@@ -231,13 +238,13 @@ impl HistoricalProviderStore {
             return Ok(None);
         };
         let r: Resolution = self
-            .pinned(&resolution_key(&op.context, ordinal), &link.resolution)
+            .pinned(&resolution_key(op, ordinal)?, &link.resolution)
             .await?;
         validate_resolution(&r, op, ordinal, start)?;
         Ok(Some(ProviderReconciliationRecord {
             prior_status: link.prior_status,
             execution_id: op.context.execution_id(),
-            attempt_id: attempt_id(op.context.execution_id(), ordinal),
+            attempt_id: operation_attempt_id(op, ordinal)?,
             original_evidence: link.original_evidence.clone(),
             resolution: link.resolution.clone(),
             verifier_revision: r.verifier_revision,
@@ -252,11 +259,15 @@ impl HistoricalProviderStore {
         &self,
         op: &Operation,
         digest: &str,
-        context: &VerifiedExecutionContext,
+        context: Option<&VerifiedExecutionContext>,
         snapshot: &CoordinatorSnapshot,
     ) -> Result<HistoricalProviderReceipt, GovernedProviderError> {
+        let root_id = federation_import(op, snapshot)?.map_or_else(
+            || op.context.execution_id().to_string(),
+            |record| record.root_id.clone(),
+        );
         let mut result = HistoricalProviderReceipt {
-            subject: context.principal().clone(),
+            subject: op.context.principal().clone(),
             observed_authority: snapshot.stamp(),
             receipt: GovernedProviderReceipt {
                 execution_id: op.context.execution_id(),
@@ -266,17 +277,14 @@ impl HistoricalProviderStore {
             operation_integrity: OperationIntegrity::Unstarted,
             metadata: None,
             binding: None,
-            cancellation_fenced: cancellation_fenced(
-                snapshot,
-                &op.context.execution_id().to_string(),
-            )?,
+            cancellation_fenced: cancellation_fenced(snapshot, &root_id)?,
             attempts: Vec::new(),
         };
         let mut gap = false;
         let mut all_sealed = true;
         // Do not let an unsealed legacy retry setting hide later registered work.
         for ordinal in 0..MAX_ATTEMPTS {
-            let id = attempt_id(op.context.execution_id(), ordinal);
+            let id = operation_attempt_id(op, ordinal)?;
             let Some(start) = snapshot.starts.get(&id) else {
                 gap = true;
                 continue;
@@ -290,7 +298,11 @@ impl HistoricalProviderStore {
             {
                 return Err(GovernedProviderError::Conflict);
             }
-            validate_start(op, digest, context, start)?;
+            if let Some(context) = context {
+                validate_start(op, digest, context, start)?;
+            } else {
+                validate_federated_start(op, digest, snapshot, start)?;
+            }
             all_sealed &= start.operation_evidence.is_some();
             if start.operation_evidence.is_some() && ordinal >= op.settings.max_attempts {
                 return Err(GovernedProviderError::Conflict);
@@ -333,6 +345,54 @@ impl HistoricalProviderStore {
         }
         Ok(result)
     }
+}
+
+pub(super) fn validate_federated_operation(
+    op: &Operation,
+    reference: &ExecutionContextReference,
+    snapshot: &CoordinatorSnapshot,
+) -> Result<(), GovernedProviderError> {
+    let imported = federation_import(op, snapshot)?.ok_or(GovernedProviderError::Conflict)?;
+    if op.schema != 1
+        || op.context != *reference
+        || op.action.namespace.as_str() != reference.namespace()
+        || op.action.tenant.as_str() != reference.tenant()
+        || governed_provider_input_digest(&op.action)? != reference.request_digest()
+        || imported.target != *reference.principal()
+        || op.settings.max_attempts == 0
+        || op.settings.max_attempts > MAX_ATTEMPTS
+        || op.settings.delays_ns.len() != (op.settings.max_attempts - 1) as usize
+        || op.settings.timeout_ns == 0
+    {
+        return Err(GovernedProviderError::Conflict);
+    }
+    Ok(())
+}
+
+pub(super) fn validate_federated_start(
+    op: &Operation,
+    digest: &str,
+    snapshot: &CoordinatorSnapshot,
+    start: &StartRecord,
+) -> Result<(), GovernedProviderError> {
+    let imported = federation_import(op, snapshot)?.ok_or(GovernedProviderError::Conflict)?;
+    if start.request_digest != op.context.request_digest()
+        || start.subject != op.context.principal().id()
+        || start
+            .resources
+            .iter()
+            .ne(op.binding.effect.resources.iter())
+        || start.authority.incarnation != snapshot.incarnation
+        || start.reservation.as_ref().is_none_or(|reservation| {
+            reservation.root_id != imported.root_id || reservation.units != 1
+        })
+        || start.operation_evidence.as_ref().is_some_and(|seal| {
+            seal.id != op.context.execution_id().to_string() || seal.digest != digest
+        })
+    {
+        return Err(GovernedProviderError::Conflict);
+    }
+    Ok(())
 }
 
 pub(super) fn validate_operation(
@@ -441,7 +501,12 @@ fn cancellation_fenced(
 }
 
 fn has_registered(snapshot: &CoordinatorSnapshot, execution_id: Uuid) -> bool {
-    (0..MAX_ATTEMPTS).any(|ordinal| {
+    snapshot.starts.values().any(|start| {
+        start
+            .operation_evidence
+            .as_ref()
+            .is_some_and(|seal| seal.id == execution_id.to_string())
+    }) || (0..MAX_ATTEMPTS).any(|ordinal| {
         snapshot
             .starts
             .contains_key(&attempt_id(execution_id, ordinal))

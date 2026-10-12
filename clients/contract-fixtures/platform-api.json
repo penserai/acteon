@@ -75,6 +75,16 @@
       "response": "json"
     },
     {
+      "name": "a2a_discovery_discover_agent_v1",
+      "method": "GET",
+      "path": "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+      "parameters": [
+        "namespace",
+        "tenant"
+      ],
+      "response": "json"
+    },
+    {
       "name": "a2a_discovery_get_agent_card",
       "method": "GET",
       "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
@@ -270,6 +280,17 @@
         "skill"
       ],
       "response": "json"
+    },
+    {
+      "name": "agent_services_rpc",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent"
+      ],
+      "response": "stream"
     },
     {
       "name": "agent_services_task_authorization_request",
@@ -1263,12 +1284,108 @@
       "response": "json"
     },
     {
+      "name": "federation_capabilities",
+      "method": "GET",
+      "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_export_message",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "task_id",
+        "profile"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_import_envelope",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+      "parameters": [
+        "namespace",
+        "tenant"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_invoke_agent",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_observe_export_message",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "task_id",
+        "profile"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_replay_export_message",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "task_id",
+        "profile"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "governance_abandon_federation_delivery",
+      "method": "POST",
+      "path": "/v1/governance/federation/deliveries/{delivery_id}:abandon",
+      "parameters": [
+        "delivery_id"
+      ],
+      "response": "json"
+    },
+    {
       "name": "governance_accept_reconciliation",
       "method": "POST",
       "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
       "parameters": [
         "execution_id",
         "ordinal"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "governance_federation_delivery_evidence",
+      "method": "GET",
+      "path": "/v1/governance/federation/deliveries",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "governance_federation_finality_correlation",
+      "method": "GET",
+      "path": "/v1/governance/federation/deliveries/{delivery_id}/correlation",
+      "parameters": [
+        "delivery_id"
       ],
       "response": "json"
     },
@@ -1303,10 +1420,26 @@
       "response": "json"
     },
     {
+      "name": "governance_publish_federation_trust",
+      "method": "POST",
+      "path": "/v1/governance/federation/trusts",
+      "parameters": [],
+      "response": "json"
+    },
+    {
       "name": "governance_publish_permit",
       "method": "POST",
       "path": "/v1/governance/permits",
       "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "governance_reconcile_federation_delivery",
+      "method": "POST",
+      "path": "/v1/governance/federation/deliveries/{delivery_id}:reconcile",
+      "parameters": [
+        "delivery_id"
+      ],
       "response": "json"
     },
     {
@@ -1326,6 +1459,13 @@
       "parameters": [
         "agent_id"
       ],
+      "response": "json"
+    },
+    {
+      "name": "governance_revoke_federation_trust",
+      "method": "POST",
+      "path": "/v1/governance/federation/trusts/revoke",
+      "parameters": [],
       "response": "json"
     },
     {

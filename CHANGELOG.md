@@ -2,6 +2,39 @@
 
 ## Unreleased — rehabilitation
 
+- Add source-scoped exact-agent A2A `ListTasks`. The runtime scans governed
+  acceptances through the configured state backend, verifies exact agent and
+  source ownership per Task, rechecks authentication after the scan, returns
+  required exact totals in last-update-descending cursor order, and preserves
+  per-job isolation for agent principals. Rust, Python, TypeScript, Go, Java,
+  and the browser expose schema-validated pages. Tenant A2A listing now uses the
+  same specification-required ordering.
+
+- Add truthful governed `CancelTask` to exact-agent A2A services. Cancellation
+  commits the execution-subtree fence first, projects `Canceled` only for a
+  proven local non-start or qualified provider no-effect receipt, and exposes
+  pending finality through `metadata.acteonCancellation`. Native stop receipts
+  now include `cancellation_confirmed`; all five SDKs expose official cancel
+  helpers and validate the new acknowledgement.
+
+- Add an exact-agent A2A 1.0 JSON-RPC endpoint that sends new work through the
+  governed agent-service runtime, preserves private parent authority, binds
+  observation and continuation to authenticated source provenance, and keeps
+  internal execution metadata off the protocol wire. Regenerate the operation
+  catalogs for all five client SDKs and register every public and protected A2A
+  route in the fail-closed permission inventory.
+
+- Add official exact-agent `SendStreamingMessage` and `SubscribeToTask` SSE
+  responses. Streaming is gated by the exact durable card, shares tenant
+  connection quotas, revalidates authenticated source provenance for every
+  emitted update, returns the admission receipt out of band, and strips private
+  execution bindings from recovery snapshots.
+
+- Add native official A2A streaming invocations to the Rust, Python,
+  TypeScript, Go, and Java SDKs. Each client validates protocol version, media
+  type, JSON-RPC identity, source provenance, and bounded SSE frames while
+  keeping long-lived streams outside finite-call timeouts.
+
 - Derive recurring-action claim leases from the polling interval with two full
   intervals plus a recovery margin. Document pre-dispatch re-arming so delayed
   consumers cannot cause the same due occurrence to be dispatched again.

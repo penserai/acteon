@@ -15,6 +15,23 @@ separates shipped milestones from possible extensions; it is not a delivery comm
 
 ## Areas under consideration
 
+### A2A callback scale and secret custody
+
+Durable ordered A2A callbacks now use the configured state backend for the Task
+mutation log, callback cursors, fenced leases, retry deadlines, and dead letters.
+The live broadcast is only a low-latency wake-up; bounded Task-page recovery
+repairs missed events and restart gaps. A repairable ready-work index directs
+normal polling to Tasks with callback work. Redis, PostgreSQL, and DynamoDB use
+native bounded continuation for recovery inventory; custom state backends can
+override the same paging contract. Backends may later add a native due-time
+index for very large fleets. Bounded Task-page repair remains the correctness
+fallback.
+
+Callback credentials currently follow the A2A wire model into the configured
+state backend. A production secret-custody layer should support encrypted values
+or secret-provider references without returning plaintext through ordinary
+projections.
+
 ### DynamoDB Hierarchical Tenant Index
 
 Hierarchical/multi-tenant audit reads currently fall back to a table `Scan` on the DynamoDB backend, because the `ns_tenant` composite partition key only supports exact match (see [DynamoDB Audit Backend](../backends/dynamodb-audit.md)). Add a sparse GSI keyed on `namespace` (PK) + `tenant` (SK) so a scoped read becomes a `begins_with(tenant, "acme.")` **Query** (indexed range) instead of a full Scan. Requires a write-time projection of the new key attributes and a one-time backfill. Only worth doing if users run scoped multi-tenant audit reads at volume on DynamoDB (ClickHouse/Postgres already handle this as an indexed prefix range).
