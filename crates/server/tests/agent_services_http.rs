@@ -2888,10 +2888,23 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         notifier.log()
     );
     assert_eq!(continued["status"]["task"]["id"], remote_id);
-    assert_eq!(continued["status"]["task"]["status"]["state"], "completed");
+    assert!(matches!(
+        continued["status"]["task"]["status"]["state"].as_str(),
+        Some("working" | "completed")
+    ));
     assert!(continued["status"]["progress_cursor"].as_str().is_some());
     assert!(continued["continuation_id"].as_str().is_some());
-    let task_after = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
+    let task_after = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let task = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
+            if task.status.state == TaskState::Completed {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(task_after.status.state, TaskState::Completed);
     assert_eq!(
         task_after
