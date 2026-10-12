@@ -271,7 +271,9 @@ impl AgentProviderRuntime {
         if bound.catalog_version().is_none()
             || provider_effects != 1
             || plan.direct_effects().iter().any(|effect| {
-                !matches_effect(effect, bound.effect()) && effect.operation != "agent.invoke"
+                !matches_effect(effect, bound.effect())
+                    && effect.operation != "agent.invoke"
+                    && effect.operation != "federation.export"
             })
         {
             return Err(AgentRuntimeError::Invalid);

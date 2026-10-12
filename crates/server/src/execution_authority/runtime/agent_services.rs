@@ -1279,8 +1279,7 @@ impl ExecutionAuthorityRuntime {
     ) -> Result<AgentTaskStopReceipt, AgentServiceError> {
         let task_id = request.task_id;
         let (runtime, source) = self.authorize_service_observation(request).await?;
-        runtime
-            .stop(task_id, &source)
+        Box::pin(runtime.stop(task_id, &source))
             .await
             .map_err(AgentServiceError::from)
     }

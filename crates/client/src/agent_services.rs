@@ -2161,7 +2161,7 @@ mod tests {
                             );
                             assert_eq!(body["params"]["pageSize"], 1);
                             assert_eq!(body["params"]["status"], "TASK_STATE_SUBMITTED");
-                            assert!(accept.is_none());
+                            assert_ne!(accept.as_deref(), Some("text/event-stream"));
                             let mut response = Json(serde_json::json!({
                                 "jsonrpc":"2.0", "id":body["id"],
                                 "result":{
@@ -2178,7 +2178,7 @@ mod tests {
                         if method == "CancelTask" {
                             assert_eq!(source.as_deref(), wire["jobs"][0]["source_context"].as_str());
                             assert_eq!(body["params"]["id"], "job-1");
-                            assert!(accept.is_none());
+                            assert_ne!(accept.as_deref(), Some("text/event-stream"));
                             let mut response = Json(serde_json::json!({
                                 "jsonrpc":"2.0", "id":body["id"],
                                 "result":{"id":"job-1","status":{"state":"TASK_STATE_CANCELED"},

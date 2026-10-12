@@ -537,9 +537,21 @@ namespaces = ["prod"]
 tenants = ["acme"]
 providers = ["agent.worker"]
 actions = ["invoke"]
+[[api_keys]]
+name = "worker"
+authority_id = "credential/worker"
+principal = {{id="agent/worker",kind="agent"}}
+key_hash = {:?}
+role = "executor"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["incident"]
+actions = ["execute"]
 "#,
         acteon_server::auth::api_key::hash_api_key("operator-secret"),
-        acteon_server::auth::api_key::hash_api_key("source-peer-secret")
+        acteon_server::auth::api_key::hash_api_key("source-peer-secret"),
+        acteon_server::auth::api_key::hash_api_key("worker-secret")
     )
 }
 
@@ -602,6 +614,11 @@ namespaces = ["prod"]
 tenants = ["acme"]
 providers = ["federation.remote-worker"]
 actions = ["export"]
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["incident"]
+actions = ["execute"]
 [[api_keys]]
 name = "official-a2a-client"
 authority_id = "credential/official-a2a-client"
@@ -700,7 +717,7 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         vec![
             (
                 "ACTEON_DESTINATION_RECIPIENT".into(),
-                "destination-recipient-key-at-least-32-bytes".into(),
+                "worker-secret".into(),
             ),
             (
                 "ACTEON_DESTINATION_CAPABILITY_SIGNER".into(),
@@ -750,10 +767,7 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         &source_config,
         &source_authentication(),
         vec![
-            (
-                "ACTEON_SOURCE_RECIPIENT".into(),
-                "source-recipient-key-at-least-32-bytes".into(),
-            ),
+            ("ACTEON_SOURCE_RECIPIENT".into(), "source-secret".into()),
             ("ACTEON_SOURCE_FEDERATION_SIGNER".into(), "29".repeat(32)),
             (
                 "ACTEON_SOURCE_PEER_CREDENTIAL".into(),

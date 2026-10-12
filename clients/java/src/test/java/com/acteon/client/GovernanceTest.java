@@ -141,7 +141,7 @@ class GovernanceTest {
         server.createContext("/", exchange -> {
             paths.add(exchange.getRequestURI().getPath());
             var body = mapper.readTree(exchange.getRequestBody());
-            if (body != null) bodies.add(body);
+            if (body != null && !body.isMissingNode()) bodies.add(body);
             assertEquals("Bearer federation-key", exchange.getRequestHeaders().getFirst("Authorization"));
             var path = exchange.getRequestURI().getPath();
             var response = path.endsWith("/correlation")
