@@ -14,12 +14,12 @@ pub use runtime::{
     AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
     AgentPeerTransportError, AgentServiceAcceptance, AgentServiceAuthorizationOpen,
     AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
-    AgentServiceError, AgentServiceListPage, AgentServiceListPosition, AgentServiceListRequest,
-    AgentServiceObservation, AgentServiceParent, AgentServiceRequest, AgentServiceTaskObservation,
-    ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, FederationAgentInvocation,
-    FederationCapabilityAdmission, FederationDeliveryEvidencePage, FederationExportRuntimeError,
-    FederationImportAdmission, ManagementError, TrustedFederationFinalityInstallation,
-    TrustedReconciliationInstallation,
+    AgentServiceError, AgentServiceInitialPushConfig, AgentServiceListPage,
+    AgentServiceListPosition, AgentServiceListRequest, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, AgentServiceTaskObservation, ExecutionAuthorityRuntime,
+    ExecutionRuntimeDependencies, FederationAgentInvocation, FederationCapabilityAdmission,
+    FederationDeliveryEvidencePage, FederationExportRuntimeError, FederationImportAdmission,
+    ManagementError, TrustedFederationFinalityInstallation, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 

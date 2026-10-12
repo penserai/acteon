@@ -45,6 +45,7 @@ pub struct AgentRuntimeDependencies {
     pub contexts: Arc<TrustedContextStore>,
     pub clock: Arc<dyn Clock>,
     pub stream_tx: Option<tokio::sync::broadcast::Sender<StreamEvent>>,
+    pub audit: Option<Arc<dyn acteon_audit::store::AuditStore>>,
 }
 
 /// Identify accepted governed work from its durable journal, including when a
@@ -100,6 +101,8 @@ struct Acceptance {
     federation_invocation: Option<SignedFederationInvocation>,
     action: Action,
     initial_task: Task,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    initial_push_configs: Vec<acteon_core::TaskPushNotificationConfig>,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +144,49 @@ enum ContinuationState {
 struct CurrentOperation<'a> {
     reference: &'a ExecutionContextReference,
     action: &'a Action,
+}
+
+fn initial_push_configs_match(
+    left: &[acteon_core::TaskPushNotificationConfig],
+    right: &[acteon_core::TaskPushNotificationConfig],
+) -> Result<bool, serde_json::Error> {
+    fn stable_projection(
+        configs: &[acteon_core::TaskPushNotificationConfig],
+    ) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+        configs
+            .iter()
+            .map(|config| {
+                let mut value = serde_json::to_value(config)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("createdAt");
+                    object.remove("updatedAt");
+                }
+                Ok(value)
+            })
+            .collect()
+    }
+    Ok(stable_projection(left)? == stable_projection(right)?)
+}
+
+fn normalize_initial_push_configs(
+    mut configs: Vec<acteon_core::TaskPushNotificationConfig>,
+    task: &Task,
+) -> Result<Vec<acteon_core::TaskPushNotificationConfig>, AgentRuntimeError> {
+    configs.sort_by(|left, right| left.id.cmp(&right.id));
+    if configs.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    for config in &configs {
+        config.validate().map_err(|_| AgentRuntimeError::Invalid)?;
+        if config.task_id != task.id
+            || config.namespace != task.namespace
+            || config.tenant != task.tenant
+            || config.created_at > config.updated_at
+        {
+            return Err(AgentRuntimeError::Invalid);
+        }
+    }
+    Ok(configs)
 }
 
 /// Read the bounded binding selector used by a trusted recovery host. This is
@@ -242,6 +288,9 @@ impl AgentProviderRuntime {
         .require_credential_authority();
         let mut tasks =
             TaskEngine::new(dependencies.state.clone()).with_clock(dependencies.clock.clone());
+        if let Some(audit) = dependencies.audit.clone() {
+            tasks = tasks.with_audit(audit);
+        }
         if let Some(stream_tx) = dependencies.stream_tx.clone() {
             tasks = tasks.with_stream_tx(stream_tx);
         }
@@ -584,6 +633,21 @@ impl AgentProviderRuntime {
         permits: &[PermitReference],
         message: &TaskMessage,
     ) -> Result<Task, AgentRuntimeError> {
+        self.accept_with_push_configs(context, permits, message, Vec::new())
+            .await
+    }
+
+    /// Persist a governed acceptance and materialize its Task together with
+    /// initial callback configurations. Keeping the configurations in the
+    /// immutable acceptance closes the crash window between accepting work and
+    /// creating its callback cursors, including recovery and replay.
+    pub async fn accept_with_push_configs(
+        &self,
+        context: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        message: &TaskMessage,
+        initial_push_configs: Vec<acteon_core::TaskPushNotificationConfig>,
+    ) -> Result<Task, AgentRuntimeError> {
         let action = self.prepare_message(message)?;
         let reference = context.reference()?;
         if reference.principal() != self.binding.target()
@@ -605,6 +669,7 @@ impl AgentProviderRuntime {
         initial.task_id = Some(task.id.clone());
         task.append_history_at(initial, self.dependencies.clock.now())
             .map_err(|_| AgentRuntimeError::Invalid)?;
+        let initial_push_configs = normalize_initial_push_configs(initial_push_configs, &task)?;
         let proposed = Acceptance {
             schema: 1,
             binding_digest: self.binding.digest().into(),
@@ -613,6 +678,7 @@ impl AgentProviderRuntime {
             federation_invocation: None,
             action,
             initial_task: task,
+            initial_push_configs,
         };
         self.verify(&proposed).await?;
         let key = self.key(proposed.reference.execution_id());
@@ -653,6 +719,10 @@ impl AgentProviderRuntime {
             || original.permits != proposed.permits
             || governed_provider_input_digest(&original.action)?
                 != governed_provider_input_digest(&proposed.action)?
+            || !initial_push_configs_match(
+                &original.initial_push_configs,
+                &proposed.initial_push_configs,
+            )?
         {
             return Err(AgentRuntimeError::Conflict);
         }
@@ -704,6 +774,7 @@ impl AgentProviderRuntime {
             federation_invocation: Some(invocation.clone()),
             action,
             initial_task: task,
+            initial_push_configs: Vec::new(),
         };
         self.verify(&proposed).await?;
         let key = self.key(proposed.reference.execution_id());
@@ -713,6 +784,7 @@ impl AgentProviderRuntime {
                 || original.federation_invocation != proposed.federation_invocation
                 || governed_provider_input_digest(&original.action)?
                     != governed_provider_input_digest(&proposed.action)?
+                || !original.initial_push_configs.is_empty()
             {
                 return Err(AgentRuntimeError::Conflict);
             }
@@ -756,7 +828,14 @@ impl AgentProviderRuntime {
 
     async fn materialize(&self, accepted: &Acceptance) -> Result<Task, AgentRuntimeError> {
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
-        match self.tasks.create_task(accepted.initial_task.clone()).await {
+        match self
+            .tasks
+            .create_task_with_push_configs(
+                accepted.initial_task.clone(),
+                accepted.initial_push_configs.clone(),
+            )
+            .await
+        {
             Ok(task) => Ok(task),
             Err(TaskEngineError::AlreadyExists(_)) => {
                 let task = self

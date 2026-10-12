@@ -219,6 +219,7 @@ impl From<TaskEngineError> for A2aError {
             // id, a transition, or a structural limit the caller
             // controls, none of it server-internal.
             TaskEngineError::Validation(v) => A2aError::invalid_params(v.to_string()),
+            TaskEngineError::PushConfigValidation(v) => A2aError::invalid_params(v.to_string()),
             TaskEngineError::ReferenceCycle { .. }
             | TaskEngineError::ReferenceDepthExceeded { .. }
             | TaskEngineError::ReferenceGraphTooLarge { .. }
@@ -235,6 +236,9 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::ChallengeResponseRole
             | TaskEngineError::AuthorizationChallengeUnbound(_)
             | TaskEngineError::AuthorizationRequirementRequired
+            | TaskEngineError::PushConfigIdentityMismatch
+            | TaskEngineError::PushConfigAlreadyExists(_)
+            | TaskEngineError::PushConfigCapacityExceeded
             | TaskEngineError::AuthorizationVerifierMismatch { .. }
             | TaskEngineError::AuthorizationEvidenceExpired
             | TaskEngineError::AuthorizationDecisionConflict(_)
@@ -532,6 +536,16 @@ async fn method_message_send_as(
     params: MessageSendParams,
     actor: &str,
 ) -> Result<Task, A2aError> {
+    method_message_send_as_with_push(engine, scope, params, actor, None).await
+}
+
+async fn method_message_send_as_with_push(
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    params: MessageSendParams,
+    actor: &str,
+    inline_push: Option<super::a2a_push::SetPushConfigInput>,
+) -> Result<Task, A2aError> {
     let mut message = params.message;
     if message.parts.is_empty() {
         return Err(A2aError::invalid_params("message.parts must not be empty"));
@@ -551,6 +565,9 @@ async fn method_message_send_as(
                 "message.contextId must exactly match the existing task",
             ));
         }
+        let inline_push = inline_push.map(|input| {
+            materialize_inline_push_config(scope, &task_id, input, engine.clock().now())
+        });
         match task.status.state {
             TaskState::InputRequired => {
                 let challenge_id = message
@@ -568,6 +585,9 @@ async fn method_message_send_as(
                         "metadata.acteon.challengeId is not the task's active challenge",
                     ));
                 }
+                if let Some(config) = inline_push {
+                    engine.upsert_push_config(scope, &task_id, config).await?;
+                }
                 Ok(engine
                     .resolve_input(scope, &task_id, &challenge_id, message, actor)
                     .await?
@@ -580,7 +600,12 @@ async fn method_message_send_as(
                 "task '{task_id}' is terminal ({}) and cannot accept messages",
                 state.as_str()
             ))),
-            _ => Ok(engine.append_history(scope, &task_id, message).await?),
+            _ => {
+                if let Some(config) = inline_push {
+                    engine.upsert_push_config(scope, &task_id, config).await?;
+                }
+                Ok(engine.append_history(scope, &task_id, message).await?)
+            }
         }
     } else {
         // Mint a new task with this message as its first history entry.
@@ -589,10 +614,33 @@ async fn method_message_send_as(
         let mut task = Task::new_at(&task_id, &scope.namespace, &scope.tenant, now);
         task.context_id.clone_from(&message.context_id);
         // Bind the message to the task it now belongs to.
-        message.task_id = Some(task_id);
+        message.task_id = Some(task_id.clone());
         task.append_history_at(message, now)
             .map_err(|e| A2aError::invalid_params(e.to_string()))?;
-        Ok(engine.create_task(task).await?)
+        let configs = inline_push
+            .map(|input| materialize_inline_push_config(scope, &task_id, input, now))
+            .into_iter()
+            .collect();
+        Ok(engine.create_task_with_push_configs(task, configs).await?)
+    }
+}
+
+fn materialize_inline_push_config(
+    scope: &TaskScope,
+    task_id: &str,
+    input: super::a2a_push::SetPushConfigInput,
+    now: DateTime<Utc>,
+) -> acteon_core::TaskPushNotificationConfig {
+    acteon_core::TaskPushNotificationConfig {
+        id: input.id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+        task_id: task_id.into(),
+        namespace: scope.namespace.clone(),
+        tenant: scope.tenant.clone(),
+        url: input.url,
+        token: input.token,
+        authentication: input.authentication,
+        created_at: now,
+        updated_at: now,
     }
 }
 
@@ -1553,12 +1601,7 @@ async fn method_send_v1_immediate(
     }
     let parsed = serde_json::from_value::<MessageSendParams>(normalize_v1_send_params(params))
         .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-    let task = method_message_send_as(engine, scope, parsed, actor).await?;
-    if let Some(inline_push) = inline_push {
-        super::a2a_push::save_config(require_state(state)?, scope, &task.id, inline_push)
-            .await
-            .map_err(push_err_to_a2a)?;
-    }
+    let task = method_message_send_as_with_push(engine, scope, parsed, actor, inline_push).await?;
     Ok(task)
 }
 
@@ -2912,6 +2955,38 @@ mod tests {
         assert_eq!(task.id, first.id);
         assert_eq!(task.history.len(), 2);
         assert_eq!(task.history[1].context_id.as_deref(), Some("context-1"));
+    }
+
+    #[tokio::test]
+    async fn rejected_continuation_does_not_register_inline_push_config() {
+        let e = engine();
+        let task_id = seed_task(&e).await;
+        e.transition_task(&scope(), &task_id, TaskState::Canceled, None)
+            .await
+            .unwrap();
+        let mut message = user_message("too late");
+        message.task_id = Some(task_id.clone());
+        let error = method_message_send_as_with_push(
+            &e,
+            &scope(),
+            MessageSendParams { message },
+            "test",
+            Some(super::super::a2a_push::SetPushConfigInput {
+                id: Some("must-not-exist".into()),
+                url: "https://callbacks.example/a2a".into(),
+                token: None,
+                authentication: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(
+            e.get_push_config(&scope(), &task_id, "must-not-exist")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

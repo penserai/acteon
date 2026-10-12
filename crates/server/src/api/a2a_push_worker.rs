@@ -463,16 +463,36 @@ impl Shared {
         self.metrics
             .state_store_scans
             .fetch_add(1, Ordering::Relaxed);
-        let prefix = format!("{task_id}:");
-        let entries = self
-            .state
-            .scan_keys(namespace, tenant, KeyKind::A2aTaskPushConfig, Some(&prefix))
+        let scope = TaskScope::new(namespace, tenant);
+        let engine = TaskEngine::new(self.state.clone());
+        if !engine
+            .push_config_migration_complete(&scope, task_id)
             .await
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(entries.len());
-        for (_, raw) in entries {
-            let config = serde_json::from_str::<TaskPushNotificationConfig>(&raw)
-                .map_err(|_| "malformed stored push configuration".to_string())?;
+            .map_err(|error| error.to_string())?
+        {
+            let prefix = format!("{task_id}:");
+            let entries = self
+                .state
+                .scan_keys(namespace, tenant, KeyKind::A2aTaskPushConfig, Some(&prefix))
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut legacy = Vec::with_capacity(entries.len());
+            for (_, raw) in entries {
+                legacy.push(
+                    serde_json::from_str::<TaskPushNotificationConfig>(&raw)
+                        .map_err(|_| "malformed stored push configuration".to_string())?,
+                );
+            }
+            engine
+                .import_legacy_push_configs(&scope, task_id, legacy)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let out = engine
+            .list_push_configs(&scope, task_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        for config in &out {
             if config.namespace != namespace
                 || config.tenant != tenant
                 || config.task_id != task_id
@@ -482,7 +502,6 @@ impl Shared {
             {
                 return Err("stored push configuration failed identity or validation".into());
             }
-            out.push(config);
         }
         Ok(out)
     }
@@ -800,14 +819,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let key = StateKey::new(
-            c.namespace.clone(),
-            c.tenant.clone(),
-            KeyKind::A2aTaskPushConfig,
-            c.storage_id(),
-        );
-        let payload = serde_json::to_string(c).unwrap();
-        store.set(&key, &payload, None).await.unwrap();
+        engine
+            .upsert_push_config(&scope, &c.task_id, c.clone())
+            .await
+            .unwrap();
     }
 
     /// Mock that responds with `status` after a configurable delay,
@@ -987,6 +1002,59 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_imports_legacy_standalone_configs_once() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let task = Task::new("legacy-task", "agents", "demo");
+        let scope = TaskScope::new("agents", "demo");
+        store
+            .set(
+                &StateKey::new("agents", "demo", KeyKind::A2aTask, &task.id),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let config = TaskPushNotificationConfig::new(
+            "legacy-config",
+            &task.id,
+            task.namespace.as_str(),
+            task.tenant.as_str(),
+            "https://example.com/hook",
+        );
+        let legacy_key = StateKey::new(
+            task.namespace.as_str(),
+            task.tenant.as_str(),
+            KeyKind::A2aTaskPushConfig,
+            config.storage_id(),
+        );
+        store
+            .set(&legacy_key, &serde_json::to_string(&config).unwrap(), None)
+            .await
+            .unwrap();
+
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy::default(),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker = PushDeliveryWorker::new(Arc::clone(&store), http, rx);
+        let configs = worker
+            .shared
+            .load_configs("agents", "demo", "legacy-task")
+            .await
+            .unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].id, "legacy-config");
+        assert!(
+            TaskEngine::new(store)
+                .push_config_migration_complete(&scope, "legacy-task")
+                .await
+                .unwrap()
         );
     }
 

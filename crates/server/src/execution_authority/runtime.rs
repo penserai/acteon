@@ -8,9 +8,9 @@ mod federation_export;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
     AgentServiceAcceptance, AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve,
-    AgentServiceContinuation, AgentServiceListPage, AgentServiceListPosition,
-    AgentServiceListRequest, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
-    AgentServiceTaskObservation,
+    AgentServiceContinuation, AgentServiceInitialPushConfig, AgentServiceListPage,
+    AgentServiceListPosition, AgentServiceListRequest, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, AgentServiceTaskObservation,
 };
 pub use federation::{
     FederationAgentInvocation, FederationCapabilityAdmission, FederationImportAdmission,
@@ -57,6 +57,7 @@ pub struct ExecutionRuntimeDependencies {
     pub executor: ExecutorConfig,
     pub clock: Arc<dyn Clock>,
     pub stream_tx: Option<tokio::sync::broadcast::Sender<acteon_core::StreamEvent>>,
+    pub audit: Option<Arc<dyn acteon_audit::store::AuditStore>>,
     pub encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
     pub outbound_tls: Option<Arc<acteon_crypto::tls::LoadedTlsClientConfig>>,
     pub signing_key: zeroize::Zeroizing<Vec<u8>>,
@@ -230,6 +231,7 @@ impl ExecutionAuthorityRuntime {
                         contexts: contexts.clone(),
                         clock: dependencies.clock.clone(),
                         stream_tx: dependencies.stream_tx.clone(),
+                        audit: dependencies.audit.clone(),
                     },
                     agent.binding.clone(),
                     agent.bound.clone(),
@@ -259,6 +261,7 @@ impl ExecutionAuthorityRuntime {
                             contexts: contexts.clone(),
                             clock: dependencies.clock.clone(),
                             stream_tx: dependencies.stream_tx.clone(),
+                            audit: dependencies.audit.clone(),
                         },
                         agent.binding.clone(),
                         agent.bound.clone(),

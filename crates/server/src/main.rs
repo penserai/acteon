@@ -1703,6 +1703,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 executor: exec_config.clone(),
                 clock: Arc::new(acteon_time::SystemClock::default()),
                 stream_tx: Some(gateway.stream_tx().clone()),
+                audit: gateway.audit_store(),
                 encryptor: payload_encryptor.clone(),
                 outbound_tls: loaded_outbound_tls.clone(),
                 signing_key: zeroize::Zeroizing::new(key.expose_secret().as_bytes().to_vec()),

@@ -2,7 +2,8 @@
 use super::{AppState, a2a::A2A_PROTOCOL_VERSION, schemas::ErrorResponse};
 use crate::execution_authority::{
     AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve, AgentServiceContinuation,
-    AgentServiceListPosition, AgentServiceListRequest, AgentServiceParent,
+    AgentServiceInitialPushConfig, AgentServiceListPosition, AgentServiceListRequest,
+    AgentServiceParent,
 };
 use crate::{
     auth::{
@@ -731,6 +732,21 @@ async fn submit_agent_rpc(
                     "an InputRequired response must include metadata.acteon.challengeId",
                 )
             })?;
+        if let Some(mut input) = inline_push {
+            if input.id.is_none() {
+                input.id =
+                    Some(uuid::Uuid::new_v5(&task_id, b"acteon:a2a:inline-push").to_string());
+            }
+            let scope = TaskScope::new(context.namespace, context.tenant);
+            super::a2a_push::save_authorized_config(
+                context.state,
+                &scope,
+                &task_id.to_string(),
+                input,
+            )
+            .await
+            .map_err(governed_push_error)?;
+        }
         let observed = runtime
             .continue_agent_service(AgentServiceContinuation {
                 observation: context.observation(task_id, source.as_ref()),
@@ -749,6 +765,15 @@ async fn submit_agent_rpc(
         let parent = parent_input
             .as_ref()
             .map(|(context, permits)| AgentServiceParent { context, permits });
+        let initial_push_configs: Vec<_> = inline_push
+            .into_iter()
+            .map(|input| AgentServiceInitialPushConfig {
+                id: input.id,
+                url: input.url,
+                token: input.token,
+                authentication: input.authentication,
+            })
+            .collect();
         let accepted = Box::pin(runtime.accept_agent_service(AgentServiceRequest {
             namespace: context.namespace,
             tenant: context.tenant,
@@ -757,21 +782,11 @@ async fn submit_agent_rpc(
             authentication: context.proof,
             auth_provider: authentication,
             parent,
+            initial_push_configs: &initial_push_configs,
         }))
         .await?;
         (accepted.task, Some(accepted.source_context))
     };
-    if let Some(mut input) = inline_push {
-        let task_id =
-            uuid::Uuid::parse_str(&outcome.0.id).map_err(|_| AgentRpcFailure::internal())?;
-        if input.id.is_none() {
-            input.id = Some(uuid::Uuid::new_v5(&task_id, b"acteon:a2a:inline-push").to_string());
-        }
-        let scope = TaskScope::new(context.namespace, context.tenant);
-        super::a2a_push::save_authorized_config(context.state, &scope, &outcome.0.id, input)
-            .await
-            .map_err(governed_push_error)?;
-    }
     Ok(outcome)
 }
 
@@ -2413,6 +2428,7 @@ pub async fn message_send(
         authentication: &proof,
         auth_provider: authentication,
         parent,
+        initial_push_configs: &[],
     }))
     .await
     {

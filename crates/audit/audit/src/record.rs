@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 /// [`AuditRecord`]: the discriminator rides in the existing
 /// `action_type` field via [`AuditEventKind::as_action_type`], so no
 /// cross-backend schema migration is needed. Audit queries filter A2A
-/// task events with `action_type = "a2a.task.transition"`.
+/// task events with `action_type = "a2a.task.transition"` and callback
+/// configuration evidence with `action_type = "a2a.task.push_config"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
@@ -28,17 +29,21 @@ pub enum AuditEventKind {
     /// (creation, state transition, history append, artifact update,
     /// stale-task reap, …).
     A2aTaskTransition,
+    /// An A2A Task push-callback configuration mutation. These records carry
+    /// only the task and configuration identities plus the operation; callback
+    /// URLs and credentials are deliberately excluded.
+    A2aPushConfigMutation,
 }
 
 impl AuditEventKind {
     /// The `action_type` discriminator string stamped on records of
-    /// this kind. For [`AuditEventKind::A2aTaskTransition`] this is the
-    /// stable value audit queries filter on.
+    /// this kind. A2A variants use stable values audit queries filter on.
     #[must_use]
     pub fn as_action_type(self) -> &'static str {
         match self {
             Self::ActionDispatch => "action_dispatch",
             Self::A2aTaskTransition => "a2a.task.transition",
+            Self::A2aPushConfigMutation => "a2a.task.push_config",
         }
     }
 }

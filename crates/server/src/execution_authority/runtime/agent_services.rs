@@ -12,7 +12,10 @@ use crate::{
         },
     },
 };
-use acteon_core::{AgentCard, ExecutionContextReference, PrincipalKind, Task, TaskMessage};
+use acteon_core::{
+    AgentCard, ExecutionContextReference, PrincipalKind, PushAuthentication, Task, TaskMessage,
+    TaskPushNotificationConfig,
+};
 use acteon_executor::governed::governed_provider_input_digest;
 use acteon_gateway::agent_runtime::{
     ACCEPTANCE_KIND, AgentProviderRuntime, AgentTaskStopReceipt, accepted_agent_binding_digest,
@@ -45,6 +48,43 @@ pub struct AgentServiceRequest<'a> {
     pub authentication: &'a AuthenticatedExecutionConfiguration,
     pub auth_provider: &'a AuthProvider,
     pub parent: Option<AgentServiceParent<'a>>,
+    pub initial_push_configs: &'a [AgentServiceInitialPushConfig],
+}
+
+/// Validated callback input carried into governed task admission. The runtime
+/// binds it to the accepted execution ID and persists it atomically with the
+/// Task projection.
+pub struct AgentServiceInitialPushConfig {
+    pub id: Option<String>,
+    pub url: String,
+    pub token: Option<String>,
+    pub authentication: Option<PushAuthentication>,
+}
+
+fn materialize_initial_push_configs(
+    request: &AgentServiceRequest<'_>,
+    task_id: uuid::Uuid,
+    namespace: &str,
+    tenant: &str,
+    now: DateTime<Utc>,
+) -> Vec<TaskPushNotificationConfig> {
+    request
+        .initial_push_configs
+        .iter()
+        .map(|input| TaskPushNotificationConfig {
+            id: input.id.clone().unwrap_or_else(|| {
+                uuid::Uuid::new_v5(&task_id, b"acteon:a2a:inline-push").to_string()
+            }),
+            task_id: task_id.to_string(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            url: input.url.clone(),
+            token: input.token.clone(),
+            authentication: input.authentication.clone(),
+            created_at: now,
+            updated_at: now,
+        })
+        .collect()
 }
 /// Transport receipt; the host retains source provenance separately from model data.
 pub struct AgentServiceAcceptance {
@@ -384,9 +424,8 @@ impl ExecutionAuthorityRuntime {
             .scope(request.namespace, request.tenant)
             .map_err(|_| AgentServiceError::Forbidden)?;
         let actor = source.authentication_source().principal();
-        if let Some(replayed) = self
-            .replay_accepted_agent_service(scope, &request, &source)
-            .await?
+        if let Some(replayed) =
+            Box::pin(self.replay_accepted_agent_service(scope, &request, &source)).await?
         {
             return Ok(replayed);
         }
@@ -618,11 +657,19 @@ impl ExecutionAuthorityRuntime {
             })
             .await
             .map_err(AgentServiceError::from)?;
+        let initial_push_configs = materialize_initial_push_configs(
+            &request,
+            child.execution_id(),
+            request.namespace,
+            request.tenant,
+            self.clock.now(),
+        );
         let task = runtime
-            .accept(
+            .accept_with_push_configs(
                 &child,
                 &agent.declaration.recipient_permits,
                 request.message,
+                initial_push_configs,
             )
             .await
             .map_err(AgentServiceError::from)?;
@@ -680,6 +727,9 @@ impl ExecutionAuthorityRuntime {
             && source.auth_method() == caller.authentication_source().auth_method()
     }
 
+    // Keep authentication, original-source binding, provider-input binding,
+    // and immutable callback replay checks visible in their required order.
+    #[allow(clippy::too_many_lines)]
     async fn replay_accepted_agent_service(
         &self,
         scope: &InstalledScope,
@@ -763,15 +813,28 @@ impl ExecutionAuthorityRuntime {
                 return Err(AgentServiceError::Conflict);
             }
         }
-        let observed = runtime
-            .observe(child.execution_id())
+        let (_, agent, _) = self.service(request.namespace, request.tenant, request.agent_id)?;
+        let initial_push_configs = materialize_initial_push_configs(
+            request,
+            child.execution_id(),
+            request.namespace,
+            request.tenant,
+            self.clock.now(),
+        );
+        let task = runtime
+            .accept_with_push_configs(
+                &child,
+                &agent.declaration.recipient_permits,
+                request.message,
+                initial_push_configs,
+            )
             .await
-            .map_err(AgentServiceError::observation)?;
+            .map_err(AgentServiceError::from)?;
         self.accepted_service_snapshot(
             request.namespace,
             request.tenant,
             child.execution_id(),
-            &observed.task,
+            &task,
             source
                 .reference()
                 .map_err(|_| AgentServiceError::Unavailable)?,

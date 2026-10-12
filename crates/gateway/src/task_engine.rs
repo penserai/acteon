@@ -75,12 +75,14 @@ use acteon_core::{
     Artifact, BusApproval, BusApprovalStatus, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
     MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
     TaskAuthorizationRequirement, TaskAuthorizationResolution, TaskMessage, TaskPauseResolution,
-    TaskRole, TaskState, TaskValidationError,
+    TaskPushConfigValidationError, TaskPushNotificationConfig, TaskRole, TaskState,
+    TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
 use crate::audit_helpers::{
-    build_task_audit_record, build_task_terminal_audit_record, task_terminal_audit_id,
+    build_task_audit_record, build_task_push_config_audit_record, build_task_terminal_audit_record,
+    task_terminal_audit_id,
 };
 use crate::task_authorization::{
     TaskAuthorizationVerification, TaskAuthorizationVerificationError, TaskAuthorizationVerifier,
@@ -134,6 +136,11 @@ const DURABLE_TASK_RECORD_VERSION: u32 = 1;
 /// their previous tail.
 pub const MAX_DURABLE_TASK_EVENTS: usize = 256;
 
+/// Maximum callback configurations embedded in one Task envelope. Each
+/// configuration can carry bounded URL and credential material, so this cap
+/// keeps one CAS value bounded across every state backend.
+pub const MAX_DURABLE_TASK_CALLBACKS: usize = 64;
+
 /// Backend-neutral task envelope. The public A2A [`Task`] remains the wire
 /// projection; this record is private storage state that can grow delivery
 /// cursors, leases, and an ordered mutation log without changing that API.
@@ -151,14 +158,34 @@ struct DurableTaskRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DurableTaskDelivery {
+    /// True after standalone `A2aTaskPushConfig` rows have been examined and
+    /// imported. New tasks set this immediately; legacy task rows begin false.
+    #[serde(default)]
+    legacy_config_scan_complete: bool,
     #[serde(default)]
     next_sequence: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     events: Vec<DurableTaskEvent>,
-    /// Phase 3 binds these cursors to governed callback configurations. Their
-    /// presence now gives phase 2 complete pruning and backpressure semantics.
+    /// Governed callback configurations and their ordered acknowledgement
+    /// cursors. Configuration identity and delivery progress share the Task CAS.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    callback_cursors: BTreeMap<String, u64>,
+    callbacks: BTreeMap<String, DurableTaskCallback>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskCallback {
+    config: TaskPushNotificationConfig,
+    acknowledged_sequence: u64,
+}
+
+impl std::fmt::Debug for DurableTaskCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DurableTaskCallback")
+            .field("config", &self.config)
+            .field("acknowledged_sequence", &self.acknowledged_sequence)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +199,11 @@ struct DurableTaskEvent {
 
 impl DurableTaskDelivery {
     fn validate(&self, task: &Task) -> Result<(), TaskEngineError> {
+        if self.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "callback configuration capacity exceeded".into(),
+            ));
+        }
         if self.events.len() > MAX_DURABLE_TASK_EVENTS {
             return Err(TaskEngineError::InvalidDurableRecord(
                 "delivery event capacity exceeded".into(),
@@ -194,20 +226,24 @@ impl DurableTaskDelivery {
             }
             previous = Some(event.sequence);
         }
-        if self
-            .callback_cursors
-            .values()
-            .any(|cursor| *cursor > self.next_sequence)
-        {
-            return Err(TaskEngineError::InvalidDurableRecord(
-                "callback cursor exceeds the delivery tail".into(),
-            ));
+        for (id, callback) in &self.callbacks {
+            if id != &callback.config.id
+                || callback.config.task_id != task.id
+                || callback.config.namespace != task.namespace
+                || callback.config.tenant != task.tenant
+                || callback.config.validate().is_err()
+                || callback.acknowledged_sequence > self.next_sequence
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback configuration or cursor".into(),
+                ));
+            }
         }
         if let Some(first) = self.events.first()
             && self
-                .callback_cursors
+                .callbacks
                 .values()
-                .any(|cursor| cursor.saturating_add(1) < first.sequence)
+                .any(|callback| callback.acknowledged_sequence.saturating_add(1) < first.sequence)
         {
             return Err(TaskEngineError::InvalidDurableRecord(
                 "delivery log skipped an unacknowledged callback event".into(),
@@ -215,9 +251,9 @@ impl DurableTaskDelivery {
         }
         if self.events.is_empty()
             && self
-                .callback_cursors
+                .callbacks
                 .values()
-                .any(|cursor| *cursor != self.next_sequence)
+                .any(|callback| callback.acknowledged_sequence != self.next_sequence)
         {
             return Err(TaskEngineError::InvalidDurableRecord(
                 "delivery log omitted an unacknowledged callback event".into(),
@@ -233,9 +269,9 @@ impl DurableTaskDelivery {
         payload: serde_json::Value,
     ) -> Result<(), TaskEngineError> {
         let acknowledged = self
-            .callback_cursors
+            .callbacks
             .values()
-            .copied()
+            .map(|callback| callback.acknowledged_sequence)
             .min()
             .unwrap_or(self.next_sequence);
         self.events.retain(|event| event.sequence > acknowledged);
@@ -253,6 +289,16 @@ impl DurableTaskDelivery {
             payload,
         });
         Ok(())
+    }
+
+    fn prune_acknowledged(&mut self) {
+        let acknowledged = self
+            .callbacks
+            .values()
+            .map(|callback| callback.acknowledged_sequence)
+            .min()
+            .unwrap_or(self.next_sequence);
+        self.events.retain(|event| event.sequence > acknowledged);
     }
 }
 
@@ -425,6 +471,17 @@ impl DurableTaskRecord {
         Self {
             record_version: DURABLE_TASK_RECORD_VERSION,
             task,
+            delivery: DurableTaskDelivery {
+                legacy_config_scan_complete: true,
+                ..DurableTaskDelivery::default()
+            },
+        }
+    }
+
+    fn from_legacy(task: Task) -> Self {
+        Self {
+            record_version: DURABLE_TASK_RECORD_VERSION,
+            task,
             delivery: DurableTaskDelivery::default(),
         }
     }
@@ -434,7 +491,7 @@ impl DurableTaskRecord {
         if value.get("recordVersion").is_none() {
             // Rows written before the envelope rollout remain readable and
             // migrate atomically on their next successful task mutation.
-            return Ok(Self::new(serde_json::from_value(value)?));
+            return Ok(Self::from_legacy(serde_json::from_value(value)?));
         }
 
         let record: Self = serde_json::from_value(value)?;
@@ -698,6 +755,25 @@ impl TaskEngine {
         }
     }
 
+    /// Emit credential-free evidence for a callback configuration mutation.
+    /// Audit failure cannot roll back the already-committed Task CAS.
+    async fn emit_push_config_audit(&self, task: &Task, operation: &str, config_id: &str) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let record =
+            build_task_push_config_audit_record(task, operation, config_id, self.clock.now());
+        if let Err(error) = audit.record(record).await {
+            warn!(
+                %error,
+                task_id = %task.id,
+                config_id,
+                operation,
+                "A2A push-config audit write failed"
+            );
+        }
+    }
+
     /// Replay terminal task audits whose stable receipt is absent.
     ///
     /// The task row is authoritative: once a task has reached a terminal
@@ -759,6 +835,17 @@ impl TaskEngine {
     /// If the task's history carries `referenceTaskIds`, the reference
     /// graph is walked first — see the `check_reference_graph` method.
     pub async fn create_task(&self, task: Task) -> Result<Task, TaskEngineError> {
+        self.create_task_with_push_configs(task, Vec::new()).await
+    }
+
+    /// Create a Task and its initial push configurations in one state-store
+    /// insertion. Inline A2A admission uses this boundary so a runnable event
+    /// can never commit before its callback cursor exists.
+    pub async fn create_task_with_push_configs(
+        &self,
+        task: Task,
+        configs: Vec<TaskPushNotificationConfig>,
+    ) -> Result<Task, TaskEngineError> {
         task.validate()?;
         let scope = TaskScope::new(&task.namespace, &task.tenant);
         if self.hidden_governed_task(&scope, &task.id).await? {
@@ -771,14 +858,54 @@ impl TaskEngine {
             .collect();
         self.check_reference_graph(&scope, &task.id, &seed).await?;
         let key = scope.task_key(&task.id);
-        let payload = DurableTaskRecord::new(task.clone()).encode()?;
+        let mut record = DurableTaskRecord::new(task.clone());
+        let mut config_ids = Vec::with_capacity(configs.len());
+        for config in configs {
+            Self::validate_push_config_identity(&scope, &task.id, &config)?;
+            if record.delivery.callbacks.contains_key(&config.id) {
+                return Err(TaskEngineError::PushConfigAlreadyExists(config.id));
+            }
+            config_ids.push(config.id.clone());
+            record.delivery.callbacks.insert(
+                config.id.clone(),
+                DurableTaskCallback {
+                    config,
+                    acknowledged_sequence: 0,
+                },
+            );
+            if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+                return Err(TaskEngineError::PushConfigCapacityExceeded);
+            }
+        }
+        record.delivery.validate(&record.task)?;
+        let payload = record.encode()?;
         let inserted = self.state.check_and_set(&key, &payload, None).await?;
         if !inserted {
             return Err(TaskEngineError::AlreadyExists(task.id));
         }
         debug!(task_id = %task.id, namespace = %task.namespace, tenant = %task.tenant, "task created");
         self.emit_audit(&task, "create", None).await;
+        for config_id in config_ids {
+            self.emit_push_config_audit(&task, "create", &config_id)
+                .await;
+        }
         Ok(task)
+    }
+
+    fn validate_push_config_identity(
+        scope: &TaskScope,
+        task_id: &str,
+        config: &TaskPushNotificationConfig,
+    ) -> Result<(), TaskEngineError> {
+        config.validate()?;
+        if config.task_id != task_id
+            || config.namespace != scope.namespace
+            || config.tenant != scope.tenant
+            || config.created_at > config.updated_at
+        {
+            return Err(TaskEngineError::PushConfigIdentityMismatch);
+        }
+        Ok(())
     }
 
     /// Fetch a task by scope + id.
@@ -812,6 +939,232 @@ impl TaskEngine {
         };
         let task = decode_persisted_task(&raw)?;
         Ok(Some((task, version)))
+    }
+
+    /// Upsert one callback configuration inside the Task envelope. A new
+    /// callback starts at the current delivery tail; updating one preserves
+    /// its acknowledgement cursor and original creation timestamp.
+    pub async fn upsert_push_config(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        mut config: TaskPushNotificationConfig,
+    ) -> Result<TaskPushNotificationConfig, TaskEngineError> {
+        Self::validate_push_config_identity(scope, task_id, &config)?;
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let existed = record.delivery.callbacks.contains_key(&config.id);
+            if !existed && record.delivery.callbacks.len() >= MAX_DURABLE_TASK_CALLBACKS {
+                return Err(TaskEngineError::PushConfigCapacityExceeded);
+            }
+            let acknowledged_sequence = match record.delivery.callbacks.get(&config.id) {
+                Some(existing) => {
+                    config.created_at = existing.config.created_at;
+                    existing.acknowledged_sequence
+                }
+                None => record.delivery.next_sequence,
+            };
+            if config.updated_at < config.created_at {
+                return Err(TaskEngineError::PushConfigIdentityMismatch);
+            }
+            record.delivery.callbacks.insert(
+                config.id.clone(),
+                DurableTaskCallback {
+                    config: config.clone(),
+                    acknowledged_sequence,
+                },
+            );
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    let operation = if existed { "update" } else { "create" };
+                    self.emit_push_config_audit(&record.task, operation, &config.id)
+                        .await;
+                    return Ok(config);
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Read one callback configuration without exposing cursor or delivery
+    /// state.
+    pub async fn get_push_config(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+    ) -> Result<Option<TaskPushNotificationConfig>, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        let record = DurableTaskRecord::decode(&raw)?;
+        Ok(record
+            .delivery
+            .callbacks
+            .get(config_id)
+            .map(|callback| callback.config.clone()))
+    }
+
+    /// List callback configurations in stable ID order.
+    pub async fn list_push_configs(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Vec<TaskPushNotificationConfig>, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        let record = DurableTaskRecord::decode(&raw)?;
+        Ok(record
+            .delivery
+            .callbacks
+            .values()
+            .map(|callback| callback.config.clone())
+            .collect())
+    }
+
+    /// Whether the one-time standalone push-config scan has been committed for
+    /// this Task. Callers use this before scanning the legacy key kind.
+    pub async fn push_config_migration_complete(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<bool, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        Ok(DurableTaskRecord::decode(&raw)?
+            .delivery
+            .legacy_config_scan_complete)
+    }
+
+    /// Import legacy standalone configurations once and seal the migration
+    /// marker in the same Task CAS. Existing envelope entries win a race with a
+    /// stale legacy row; newly imported callbacks start at the current tail.
+    pub async fn import_legacy_push_configs(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        configs: Vec<TaskPushNotificationConfig>,
+    ) -> Result<Vec<TaskPushNotificationConfig>, TaskEngineError> {
+        for config in &configs {
+            Self::validate_push_config_identity(scope, task_id, config)?;
+        }
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            if !record.delivery.legacy_config_scan_complete {
+                let tail = record.delivery.next_sequence;
+                let mut imported_ids = Vec::new();
+                for config in &configs {
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        record.delivery.callbacks.entry(config.id.clone())
+                    {
+                        imported_ids.push(config.id.clone());
+                        entry.insert(DurableTaskCallback {
+                            config: config.clone(),
+                            acknowledged_sequence: tail,
+                        });
+                    }
+                }
+                if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+                    return Err(TaskEngineError::PushConfigCapacityExceeded);
+                }
+                record.delivery.legacy_config_scan_complete = true;
+                record.delivery.validate(&record.task)?;
+                let payload = record.encode()?;
+                if matches!(
+                    self.state
+                        .compare_and_swap(&key, version, &payload, None)
+                        .await?,
+                    CasResult::Conflict { .. }
+                ) {
+                    continue;
+                }
+                for config_id in imported_ids {
+                    self.emit_push_config_audit(&record.task, "legacy_import", &config_id)
+                        .await;
+                }
+            }
+            return Ok(record
+                .delivery
+                .callbacks
+                .values()
+                .map(|callback| callback.config.clone())
+                .collect());
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Delete a callback configuration and immediately release any event-log
+    /// prefix retained only for that callback. Returns `false` when absent.
+    pub async fn delete_push_config(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+    ) -> Result<bool, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            if record.delivery.callbacks.remove(config_id).is_none() {
+                return Ok(false);
+            }
+            record.delivery.prune_acknowledged();
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.emit_push_config_audit(&record.task, "delete", config_id)
+                        .await;
+                    return Ok(true);
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
     }
 
     /// List all tasks in a scope. O(N) scan of `A2aTask` keys for the
@@ -2972,6 +3325,14 @@ pub enum TaskEngineError {
     InvalidDurableRecord(String),
     #[error("durable task delivery log is full; callback acknowledgement is required")]
     DeliveryLogFull,
+    #[error("push configuration identity does not match its task scope")]
+    PushConfigIdentityMismatch,
+    #[error("push configuration '{0}' already exists in the initial task envelope")]
+    PushConfigAlreadyExists(String),
+    #[error("task callback configuration capacity is limited to {MAX_DURABLE_TASK_CALLBACKS}")]
+    PushConfigCapacityExceeded,
+    #[error("push configuration validation failed: {0}")]
+    PushConfigValidation(#[from] TaskPushConfigValidationError),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
     CasExhausted(String),
     #[error("reference graph for task '{task_id}' contains a cycle back to itself")]
@@ -3212,6 +3573,23 @@ mod tests {
         Task::new(id, "agents", "demo")
     }
 
+    fn test_push_config(task: &Task, id: &str) -> TaskPushNotificationConfig {
+        TaskPushNotificationConfig::new(
+            id,
+            &task.id,
+            &task.namespace,
+            &task.tenant,
+            format!("https://{id}.example/a2a"),
+        )
+    }
+
+    fn test_callback(task: &Task, acknowledged_sequence: u64) -> DurableTaskCallback {
+        DurableTaskCallback {
+            config: test_push_config(task, "callback"),
+            acknowledged_sequence,
+        }
+    }
+
     #[tokio::test]
     async fn create_then_get_task() {
         let e = engine();
@@ -3231,8 +3609,172 @@ mod tests {
         let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(stored["recordVersion"], 1);
         assert_eq!(stored["task"]["id"], "t1");
-        assert_eq!(stored["delivery"], serde_json::json!({"nextSequence": 0}));
+        assert_eq!(
+            stored["delivery"],
+            serde_json::json!({"legacyConfigScanComplete": true, "nextSequence": 0})
+        );
         assert!(stored.get("id").is_none(), "Task must remain a projection");
+    }
+
+    #[tokio::test]
+    async fn create_commits_inline_callback_with_the_task() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        let config = test_push_config(&task, "inline");
+        e.create_task_with_push_configs(task, vec![config.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            e.get_push_config(&scope(), "t1", "inline")
+                .await
+                .unwrap()
+                .unwrap()
+                .url,
+            config.url
+        );
+        let record =
+            DurableTaskRecord::decode(&state.get(&scope().task_key("t1")).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(record.delivery.callbacks["inline"].acknowledged_sequence, 0);
+    }
+
+    #[tokio::test]
+    async fn callback_upsert_starts_at_tail_and_update_preserves_cursor_and_creation() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        e.create_task(task.clone()).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        let original = test_push_config(&task, "callback");
+        let saved = e
+            .upsert_push_config(&scope(), "t1", original.clone())
+            .await
+            .unwrap();
+        let mut updated = original;
+        updated.url = "https://replacement.example/a2a".into();
+        updated.updated_at += chrono::Duration::seconds(1);
+        let saved_update = e.upsert_push_config(&scope(), "t1", updated).await.unwrap();
+
+        assert_eq!(saved_update.created_at, saved.created_at);
+        assert_eq!(saved_update.url, "https://replacement.example/a2a");
+        let record =
+            DurableTaskRecord::decode(&state.get(&scope().task_key("t1")).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(
+            record.delivery.callbacks["callback"].acknowledged_sequence,
+            1
+        );
+        assert_eq!(e.list_push_configs(&scope(), "t1").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn callback_delete_releases_its_delivery_retention_floor() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("t1");
+        e.create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        assert!(
+            e.delete_push_config(&scope(), "t1", "callback")
+                .await
+                .unwrap()
+        );
+        assert!(
+            e.get_push_config(&scope(), "t1", "callback")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let record =
+            DurableTaskRecord::decode(&state.get(&scope().task_key("t1")).await.unwrap().unwrap())
+                .unwrap();
+        assert!(record.delivery.events.is_empty());
+        assert!(
+            !e.delete_push_config(&scope(), "t1", "callback")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_capacity_bounds_the_task_envelope() {
+        let e = engine();
+        let task = sample_task("t1");
+        e.create_task(task.clone()).await.unwrap();
+        for index in 0..MAX_DURABLE_TASK_CALLBACKS {
+            e.upsert_push_config(
+                &scope(),
+                "t1",
+                test_push_config(&task, &format!("callback-{index}")),
+            )
+            .await
+            .unwrap();
+        }
+        let error = e
+            .upsert_push_config(&scope(), "t1", test_push_config(&task, "overflow"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::PushConfigCapacityExceeded));
+        assert_eq!(
+            e.list_push_configs(&scope(), "t1").await.unwrap().len(),
+            MAX_DURABLE_TASK_CALLBACKS
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_callback_import_is_one_time_and_envelope_wins_stale_replay() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("legacy");
+        state
+            .set(
+                &scope().task_key("legacy"),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !e.push_config_migration_complete(&scope(), "legacy")
+                .await
+                .unwrap()
+        );
+        let legacy = test_push_config(&task, "callback");
+        e.import_legacy_push_configs(&scope(), "legacy", vec![legacy])
+            .await
+            .unwrap();
+        assert!(
+            e.push_config_migration_complete(&scope(), "legacy")
+                .await
+                .unwrap()
+        );
+
+        let mut current = e
+            .get_push_config(&scope(), "legacy", "callback")
+            .await
+            .unwrap()
+            .unwrap();
+        current.url = "https://current.example/a2a".into();
+        current.updated_at += chrono::Duration::seconds(1);
+        e.upsert_push_config(&scope(), "legacy", current)
+            .await
+            .unwrap();
+        let stale = test_push_config(&task, "callback");
+        let configs = e
+            .import_legacy_push_configs(&scope(), "legacy", vec![stale])
+            .await
+            .unwrap();
+        assert_eq!(configs[0].url, "https://current.example/a2a");
     }
 
     #[tokio::test]
@@ -3352,8 +3894,8 @@ mod tests {
         let mut record = DurableTaskRecord::new(task.clone());
         record
             .delivery
-            .callback_cursors
-            .insert("callback".into(), 0);
+            .callbacks
+            .insert("callback".into(), test_callback(&task, 0));
         for _ in 0..MAX_DURABLE_TASK_EVENTS {
             record
                 .delivery
@@ -3397,8 +3939,8 @@ mod tests {
         let mut record = DurableTaskRecord::new(task.clone());
         record
             .delivery
-            .callback_cursors
-            .insert("callback".into(), 0);
+            .callbacks
+            .insert("callback".into(), test_callback(&task, 0));
         for _ in 0..MAX_DURABLE_TASK_EVENTS {
             record
                 .delivery
@@ -3416,8 +3958,10 @@ mod tests {
         }
         record
             .delivery
-            .callback_cursors
-            .insert("callback".into(), 128);
+            .callbacks
+            .get_mut("callback")
+            .unwrap()
+            .acknowledged_sequence = 128;
         state
             .set(&scope().task_key("t1"), &record.encode().unwrap(), None)
             .await
@@ -3485,8 +4029,8 @@ mod tests {
             DurableTaskRecord::decode(&state.get(&key).await.unwrap().unwrap()).unwrap();
         record
             .delivery
-            .callback_cursors
-            .insert("callback".into(), 0);
+            .callbacks
+            .insert("callback".into(), test_callback(&record.task, 0));
         state
             .set(&key, &record.encode().unwrap(), None)
             .await
@@ -4358,6 +4902,41 @@ mod tests {
         // A fresh task has no prior state.
         assert!(r.outcome_details["from_state"].is_null());
         assert_eq!(r.outcome_details["to_state"], "submitted");
+    }
+
+    #[tokio::test]
+    async fn push_config_audit_records_are_sanitized() {
+        let (e, audit) = audited_engine();
+        let task = sample_task("t1");
+        e.create_task(task.clone()).await.unwrap();
+        let mut config = test_push_config(&task, "callback-1");
+        config.url = "https://hooks.example/a2a?secret=url-secret".into();
+        config.token = Some("bearer-secret".into());
+        config.authentication = Some(acteon_core::PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("credential-secret".into()),
+        });
+        e.upsert_push_config(&scope(), "t1", config).await.unwrap();
+        e.delete_push_config(&scope(), "t1", "callback-1")
+            .await
+            .unwrap();
+
+        let records: Vec<_> = audit
+            .records()
+            .into_iter()
+            .filter(|record| record.action_type == "a2a.task.push_config")
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].outcome_details["operation"], "create");
+        assert_eq!(records[1].outcome_details["operation"], "delete");
+        for record in records {
+            assert_eq!(record.action_id, "t1");
+            assert_eq!(record.outcome_details["config_id"], "callback-1");
+            let encoded = serde_json::to_string(&record).unwrap();
+            for secret in ["url-secret", "bearer-secret", "credential-secret"] {
+                assert!(!encoded.contains(secret), "audit leaked {secret}");
+            }
+        }
     }
 
     #[tokio::test]

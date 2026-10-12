@@ -1,7 +1,7 @@
 # Durable A2A push outbox
 
-Status: implementation in progress, October 11, 2026. Phases 1 and 2 are
-complete on the feature branch; phases 3–5 remain release-gating work.
+Status: implementation in progress, October 11, 2026. Phases 1–3 are
+complete on the feature branch; phases 4–5 remain release-gating work.
 
 ## Problem
 
@@ -66,9 +66,11 @@ changing state backends.
 8. Removing a callback removes its cursor from the pruning floor. Adding a
    normal callback starts at the current tail; inline admission starts before
    the first runnable event.
-9. Public Task projections never expose the envelope, leases, retry state,
+9. One Task holds at most 64 callback configurations, bounding the CAS value
+   across state backends.
+10. Public Task projections never expose the envelope, leases, retry state,
    credentials, or governance metadata.
-10. Configuration mutation produces sanitized audit evidence. Tokens and
+11. Configuration mutation produces sanitized audit evidence. Tokens and
     credentials never enter audit payloads.
 
 ## Recovery and scheduling
@@ -126,11 +128,11 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 
 ### Phase 3: callback state in the envelope
 
-- Move exact-agent and tenant callback CRUD behind Task CAS.
-- Migrate legacy `A2aTaskPushConfig` rows idempotently on first access.
-- Pass validated inline configuration into admission before the first runnable
+- [x] Move exact-agent and tenant callback CRUD behind Task CAS.
+- [x] Migrate legacy `A2aTaskPushConfig` rows idempotently on first access.
+- [x] Pass validated inline configuration into admission before the first runnable
   transition.
-- Emit sanitized mutation audit receipts.
+- [x] Emit sanitized mutation audit receipts.
 
 ### Phase 4: leased ordered dispatcher
 
@@ -144,6 +146,9 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 ### Phase 5: migration and release gate
 
 - Drain existing standalone configuration and DLQ rows into envelopes.
+- Require a coordinated binary cutover (or add a dual-write compatibility
+  bridge) because pre-envelope writers can create standalone callback rows
+  after a new binary seals the one-time migration marker.
 - Add conformance tests for Memory, Redis, PostgreSQL, and DynamoDB.
 - Run the official A2A callback suite against restart, lost acknowledgement,
   lag, deletion, inline replay, and credential-rotation scenarios.

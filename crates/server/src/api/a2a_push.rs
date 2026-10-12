@@ -28,11 +28,10 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::Utc;
 use serde::Deserialize;
 
 use acteon_core::{PushAuthentication, TaskPushNotificationConfig};
-use acteon_gateway::TaskScope;
+use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
 use acteon_state::{KeyKind, StateKey, StateStore};
 
 use super::AppState;
@@ -140,6 +139,77 @@ fn fresh_config_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
+fn map_engine_error(error: TaskEngineError, task_id: &str) -> PushConfigError {
+    match error {
+        TaskEngineError::NotFound(_) => PushConfigError::TaskNotFound(task_id.into()),
+        TaskEngineError::PushConfigCapacityExceeded => PushConfigError::Invalid(error.to_string()),
+        other => {
+            tracing::warn!(error = %other, task_id, "push-config: task envelope operation failed");
+            PushConfigError::Internal
+        }
+    }
+}
+
+async fn envelope_engine(state: &AppState) -> (TaskEngine, Arc<dyn StateStore>) {
+    let gateway = state.gateway.read().await;
+    let store = gateway.state_store().clone();
+    let mut engine = TaskEngine::new(store.clone()).with_clock(gateway.clock());
+    if let Some(audit) = gateway.audit_store() {
+        engine = engine.with_audit(audit);
+    }
+    (engine, store)
+}
+
+/// Import standalone rows into the task envelope exactly once. The envelope
+/// becomes authoritative at the successful CAS; deleting migrated rows is
+/// cleanup only and can be completed by the phase-5 drain after an outage.
+async fn migrate_legacy_configs(
+    state: &AppState,
+    scope: &TaskScope,
+    task_id: &str,
+) -> Result<TaskEngine, PushConfigError> {
+    let (engine, store) = envelope_engine(state).await;
+    if engine
+        .push_config_migration_complete(scope, task_id)
+        .await
+        .map_err(|error| map_engine_error(error, task_id))?
+    {
+        return Ok(engine);
+    }
+    let prefix = format!("{task_id}:");
+    let entries = store
+        .scan_keys(
+            &scope.namespace,
+            &scope.tenant,
+            KeyKind::A2aTaskPushConfig,
+            Some(&prefix),
+        )
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, task_id, "push-config: legacy scan failed");
+            PushConfigError::Internal
+        })?;
+    let mut configs = Vec::with_capacity(entries.len());
+    for (_, raw) in &entries {
+        let config = serde_json::from_str::<TaskPushNotificationConfig>(raw).map_err(|error| {
+            tracing::warn!(%error, task_id, "push-config: malformed legacy row");
+            PushConfigError::Internal
+        })?;
+        configs.push(validate_stored_config(config, scope, task_id, None)?);
+    }
+    engine
+        .import_legacy_push_configs(scope, task_id, configs.clone())
+        .await
+        .map_err(|error| map_engine_error(error, task_id))?;
+    for config in configs {
+        let key = config_key(scope, task_id, &config.id);
+        if let Err(error) = store.delete(&key).await {
+            tracing::warn!(%error, task_id, config_id = %config.id, "push-config: legacy cleanup deferred");
+        }
+    }
+    Ok(engine)
+}
+
 /// Persist a new or updated config row. Caller-supplied `id` is
 /// honoured (so a retried set is a clean upsert); when omitted a
 /// fresh `UUIDv7` is minted. Returns the saved row with its timestamps
@@ -164,26 +234,16 @@ pub(crate) async fn save_authorized_config(
     input: SetPushConfigInput,
 ) -> Result<TaskPushNotificationConfig, PushConfigError> {
     let id = input.id.unwrap_or_else(fresh_config_id);
-    let key = config_key(scope, task_id, &id);
+    let engine = migrate_legacy_configs(state, scope, task_id).await?;
 
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
-
-    // Preserve the original `created_at` on update by reading the
-    // existing row first. A missing row is the upsert-create path.
-    let now = Utc::now();
-    let created_at = match store.get(&key).await {
-        Ok(Some(raw)) => {
-            serde_json::from_str::<TaskPushNotificationConfig>(&raw).map_or(now, |c| c.created_at)
-        }
-        Ok(None) => now,
-        Err(e) => {
-            tracing::warn!(error = %e, "push-config: existing row read failed");
-            return Err(PushConfigError::Internal);
-        }
-    };
+    // Preserve the original `created_at` on update. The TaskEngine repeats
+    // this rule inside CAS so a concurrent updater cannot reset it.
+    let now = engine.clock().now();
+    let created_at = engine
+        .get_push_config(scope, task_id, &id)
+        .await
+        .map_err(|error| map_engine_error(error, task_id))?
+        .map_or(now, |config| config.created_at);
 
     let config = TaskPushNotificationConfig {
         id: id.clone(),
@@ -209,15 +269,10 @@ pub(crate) async fn save_authorized_config(
     super::a2a_ssrf::check_url_literal(&config.url)
         .map_err(|e| PushConfigError::Invalid(format!("push url rejected: {e}")))?;
 
-    let payload = serde_json::to_string(&config).map_err(|e| {
-        tracing::error!(error = %e, "push-config: serialize failed");
-        PushConfigError::Internal
-    })?;
-    store.set(&key, &payload, None).await.map_err(|e| {
-        tracing::warn!(error = %e, "push-config: state write failed");
-        PushConfigError::Internal
-    })?;
-    Ok(config)
+    engine
+        .upsert_push_config(scope, task_id, config)
+        .await
+        .map_err(|error| map_engine_error(error, task_id))
 }
 
 /// Load one config row.
@@ -238,28 +293,15 @@ pub(crate) async fn load_authorized_config(
     task_id: &str,
     config_id: &str,
 ) -> Result<TaskPushNotificationConfig, PushConfigError> {
-    let key = config_key(scope, task_id, config_id);
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
-    match store.get(&key).await {
-        Ok(Some(raw)) => {
-            let config = serde_json::from_str::<TaskPushNotificationConfig>(&raw).map_err(|e| {
-                tracing::warn!(error = %e, "push-config: deserialize failed");
-                PushConfigError::Internal
-            })?;
-            validate_stored_config(config, scope, task_id, Some(config_id))
-        }
-        Ok(None) => Err(PushConfigError::ConfigNotFound {
+    let engine = migrate_legacy_configs(state, scope, task_id).await?;
+    engine
+        .get_push_config(scope, task_id, config_id)
+        .await
+        .map_err(|error| map_engine_error(error, task_id))?
+        .ok_or_else(|| PushConfigError::ConfigNotFound {
             task_id: task_id.to_string(),
             config_id: config_id.to_string(),
-        }),
-        Err(e) => {
-            tracing::warn!(error = %e, "push-config: state read failed");
-            Err(PushConfigError::Internal)
-        }
-    }
+        })
 }
 
 /// List every config row bound to one task. Returns an empty Vec when
@@ -280,32 +322,11 @@ pub(crate) async fn list_authorized_configs(
     scope: &TaskScope,
     task_id: &str,
 ) -> Result<Vec<TaskPushNotificationConfig>, PushConfigError> {
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
-    let prefix = format!("{task_id}:");
-    let entries = store
-        .scan_keys(
-            &scope.namespace,
-            &scope.tenant,
-            KeyKind::A2aTaskPushConfig,
-            Some(&prefix),
-        )
+    let engine = migrate_legacy_configs(state, scope, task_id).await?;
+    engine
+        .list_push_configs(scope, task_id)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "push-config: scan failed");
-            PushConfigError::Internal
-        })?;
-    let mut out = Vec::with_capacity(entries.len());
-    for (_, raw) in entries {
-        let config = serde_json::from_str::<TaskPushNotificationConfig>(&raw).map_err(|error| {
-            tracing::warn!(error = %error, "push-config: malformed stored row");
-            PushConfigError::Internal
-        })?;
-        out.push(validate_stored_config(config, scope, task_id, None)?);
-    }
-    Ok(out)
+        .map_err(|error| map_engine_error(error, task_id))
 }
 
 /// Delete one config row. Returns `Ok(())` only when the row existed
@@ -327,31 +348,17 @@ pub(crate) async fn delete_authorized_config(
     task_id: &str,
     config_id: &str,
 ) -> Result<(), PushConfigError> {
-    let key = config_key(scope, task_id, config_id);
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
-    // Probe first — `delete` on a missing key is a no-op in the
-    // memory store; we want an explicit 404 instead.
-    let present = match store.get(&key).await {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
-        Err(e) => {
-            tracing::warn!(error = %e, "push-config: pre-delete probe failed");
-            return Err(PushConfigError::Internal);
-        }
-    };
-    if !present {
+    let engine = migrate_legacy_configs(state, scope, task_id).await?;
+    if !engine
+        .delete_push_config(scope, task_id, config_id)
+        .await
+        .map_err(|error| map_engine_error(error, task_id))?
+    {
         return Err(PushConfigError::ConfigNotFound {
             task_id: task_id.to_string(),
             config_id: config_id.to_string(),
         });
     }
-    store.delete(&key).await.map_err(|e| {
-        tracing::warn!(error = %e, "push-config: delete failed");
-        PushConfigError::Internal
-    })?;
     Ok(())
 }
 

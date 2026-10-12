@@ -316,6 +316,7 @@ impl Fixture {
                 contexts,
                 clock,
                 stream_tx: None,
+                audit: None,
             },
             Self::binding(card, bound),
             bound.clone(),
@@ -351,6 +352,7 @@ impl Fixture {
                 contexts: self.contexts.clone(),
                 clock: self.clock.clone(),
                 stream_tx: Some(stream_tx),
+                audit: None,
             },
             Self::binding(&self.card, &self.bound),
             self.bound.clone(),
@@ -1111,6 +1113,64 @@ async fn replacement_runtime_replays_original_task_and_result_without_a_new_call
         .unwrap();
     assert_eq!(result.task.status.state, TaskState::Completed);
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn governed_acceptance_materializes_initial_push_config_atomically_and_binds_replay() {
+    let f = Fixture::new(false).await;
+    let task_id = f.child.execution_id().to_string();
+    let config = acteon_core::TaskPushNotificationConfig::new(
+        "inline-callback",
+        &task_id,
+        "city",
+        "tenant",
+        "https://callbacks.example/a2a",
+    );
+    let runtime = f.runtime();
+    runtime
+        .accept_with_push_configs(
+            &f.child,
+            &permits("worker"),
+            &f.message,
+            vec![config.clone()],
+        )
+        .await
+        .unwrap();
+
+    let engine = TaskEngine::new(f.state.clone()).with_clock(f.clock.clone());
+    let stored = engine
+        .get_push_config(
+            &TaskScope::new("city", "tenant"),
+            &task_id,
+            "inline-callback",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.url, config.url);
+
+    // Timestamp differences do not change the immutable callback intent, so a
+    // normal retried request replays the accepted task.
+    let equivalent = acteon_core::TaskPushNotificationConfig::new(
+        "inline-callback",
+        &task_id,
+        "city",
+        "tenant",
+        "https://callbacks.example/a2a",
+    );
+    f.runtime()
+        .accept_with_push_configs(&f.child, &permits("worker"), &f.message, vec![equivalent])
+        .await
+        .unwrap();
+
+    let mut changed = config;
+    changed.url = "https://attacker.example/a2a".into();
+    assert!(matches!(
+        f.runtime()
+            .accept_with_push_configs(&f.child, &permits("worker"), &f.message, vec![changed],)
+            .await,
+        Err(acteon_gateway::agent_runtime::AgentRuntimeError::Conflict)
+    ));
 }
 #[tokio::test]
 async fn lost_acceptance_or_task_acknowledgement_recovers_the_original_identity() {
