@@ -87,6 +87,9 @@ pub enum KeyKind {
     /// `{task_id}:{entry_id}` so a prefix-scan by task id lists
     /// every failed delivery for one task.
     A2aPushDlq,
+    /// Repairable wake-up hint for a Task with pending A2A callback work.
+    /// Correctness remains in the Task envelope; workers rebuild this index.
+    A2aPushReady,
     Custom(String),
 }
 
@@ -135,6 +138,7 @@ impl KeyKind {
             Self::BusAgentCard => "bus_agent_card",
             Self::A2aTaskPushConfig => "a2a_task_push_config",
             Self::A2aPushDlq => "a2a_push_dlq",
+            Self::A2aPushReady => "a2a_push_ready",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -213,6 +217,7 @@ mod tests {
         assert_eq!(KeyKind::RateLimit.as_str(), "rate_limit");
         assert_eq!(KeyKind::EventState.as_str(), "event_state");
         assert_eq!(KeyKind::EventTimeout.as_str(), "event_timeout");
+        assert_eq!(KeyKind::A2aPushReady.as_str(), "a2a_push_ready");
         assert_eq!(KeyKind::Group.as_str(), "group");
         assert_eq!(KeyKind::PendingGroups.as_str(), "pending_groups");
         assert_eq!(KeyKind::ActiveEvents.as_str(), "active_events");

@@ -675,7 +675,9 @@ The delivery worker:
 - Commits the official A2A v1 callback body in the same state-backend CAS as
   the Task mutation.
 - Uses the live stream broadcast only as a low-latency wake-up. Bounded Task
-  pages recover missed wake-ups after lag or restart.
+  pages recover missed wake-ups after lag or restart. A state-backend ready-work
+  index normally directs polling to Tasks whose next callback is due; workers
+  rebuild missing or stale hints from the authoritative Task envelope.
 - Claims each callback's next sequence under a fenced lease, so replicas cannot
   concurrently advance the same callback.
 - Persists capped exponential retry deadlines (1s, 2s, …, capped at 30s)

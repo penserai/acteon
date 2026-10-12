@@ -1,8 +1,7 @@
 # Durable A2A push outbox
 
-Status: implementation in progress, October 11, 2026. Phases 1–3 and the
-correctness path for phase 4 are complete on the feature branch. The ready
-index and phase 5 remain release-gating work.
+Status: implementation in progress, October 11, 2026. Phases 1–4 are complete
+on the feature branch. Migration and the phase 5 release gates remain.
 
 ## Problem
 
@@ -83,6 +82,16 @@ walks bounded `A2aTask` pages and repairs missing ready-index entries. This keep
 the design correct on Memory, Redis, PostgreSQL, DynamoDB, and custom stores
 without requiring a new cross-key transaction primitive.
 
+The ready index stores only scope, Task identity, and the earliest time that one
+callback may be claimed. Workers validate the stored identity against its
+canonical state key, reload the Task under CAS before claiming, and ignore a
+hint that is early, malformed, or stale. Updating the Task and its hint is not a
+cross-key transaction: a crash or racing writer can leave a missing or stale
+hint. The bounded Task walk rebuilds the hint from the authoritative envelope,
+so this changes wake-up latency rather than delivery correctness. The portable
+index is key ordered; a backend-native due-time index remains an optional scale
+optimization rather than part of the correctness contract.
+
 A worker claims the next callback event by CAS, recording its worker ID, lease
 expiry, sequence, and attempt number. A successful POST advances the
 acknowledged cursor and clears the lease by CAS. A transient failure stores the
@@ -141,10 +150,9 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 - [x] Persist CAS-fenced claims, retry deadlines, acknowledgements, blocked
   failures, and bounded dead letters in the Task envelope.
 - [x] Add backend-neutral cross-scope Task-page recovery pagination.
-- [x] Replace broadcast fan-out with bounded Task-page recovery; add the
-  repairable ready index before the release gate.
+- [x] Replace broadcast fan-out with bounded Task-page recovery.
 - [x] Keep the broadcast only as a low-latency wake-up signal.
-- [ ] Add the repairable ready-work index and retain bounded Task-page scans as
+- [x] Add the repairable ready-work index and retain bounded Task-page scans as
   its correctness repair path.
 - [x] Prove two replicas cannot concurrently deliver different sequences for one
   callback.

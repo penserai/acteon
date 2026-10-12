@@ -236,6 +236,18 @@ pub struct TaskPushDeliveryClaim {
     pub lease_expires_at: DateTime<Utc>,
 }
 
+/// Repairable state-backend wake-up hint for a Task with callback work. The
+/// Task envelope remains authoritative; stale or missing hints are safe and
+/// are corrected by bounded Task-page repair.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskPushReadyHint {
+    pub namespace: String,
+    pub tenant: String,
+    pub task_id: String,
+    pub ready_at: DateTime<Utc>,
+}
+
 /// Operator disposition for a callback event parked in durable dead-letter
 /// state. Retry preserves the callback cursor; discard advances it exactly
 /// once so later events may continue.
@@ -268,6 +280,29 @@ struct DurableTaskEvent {
 }
 
 impl DurableTaskDelivery {
+    fn ready_at(&self, immediate_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.callbacks
+            .values()
+            .filter_map(|callback| {
+                if callback.blocked
+                    || !self.events.iter().any(|event| {
+                        event.sequence == callback.acknowledged_sequence.saturating_add(1)
+                    })
+                {
+                    return None;
+                }
+                Some(
+                    callback
+                        .lease
+                        .as_ref()
+                        .map(|lease| lease.expires_at)
+                        .or(callback.next_attempt_at)
+                        .unwrap_or(immediate_at),
+                )
+            })
+            .min()
+    }
+
     fn validate(&self, task: &Task) -> Result<(), TaskEngineError> {
         if self.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
             return Err(TaskEngineError::InvalidDurableRecord(
@@ -642,6 +677,17 @@ impl DurableTaskRecord {
     fn encode(&self) -> Result<String, TaskEngineError> {
         Ok(serde_json::to_string(self)?)
     }
+
+    fn ready_hint(&self) -> Option<TaskPushReadyHint> {
+        self.delivery
+            .ready_at(self.task.updated_at)
+            .map(|ready_at| TaskPushReadyHint {
+                namespace: self.task.namespace.clone(),
+                tenant: self.task.tenant.clone(),
+                task_id: self.task.id.clone(),
+                ready_at,
+            })
+    }
 }
 
 pub(crate) fn decode_persisted_task(raw: &str) -> Result<Task, TaskEngineError> {
@@ -693,6 +739,15 @@ impl TaskScope {
             self.namespace.clone(),
             self.tenant.clone(),
             KeyKind::A2aTask,
+            task_id.to_string(),
+        )
+    }
+
+    fn push_ready_key(&self, task_id: &str) -> StateKey {
+        StateKey::new(
+            self.namespace.clone(),
+            self.tenant.clone(),
+            KeyKind::A2aPushReady,
             task_id.to_string(),
         )
     }
@@ -750,6 +805,57 @@ impl TaskEngine {
             stream_tx: None,
             legacy_only: false,
         }
+    }
+
+    async fn sync_push_ready_hint(
+        &self,
+        record: &DurableTaskRecord,
+    ) -> Result<Option<TaskPushReadyHint>, TaskEngineError> {
+        let scope = TaskScope::new(&record.task.namespace, &record.task.tenant);
+        let key = scope.push_ready_key(&record.task.id);
+        let hint = record.ready_hint();
+        if let Some(hint) = &hint {
+            self.state
+                .set(&key, &serde_json::to_string(hint)?, None)
+                .await?;
+        } else {
+            self.state.delete(&key).await?;
+        }
+        Ok(hint)
+    }
+
+    async fn sync_push_ready_hint_best_effort(&self, record: &DurableTaskRecord) {
+        if let Err(error) = self.sync_push_ready_hint(record).await {
+            warn!(
+                %error,
+                task_id = %record.task.id,
+                "A2A callback ready-index update deferred to repair"
+            );
+        }
+    }
+
+    /// Rebuild one Task's callback-ready hint from its authoritative envelope.
+    /// Workers call this while walking bounded Task pages, so a missed hint
+    /// write can delay work only until the next repair pass.
+    pub async fn repair_push_ready_hint(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Option<TaskPushReadyHint>, TaskEngineError> {
+        let Some(raw) = self.state.get(&scope.task_key(task_id)).await? else {
+            self.state.delete(&scope.push_ready_key(task_id)).await?;
+            return Ok(None);
+        };
+        let record = DurableTaskRecord::decode(&raw)?;
+        if record.task.namespace != scope.namespace
+            || record.task.tenant != scope.tenant
+            || record.task.id != task_id
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "A2A Task row identity does not match its ready-index repair key".into(),
+            ));
+        }
+        self.sync_push_ready_hint(&record).await
     }
 
     /// Restrict a tenant-level legacy protocol adapter to legacy tasks. Governed
@@ -1124,6 +1230,7 @@ impl TaskEngine {
                 .await?
             {
                 CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
                     let operation = if existed { "update" } else { "create" };
                     self.emit_push_config_audit(&record.task, operation, &config.id)
                         .await;
@@ -1268,6 +1375,7 @@ impl TaskEngine {
                 .await?
             {
                 CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
                     return Ok(Some(TaskPushDeliveryClaim {
                         task_id: task_id.into(),
                         config,
@@ -1360,7 +1468,10 @@ impl TaskEngine {
                 .compare_and_swap(&key, version, &payload, None)
                 .await?
             {
-                CasResult::Ok => return Ok(()),
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(());
+                }
                 CasResult::Conflict { .. } => {}
             }
         }
@@ -1441,7 +1552,10 @@ impl TaskEngine {
                 .compare_and_swap(&key, version, &payload, None)
                 .await?
             {
-                CasResult::Ok => return Ok(entry),
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(entry);
+                }
                 CasResult::Conflict { .. } => {}
             }
         }
@@ -1508,7 +1622,10 @@ impl TaskEngine {
                 .compare_and_swap(&key, version, &payload, None)
                 .await?
             {
-                CasResult::Ok => return Ok(entry),
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    return Ok(entry);
+                }
                 CasResult::Conflict { .. } => {}
             }
         }
@@ -1624,6 +1741,7 @@ impl TaskEngine {
                 .await?
             {
                 CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
                     self.emit_push_config_audit(&record.task, "delete", config_id)
                         .await;
                     return Ok(true);
@@ -1785,6 +1903,7 @@ impl TaskEngine {
                 .await?
             {
                 CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
                     debug!(task_id = %task_id, "stale task reaped to Failed");
                     self.emit_audit(&task, "reap", Some(from_state)).await;
                     self.emit_stream(
@@ -2650,6 +2769,7 @@ impl TaskEngine {
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(
                     &task,
                     "resolve_authorization",
@@ -2824,6 +2944,7 @@ impl TaskEngine {
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(
                     &task,
                     "authorization_challenge_expired",
@@ -3116,6 +3237,7 @@ impl TaskEngine {
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(&task, "resolve_input", Some(TaskState::InputRequired))
                     .await;
                 self.emit_stream(
@@ -3292,6 +3414,7 @@ impl TaskEngine {
                     .await?,
                 CasResult::Ok
             ) {
+                self.sync_push_ready_hint_best_effort(&record).await;
                 self.emit_audit(
                     &task,
                     "input_challenge_expired",
@@ -3603,6 +3726,9 @@ impl TaskEngine {
                 .await?
             {
                 CasResult::Ok => {
+                    if !record.delivery.callbacks.is_empty() {
+                        self.sync_push_ready_hint_best_effort(&record).await;
+                    }
                     debug!(task_id = %task_id, state = ?task.status.state, "task mutated");
                     self.emit_audit(&task, operation, Some(from_state)).await;
                     return Ok(task.clone());
@@ -4212,6 +4338,105 @@ mod tests {
         assert_eq!(
             e.list_push_configs(&scope(), "t1").await.unwrap().len(),
             MAX_DURABLE_TASK_CALLBACKS
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_ready_hint_tracks_claim_retry_ack_and_repairs_loss() {
+        let epoch = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = Arc::new(acteon_time::ManualClock::new(epoch));
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone()).with_clock(clock.clone());
+        let task = Task::new_at("ready", "agents", "demo", epoch);
+        e.create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        let ready_key = scope().push_ready_key("ready");
+        assert!(state.get(&ready_key).await.unwrap().is_none());
+
+        e.transition_task(&scope(), "ready", TaskState::Working, None)
+            .await
+            .unwrap();
+        let hint: TaskPushReadyHint =
+            serde_json::from_str(&state.get(&ready_key).await.unwrap().expect("ready hint"))
+                .unwrap();
+        assert_eq!(hint.task_id, "ready");
+        assert_eq!(hint.ready_at, epoch);
+
+        state.delete(&ready_key).await.unwrap();
+        assert!(
+            e.repair_push_ready_hint(&scope(), "ready")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let claim = e
+            .claim_push_delivery(
+                &scope(),
+                "ready",
+                "callback",
+                "worker",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let leased: TaskPushReadyHint =
+            serde_json::from_str(&state.get(&ready_key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(leased.ready_at, epoch + chrono::Duration::seconds(30));
+
+        let retry_at = epoch + chrono::Duration::seconds(10);
+        e.retry_push_delivery_at(&scope(), "ready", "callback", &claim.lease_id, retry_at)
+            .await
+            .unwrap();
+        let retry: TaskPushReadyHint =
+            serde_json::from_str(&state.get(&ready_key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(retry.ready_at, retry_at);
+
+        clock.advance_to(Duration::from_secs(10)).unwrap();
+        let retry_claim = e
+            .claim_push_delivery(
+                &scope(),
+                "ready",
+                "callback",
+                "worker",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        e.acknowledge_push_delivery(&scope(), "ready", "callback", &retry_claim.lease_id)
+            .await
+            .unwrap();
+        assert!(state.get(&ready_key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn callback_ready_hint_repair_rejects_a_mismatched_task_row() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let mismatched = Task::new("different", "agents", "demo");
+        state
+            .set(
+                &scope().task_key("indexed"),
+                &serde_json::to_string(&mismatched).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let error = e
+            .repair_push_ready_hint(&scope(), "indexed")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, TaskEngineError::InvalidDurableRecord(_)));
+        assert!(
+            state
+                .get(&scope().push_ready_key("indexed"))
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 
@@ -6148,10 +6373,16 @@ mod tests {
     async fn resolve_input_resumes_task_and_closes_approval() {
         let e = engine();
         working_task(&e, "t1").await;
+        let current = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        e.upsert_push_config(&scope(), "t1", test_push_config(&current, "callback"))
+            .await
+            .unwrap();
         let (_, challenge) = e
             .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
             .await
             .unwrap();
+        let ready_key = scope().push_ready_key("t1");
+        e.state.delete(&ready_key).await.unwrap();
         let (task, approval) = e
             .resolve_input(
                 &scope(),
@@ -6172,6 +6403,7 @@ mod tests {
             approval.task_resolution.as_ref().unwrap().message_id,
             "response-1"
         );
+        assert!(e.state.get(&ready_key).await.unwrap().is_some());
         let idx = StateKey::new(
             "agents",
             "demo",

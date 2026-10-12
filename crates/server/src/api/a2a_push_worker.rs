@@ -39,8 +39,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use acteon_core::{DlqFailureKind, StreamEvent, TaskPushNotificationConfig};
-use acteon_gateway::{TaskEngine, TaskPushDeliveryClaim, TaskScope};
-use acteon_state::{KeyKind, StateStore};
+use acteon_gateway::{TaskEngine, TaskPushDeliveryClaim, TaskPushReadyHint, TaskScope};
+use acteon_state::{KeyKind, StateKey, StateStore};
 use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracing::{debug, error, warn};
 
@@ -71,7 +71,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// resulting at-least-once duplicate identifiable.
 const DELIVERY_LEASE: Duration = Duration::from_secs(60);
 
-const RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
+const READY_RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
+const FULL_REPAIR_INTERVAL: Duration = Duration::from_secs(5);
 const RECOVERY_PAGE_SIZE: usize = 128;
 
 /// Cap on in-flight HTTP deliveries across **all** tasks and
@@ -290,9 +291,12 @@ impl PushDeliveryWorker {
     /// Broadcasts trigger a fast, detached drain. A periodic bounded page
     /// scan repairs missed wake-ups and resumes work after restart.
     pub async fn run(mut self) {
-        let mut recovery = tokio::time::interval(RECOVERY_INTERVAL);
-        recovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut recovery_cursor = None;
+        let mut ready_recovery = tokio::time::interval(READY_RECOVERY_INTERVAL);
+        ready_recovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut full_repair = tokio::time::interval(FULL_REPAIR_INTERVAL);
+        full_repair.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut ready_cursor = None;
+        let mut repair_cursor = None;
         loop {
             tokio::select! {
                 received = self.rx.recv() => match received {
@@ -324,10 +328,16 @@ impl PushDeliveryWorker {
                         return;
                     }
                 },
-                _ = recovery.tick() => {
-                    match self.shared.recover_task_page(recovery_cursor.as_deref()).await {
-                        Ok(next) => recovery_cursor = next,
-                        Err(error) => warn!(%error, "A2A push recovery page failed"),
+                _ = ready_recovery.tick() => {
+                    match self.shared.recover_ready_page(ready_cursor.as_deref()).await {
+                        Ok(next) => ready_cursor = next,
+                        Err(error) => warn!(%error, "A2A push ready-index page failed"),
+                    }
+                }
+                _ = full_repair.tick() => {
+                    match self.shared.recover_task_page(repair_cursor.as_deref()).await {
+                        Ok(next) => repair_cursor = next,
+                        Err(error) => warn!(%error, "A2A push Task repair page failed"),
                     }
                 }
             }
@@ -336,6 +346,45 @@ impl PushDeliveryWorker {
 }
 
 impl Shared {
+    async fn recover_ready_page(
+        self: &Arc<Self>,
+        after: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let page = self
+            .state
+            .scan_keys_by_kind_page(KeyKind::A2aPushReady, after, RECOVERY_PAGE_SIZE)
+            .await
+            .map_err(|error| error.to_string())?;
+        let now = TaskEngine::new(self.state.clone()).clock().now();
+        for (key, raw) in page.entries {
+            let hint = match serde_json::from_str::<TaskPushReadyHint>(&raw) {
+                Ok(hint) => hint,
+                Err(error) => {
+                    warn!(%key, %error, "A2A push ready index contains malformed state");
+                    continue;
+                }
+            };
+            let expected = StateKey::new(
+                hint.namespace.as_str(),
+                hint.tenant.as_str(),
+                KeyKind::A2aPushReady,
+                &hint.task_id,
+            )
+            .canonical();
+            if key != expected {
+                warn!(%key, "A2A push ready hint identity mismatch");
+                continue;
+            }
+            if hint.ready_at <= now {
+                let shared = Arc::clone(self);
+                tokio::spawn(async move {
+                    Shared::dispatch_task(shared, hint.namespace, hint.tenant, hint.task_id).await;
+                });
+            }
+        }
+        Ok(page.next_cursor)
+    }
+
     async fn recover_task_page(
         self: &Arc<Self>,
         after: Option<&str>,
@@ -356,7 +405,17 @@ impl Shared {
             let tenant = parts[1].to_string();
             let task_id = parts[3].to_string();
             tokio::spawn(async move {
-                Shared::dispatch_task(shared, namespace, tenant, task_id).await;
+                let scope = TaskScope::new(&namespace, &tenant);
+                let engine = TaskEngine::new(shared.state.clone());
+                match engine.repair_push_ready_hint(&scope, &task_id).await {
+                    Ok(Some(hint)) if hint.ready_at <= engine.clock().now() => {
+                        Shared::dispatch_task(shared, namespace, tenant, task_id).await;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(%error, namespace, tenant, task_id, "A2A push ready hint repair failed");
+                    }
+                }
             });
         }
         Ok(page.next_cursor)
@@ -1382,6 +1441,15 @@ mod tests {
         );
         save_config(&store, &cfg).await;
         persist_transition(&store, "task-recovery").await;
+        store
+            .delete(&StateKey::new(
+                "agents",
+                "demo",
+                KeyKind::A2aPushReady,
+                "task-recovery",
+            ))
+            .await
+            .unwrap();
         let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
         let worker = PushDeliveryWorker::new(Arc::clone(&store), http, rx);
 
@@ -1401,6 +1469,44 @@ mod tests {
         })
         .await
         .expect("recovery did not drain the durable event");
+    }
+
+    #[tokio::test]
+    async fn ready_index_recovers_work_without_a_broadcast() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy::default(),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let cfg = TaskPushNotificationConfig::new(
+            "cfg-ready",
+            "task-ready",
+            "agents",
+            "demo",
+            "http://127.0.0.1:9/hook",
+        );
+        save_config(&store, &cfg).await;
+        persist_transition(&store, "task-ready").await;
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker = PushDeliveryWorker::new(Arc::clone(&store), http, rx);
+
+        worker.shared.recover_ready_page(None).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let entries = TaskEngine::new(Arc::clone(&store))
+                    .list_push_dead_letters(&TaskScope::new("agents", "demo"), "task-ready")
+                    .await
+                    .unwrap();
+                if entries.len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("ready index did not drain the durable event");
     }
 
     /// Adversarial review #1: a slow webhook on one tenant must not

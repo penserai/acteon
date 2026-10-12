@@ -2263,11 +2263,12 @@ Task mutations now append the callback payload in the same state-backend CAS;
 per-configuration cursors, fenced leases, persisted retry deadlines, and bounded
 dead letters provide ordered at-least-once delivery across lag, restart, and
 concurrent replicas. The live broadcast is only a fast wake-up, while bounded
-cross-scope Task pages repair missed work. Configuration mutations emit
-sanitized audit receipts. The remaining delivery efficiency slice is a
-repairable ready-work index. Secret-provider references or encrypted state
-values remain the credential-custody follow-up; credentials must not enter audit
-payloads, model context, or ordinary operator projections.
+cross-scope Task pages repair missed work. A state-backend ready-work index
+normally schedules only Tasks with due callbacks and is itself rebuilt from the
+authoritative Task envelope. Configuration mutations emit sanitized audit
+receipts. Secret-provider references or encrypted state values remain the
+credential-custody follow-up; credentials must not enter audit payloads, model
+context, or ordinary operator projections.
 
 Exact-agent `CancelTask` now commits the coordinator's execution-subtree fence
 before returning. A task with no registered attempt is projected `Canceled`, as
