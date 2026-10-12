@@ -470,20 +470,34 @@ async fn delete_dlq_rows(
 }
 
 async fn ensure_no_legacy_rows(state: &dyn StateStore) -> Result<(), A2aPushCutoverError> {
-    if state
-        .scan_keys_by_kind_page(KeyKind::A2aTaskPushConfig, None, 1)
-        .await?
-        .entries
-        .is_empty()
-        && state
-            .scan_keys_by_kind_page(KeyKind::A2aPushDlq, None, 1)
-            .await?
-            .entries
-            .is_empty()
+    if !kind_has_rows(state, KeyKind::A2aTaskPushConfig).await?
+        && !kind_has_rows(state, KeyKind::A2aPushDlq).await?
     {
         Ok(())
     } else {
         Err(A2aPushCutoverError::PostCutoverLegacyRows)
+    }
+}
+
+async fn kind_has_rows(state: &dyn StateStore, kind: KeyKind) -> Result<bool, A2aPushCutoverError> {
+    let mut after = None;
+    let mut cursors = BTreeSet::new();
+    loop {
+        let page = state
+            .scan_keys_by_kind_page(kind.clone(), after.as_deref(), 1)
+            .await?;
+        if !page.entries.is_empty() {
+            return Ok(true);
+        }
+        let Some(cursor) = page.next_cursor else {
+            return Ok(false);
+        };
+        if !cursors.insert(cursor.clone()) {
+            return Err(A2aPushCutoverError::Invalid(
+                "state fence cursor did not advance".into(),
+            ));
+        }
+        after = Some(cursor);
     }
 }
 
