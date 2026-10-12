@@ -58,9 +58,8 @@ pub enum DlqFailureKind {
 
 /// One Dead-Letter-Queue entry recorded when a push-notification
 /// delivery exhausts its retry budget or is permanently rejected by
-/// the receiver. Persisted at `KeyKind::A2aPushDlq` keyed
-/// `{task_id}:{entry_id}` so a prefix-scan by task id lists every
-/// failed delivery for one task.
+/// the receiver. New delivery workers embed it in the durable Task envelope;
+/// the storage identity helper remains for reading pre-envelope rows.
 ///
 /// The `Debug` impl redacts both `event_json` and `last_error`
 /// because each can carry tenant payload bytes a log consumer wasn't
@@ -75,6 +74,14 @@ pub struct PushDeliveryDlqEntry {
     pub config_id: String,
     /// The Task the event was scoped to.
     pub task_id: String,
+    /// Ordered Task-envelope sequence when this row comes from durable A2A
+    /// callback delivery. Legacy standalone rows omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    /// Stable delivery identity paired with `sequence`. Receivers can use it
+    /// to recognize an at-least-once replay after lease takeover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
     /// Namespace + tenant of the task. Stored on the row so a
     /// cross-tenant DLQ scan stays self-describing.
     pub namespace: String,
@@ -96,7 +103,7 @@ pub struct PushDeliveryDlqEntry {
     /// Wall-clock time of the last failed attempt (i.e., when the
     /// row was written).
     pub last_failed_at: DateTime<Utc>,
-    /// Serialized `StreamEvent` envelope. Truncated to
+    /// Serialized callback payload (or a legacy `StreamEvent`). Truncated to
     /// [`MAX_DLQ_EVENT_BYTES`]; truncated entries get a marker
     /// suffix so consumers can detect it.
     pub event_json: String,
@@ -108,6 +115,8 @@ impl fmt::Debug for PushDeliveryDlqEntry {
             .field("id", &self.id)
             .field("config_id", &self.config_id)
             .field("task_id", &self.task_id)
+            .field("sequence", &self.sequence)
+            .field("event_id", &self.event_id)
             .field("namespace", &self.namespace)
             .field("tenant", &self.tenant)
             .field("url", &self.url)
@@ -180,6 +189,8 @@ impl PushDeliveryDlqEntry {
             id: id.into(),
             config_id: config_id.into(),
             task_id: task_id.into(),
+            sequence: None,
+            event_id: None,
             namespace: namespace.into(),
             tenant: tenant.into(),
             url: url.into(),
@@ -190,6 +201,14 @@ impl PushDeliveryDlqEntry {
             last_failed_at: now,
             event_json: truncate(event_json, MAX_DLQ_EVENT_BYTES),
         }
+    }
+
+    /// Attach the ordered delivery identity used by Task-embedded dead letters.
+    #[must_use]
+    pub fn with_delivery_identity(mut self, sequence: u64, event_id: impl Into<String>) -> Self {
+        self.sequence = Some(sequence);
+        self.event_id = Some(event_id.into());
+        self
     }
 
     /// Storage key shape: `{task_id}:{entry_id}`. The `task_id`

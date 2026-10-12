@@ -1,7 +1,8 @@
 # Durable A2A push outbox
 
-Status: implementation in progress, October 11, 2026. Phases 1–3 are
-complete on the feature branch; phases 4–5 remain release-gating work.
+Status: implementation in progress, October 11, 2026. Phases 1–3 and the
+correctness path for phase 4 are complete on the feature branch. The ready
+index and phase 5 remain release-gating work.
 
 ## Problem
 
@@ -57,7 +58,8 @@ changing state backends.
 3. One callback has at most one live lease and delivers only its next
    unacknowledged sequence.
 4. HTTP success followed by process loss may repeat a callback; it cannot skip
-   it. Receivers use the stable event identity for deduplication.
+   it. Receivers use the stable delivery ID and sequence headers for
+   deduplication.
 5. A callback cursor advances only after a successful response.
 6. A retry or lease takeover never advances past an earlier sequence.
 7. The log prunes only through the minimum acknowledged sequence of all live
@@ -139,11 +141,15 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 - [x] Persist CAS-fenced claims, retry deadlines, acknowledgements, blocked
   failures, and bounded dead letters in the Task envelope.
 - [x] Add backend-neutral cross-scope Task-page recovery pagination.
-- [ ] Replace broadcast fan-out with bounded Task-page recovery plus a repairable
-  ready index.
-- [ ] Keep the broadcast only as a low-latency wake-up signal.
+- [x] Replace broadcast fan-out with bounded Task-page recovery; add the
+  repairable ready index before the release gate.
+- [x] Keep the broadcast only as a low-latency wake-up signal.
+- [ ] Add the repairable ready-work index and retain bounded Task-page scans as
+  its correctness repair path.
 - [x] Prove two replicas cannot concurrently deliver different sequences for one
   callback.
+- [x] Project Task-embedded dead letters through the operator surface and make
+  retry/discard atomic with callback unblocking.
 
 ### Phase 5: migration and release gate
 

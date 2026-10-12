@@ -670,14 +670,15 @@ the separately configured authentication scheme and credentials in
 operations-management authority. Treat returned token and credential fields as
 secrets and keep them out of logs and model context.
 
-The current delivery worker:
+The delivery worker:
 
-- Subscribes to the same stream broadcast as the SSE endpoint.
-- Looks up registered configs by task id (short-TTL cache folds
-  bursts).
-- Reloads the durable Task and projects the event into the official A2A v1
-  callback body before POSTing to each URL.
-- Retries with capped exponential backoff (1s, 2s, …, capped at 30s)
+- Commits the official A2A v1 callback body in the same state-backend CAS as
+  the Task mutation.
+- Uses the live stream broadcast only as a low-latency wake-up. Bounded Task
+  pages recover missed wake-ups after lag or restart.
+- Claims each callback's next sequence under a fenced lease, so replicas cannot
+  concurrently advance the same callback.
+- Persists capped exponential retry deadlines (1s, 2s, …, capped at 30s)
   for transient failures: HTTP 5xx, network/timeout errors, and **HTTP
   408 / 425 / 429** (the codes a well-behaved server uses to ask for
   backoff).
@@ -686,16 +687,17 @@ The current delivery worker:
 - Bounds total in-flight HTTP deliveries at 64, so a misbehaving
   destination cannot starve the rest of the fleet.
 
-Delivery is currently driven by the live event broadcast. Retries and the DLQ
-cover an individual observed event, but a process crash, broadcast lag, or
-concurrent dispatch can still lose or reorder callbacks. Use `GetTask` after a
-callback or reconnect to recover the authoritative snapshot. Durable ordered
-at-least-once callback delivery remains a planned state-backend outbox feature;
-the card should advertise push only when this delivery profile is acceptable.
+Delivery is ordered and at least once. A response received immediately before a
+worker crash can be repeated after the lease expires; each retry keeps the same
+`X-Acteon-Delivery-Id` and `X-Acteon-Delivery-Sequence` headers so receivers can
+deduplicate it. Later sequences remain blocked until the earlier sequence is
+acknowledged or explicitly resolved by an operator.
 
 **Persistent DLQ.** Terminal failures (`4xx` other than `408/425/429`)
-and exhausted-retry failures land in a per-tenant dead-letter queue
-keyed by task. List, inspect, and purge entries via:
+and exhausted-retry failures enter bounded dead-letter state inside the Task
+envelope. List and inspect entries through the tenant operator view. Deleting
+an entry explicitly discards that failed sequence and atomically allows the
+next sequence to proceed:
 
 ```text
 GET    /v1/a2a/{namespace}/{tenant}/push-dlq

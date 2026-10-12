@@ -236,6 +236,15 @@ pub struct TaskPushDeliveryClaim {
     pub lease_expires_at: DateTime<Utc>,
 }
 
+/// Operator disposition for a callback event parked in durable dead-letter
+/// state. Retry preserves the callback cursor; discard advances it exactly
+/// once so later events may continue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushDeadLetterResolution {
+    Retry,
+    Discard,
+}
+
 impl std::fmt::Debug for DurableTaskCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DurableTaskCallback")
@@ -322,16 +331,7 @@ impl DurableTaskDelivery {
                 ));
             }
         }
-        for entry in &self.dead_letters {
-            if entry.task_id != task.id
-                || entry.namespace != task.namespace
-                || entry.tenant != task.tenant
-            {
-                return Err(TaskEngineError::InvalidDurableRecord(
-                    "invalid callback dead letter".into(),
-                ));
-            }
-        }
+        self.validate_dead_letters(task)?;
         if let Some(first) = self.events.first()
             && self
                 .callbacks
@@ -350,6 +350,48 @@ impl DurableTaskDelivery {
         {
             return Err(TaskEngineError::InvalidDurableRecord(
                 "delivery log omitted an unacknowledged callback event".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_dead_letters(&self, task: &Task) -> Result<(), TaskEngineError> {
+        let mut ids = HashSet::with_capacity(self.dead_letters.len());
+        for entry in &self.dead_letters {
+            let valid_delivery_identity = match (entry.sequence, entry.event_id.as_deref()) {
+                (Some(sequence), Some(event_id)) => {
+                    sequence > 0 && uuid::Uuid::parse_str(event_id).is_ok()
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if entry.task_id != task.id
+                || entry.namespace != task.namespace
+                || entry.tenant != task.tenant
+                || uuid::Uuid::parse_str(&entry.id).is_err()
+                || !ids.insert(entry.id.as_str())
+                || !valid_delivery_identity
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback dead letter".into(),
+                ));
+            }
+        }
+        if self.callbacks.iter().any(|(config_id, callback)| {
+            callback.blocked
+                && !self.dead_letters.iter().any(|entry| {
+                    entry.config_id == *config_id
+                        && entry.sequence == callback.acknowledged_sequence.checked_add(1)
+                        && entry.event_id.as_ref().is_some_and(|event_id| {
+                            self.events.iter().any(|event| {
+                                Some(event.sequence) == entry.sequence
+                                    && event.event_id == *event_id
+                            })
+                        })
+                })
+        }) {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "blocked callback has no matching dead letter".into(),
             ));
         }
         Ok(())
@@ -1033,7 +1075,8 @@ impl TaskEngine {
 
     /// Upsert one callback configuration inside the Task envelope. A new
     /// callback starts at the current delivery tail; updating one preserves
-    /// its acknowledgement cursor and original creation timestamp.
+    /// its delivery state and original creation timestamp. An actively leased
+    /// callback cannot change underneath the request already in flight.
     pub async fn upsert_push_config(
         &self,
         scope: &TaskScope,
@@ -1054,20 +1097,25 @@ impl TaskEngine {
             if !existed && record.delivery.callbacks.len() >= MAX_DURABLE_TASK_CALLBACKS {
                 return Err(TaskEngineError::PushConfigCapacityExceeded);
             }
-            let acknowledged_sequence = match record.delivery.callbacks.get(&config.id) {
+            let callback = match record.delivery.callbacks.get(&config.id) {
                 Some(existing) => {
+                    if existing.lease.is_some() {
+                        return Err(TaskEngineError::PushConfigDeliveryInFlight);
+                    }
                     config.created_at = existing.config.created_at;
-                    existing.acknowledged_sequence
+                    let mut updated = existing.clone();
+                    updated.config = config.clone();
+                    updated
                 }
-                None => record.delivery.next_sequence,
+                None => DurableTaskCallback::new(config.clone(), record.delivery.next_sequence),
             };
             if config.updated_at < config.created_at {
                 return Err(TaskEngineError::PushConfigIdentityMismatch);
             }
-            record.delivery.callbacks.insert(
-                config.id.clone(),
-                DurableTaskCallback::new(config.clone(), acknowledged_sequence),
-            );
+            record
+                .delivery
+                .callbacks
+                .insert(config.id.clone(), callback);
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
             match self
@@ -1375,7 +1423,8 @@ impl TaskEngine {
                 callback.attempts,
                 serde_json::to_string(&event.payload)?,
                 now,
-            );
+            )
+            .with_delivery_identity(lease.sequence, &lease.event_id);
             let callback = record
                 .delivery
                 .callbacks
@@ -1410,6 +1459,60 @@ impl TaskEngine {
             return Err(TaskEngineError::NotFound(task_id.into()));
         };
         Ok(DurableTaskRecord::decode(&raw)?.delivery.dead_letters)
+    }
+
+    /// Resolve one Task-embedded dead letter under the same CAS as its callback
+    /// cursor. Retrying keeps the failed sequence pending; discarding advances
+    /// over that sequence. Both operations unblock the callback atomically.
+    pub async fn resolve_push_dead_letter(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        entry_id: &str,
+        resolution: PushDeadLetterResolution,
+    ) -> Result<PushDeliveryDlqEntry, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let index = record
+                .delivery
+                .dead_letters
+                .iter()
+                .position(|entry| entry.id == entry_id)
+                .ok_or_else(|| TaskEngineError::PushDeadLetterNotFound(entry_id.into()))?;
+            let entry = record.delivery.dead_letters[index].clone();
+            if let Some(callback) = record.delivery.callbacks.get_mut(&entry.config_id)
+                && callback.blocked
+                && callback.lease.is_none()
+                && entry.sequence == callback.acknowledged_sequence.checked_add(1)
+            {
+                if resolution == PushDeadLetterResolution::Discard {
+                    callback.acknowledged_sequence = callback
+                        .acknowledged_sequence
+                        .checked_add(1)
+                        .ok_or(TaskEngineError::PushDeliverySequenceExhausted)?;
+                }
+                callback.attempts = 0;
+                callback.next_attempt_at = None;
+                callback.blocked = false;
+            }
+            record.delivery.dead_letters.remove(index);
+            record.delivery.prune_acknowledged();
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => return Ok(entry),
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
     }
 
     /// Whether the one-time standalone push-config scan has been committed for
@@ -3697,6 +3800,8 @@ pub enum TaskEngineError {
     PushConfigCapacityExceeded,
     #[error("push configuration '{0}' was not found")]
     PushConfigNotFound(String),
+    #[error("push configuration cannot be updated while delivery is in flight")]
+    PushConfigDeliveryInFlight,
     #[error("push delivery worker id is invalid")]
     InvalidPushWorkerId,
     #[error("push delivery lease duration must be between 1ns and 5 minutes")]
@@ -3711,6 +3816,8 @@ pub enum TaskEngineError {
     PushDeliveryAttemptExhausted,
     #[error("task callback dead-letter capacity is exhausted")]
     PushDeadLetterCapacityExceeded,
+    #[error("task callback dead letter '{0}' was not found")]
+    PushDeadLetterNotFound(String),
     #[error("push configuration validation failed: {0}")]
     PushConfigValidation(#[from] TaskPushConfigValidationError),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
@@ -4155,6 +4262,14 @@ mod tests {
         let original = left.or(right).unwrap();
         assert_eq!(original.sequence, 1);
         assert_eq!(original.attempt, 1);
+        let mut in_flight_update = original.config.clone();
+        in_flight_update.url = "https://updated.example/hook".into();
+        assert!(matches!(
+            first
+                .upsert_push_config(&scope(), "t1", in_flight_update)
+                .await,
+            Err(TaskEngineError::PushConfigDeliveryInFlight)
+        ));
 
         clock.advance_to(Duration::from_secs(5)).unwrap();
         let takeover = second
@@ -4274,6 +4389,8 @@ mod tests {
             .unwrap();
         assert_eq!(entry.attempts, 2);
         assert_eq!(entry.failure_kind, DlqFailureKind::Exhausted);
+        assert_eq!(entry.sequence, Some(retry.sequence));
+        assert_eq!(entry.event_id.as_deref(), Some(retry.event_id.as_str()));
         assert_eq!(
             replacement
                 .list_push_dead_letters(&scope(), "t1")
@@ -4294,6 +4411,144 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+
+        let mut updated = replacement
+            .get_push_config(&scope(), "t1", "callback")
+            .await
+            .unwrap()
+            .unwrap();
+        updated.url = "https://repaired.example/hook".into();
+        replacement
+            .upsert_push_config(&scope(), "t1", updated)
+            .await
+            .unwrap();
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-c",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        replacement
+            .resolve_push_dead_letter(&scope(), "t1", &entry.id, PushDeadLetterResolution::Retry)
+            .await
+            .unwrap();
+        let replay = replacement
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-c",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.sequence, retry.sequence);
+        assert_eq!(replay.event_id, retry.event_id);
+        assert_eq!(replay.attempt, 1);
+        assert_eq!(replay.config.url, "https://repaired.example/hook");
+        let discarded = replacement
+            .dead_letter_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                &replay.lease_id,
+                DlqFailureKind::Terminal,
+                "HTTP 410",
+            )
+            .await
+            .unwrap();
+        replacement
+            .resolve_push_dead_letter(
+                &scope(),
+                "t1",
+                &discarded.id,
+                PushDeadLetterResolution::Discard,
+            )
+            .await
+            .unwrap();
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-d",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_blocked_callback_preserves_resolvable_dead_letter_evidence() {
+        let e = engine();
+        let task = sample_task("blocked-delete");
+        e.create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        e.transition_task(&scope(), "blocked-delete", TaskState::Working, None)
+            .await
+            .unwrap();
+        let claim = e
+            .claim_push_delivery(
+                &scope(),
+                "blocked-delete",
+                "callback",
+                "worker",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let entry = e
+            .dead_letter_push_delivery(
+                &scope(),
+                "blocked-delete",
+                "callback",
+                &claim.lease_id,
+                DlqFailureKind::Terminal,
+                "HTTP 410",
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            e.delete_push_config(&scope(), "blocked-delete", "callback")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            e.list_push_dead_letters(&scope(), "blocked-delete")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        e.resolve_push_dead_letter(
+            &scope(),
+            "blocked-delete",
+            &entry.id,
+            PushDeadLetterResolution::Discard,
+        )
+        .await
+        .unwrap();
+        assert!(
+            e.list_push_dead_letters(&scope(), "blocked-delete")
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

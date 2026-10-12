@@ -31,7 +31,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use acteon_core::{PushAuthentication, TaskPushNotificationConfig};
-use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
+use acteon_gateway::{PushDeadLetterResolution, TaskEngine, TaskEngineError, TaskScope};
 use acteon_state::{KeyKind, StateKey, StateStore};
 
 use super::AppState;
@@ -142,7 +142,14 @@ fn fresh_config_id() -> String {
 fn map_engine_error(error: TaskEngineError, task_id: &str) -> PushConfigError {
     match error {
         TaskEngineError::NotFound(_) => PushConfigError::TaskNotFound(task_id.into()),
-        TaskEngineError::PushConfigCapacityExceeded => PushConfigError::Invalid(error.to_string()),
+        TaskEngineError::PushDeadLetterNotFound(entry_id) => PushConfigError::ConfigNotFound {
+            task_id: task_id.into(),
+            config_id: entry_id,
+        },
+        TaskEngineError::PushConfigCapacityExceeded
+        | TaskEngineError::PushConfigDeliveryInFlight => {
+            PushConfigError::Invalid(error.to_string())
+        }
         other => {
             tracing::warn!(error = %other, task_id, "push-config: task envelope operation failed");
             PushConfigError::Internal
@@ -554,27 +561,45 @@ fn dlq_key(scope: &TaskScope, task_id: &str, entry_id: &str) -> StateKey {
     )
 }
 
-/// List every DLQ entry under (`namespace`, `tenant`), capped at
-/// [`MAX_DLQ_LIST`]. The cap is enforced *after* the scan but
-/// *before* sort so a tenant with > [`MAX_DLQ_LIST`] entries gets a
-/// deterministic suffix rather than a random sample.
-pub(crate) async fn list_dlq(
+/// List every Task-embedded dead letter under (`namespace`, `tenant`), plus
+/// legacy standalone rows that have not yet been drained. The cap is enforced
+/// after a newest-first sort.
+async fn collect_dlq(
     state: &AppState,
     scope: &TaskScope,
 ) -> Result<Vec<acteon_core::PushDeliveryDlqEntry>, PushConfigError> {
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
-    let entries = store
+    let (engine, store) = envelope_engine(state).await;
+    let task_entries = store
+        .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aTask, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "push-dlq: task scan failed");
+            PushConfigError::Internal
+        })?;
+    let task_prefix = format!("{}:{}:{}:", scope.namespace, scope.tenant, KeyKind::A2aTask);
+    let mut out = Vec::new();
+    for (key, _) in task_entries {
+        let Some(task_id) = key.strip_prefix(&task_prefix) else {
+            tracing::warn!(%key, "push-dlq: task scan returned an invalid key");
+            return Err(PushConfigError::Internal);
+        };
+        let mut rows = engine
+            .list_push_dead_letters(scope, task_id)
+            .await
+            .map_err(|error| map_engine_error(error, task_id))?;
+        out.append(&mut rows);
+    }
+
+    // Mixed-version upgrade compatibility: old workers may have written
+    // standalone rows before the Task-envelope worker became authoritative.
+    let legacy_entries = store
         .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aPushDlq, None)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "push-dlq: scan failed");
             PushConfigError::Internal
         })?;
-    let mut out: Vec<acteon_core::PushDeliveryDlqEntry> = Vec::with_capacity(entries.len());
-    for (_, raw) in entries {
+    for (_, raw) in legacy_entries {
         if let Ok(e) = serde_json::from_str::<acteon_core::PushDeliveryDlqEntry>(&raw) {
             out.push(e);
         }
@@ -583,40 +608,30 @@ pub(crate) async fn list_dlq(
     // `sort_by_key` with a reverse-ordered key keeps clippy happy
     // without an explicit comparator closure.
     out.sort_by_key(|e| std::cmp::Reverse(e.last_failed_at));
+    Ok(out)
+}
+
+pub(crate) async fn list_dlq(
+    state: &AppState,
+    scope: &TaskScope,
+) -> Result<Vec<acteon_core::PushDeliveryDlqEntry>, PushConfigError> {
+    let mut out = collect_dlq(state, scope).await?;
     out.truncate(MAX_DLQ_LIST);
     Ok(out)
 }
 
-/// Load one DLQ entry by id. Walks the full prefix-scan because the
-/// `{task_id}:{entry_id}` key shape requires the `task_id` to address
-/// the row directly; the operator endpoint only takes `entry_id` so
-/// it can identify rows by UUID alone.
+/// Load one dead letter by globally unique UUID within the tenant scope.
 pub(crate) async fn load_dlq_entry(
     state: &AppState,
     scope: &TaskScope,
     entry_id: &str,
 ) -> Result<acteon_core::PushDeliveryDlqEntry, PushConfigError> {
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
-    let entries = store
-        .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aPushDlq, None)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "push-dlq: scan failed");
-            PushConfigError::Internal
-        })?;
-    let suffix = format!(":{entry_id}");
-    for (key_id, raw) in entries {
-        // Keys are stored as `{task_id}:{entry_id}`, so a suffix
-        // match on `:entry_id` is unambiguous (entry ids are
-        // UUIDv7 which don't contain `:`).
-        if key_id.ends_with(&suffix)
-            && let Ok(e) = serde_json::from_str::<acteon_core::PushDeliveryDlqEntry>(&raw)
-        {
-            return Ok(e);
-        }
+    if let Some(entry) = collect_dlq(state, scope)
+        .await?
+        .into_iter()
+        .find(|entry| entry.id == entry_id)
+    {
+        return Ok(entry);
     }
     Err(PushConfigError::ConfigNotFound {
         task_id: String::new(),
@@ -624,20 +639,28 @@ pub(crate) async fn load_dlq_entry(
     })
 }
 
-/// Delete one DLQ entry. Loads first to learn the `task_id` (the
-/// caller only gave us `entry_id`); a missing entry yields
-/// `ConfigNotFound` rather than a silent no-op.
+/// Discard one failed durable delivery and atomically unblock its callback.
+/// Legacy standalone rows retain their historical row-delete behavior.
 pub(crate) async fn delete_dlq_entry(
     state: &AppState,
     scope: &TaskScope,
     entry_id: &str,
 ) -> Result<(), PushConfigError> {
     let row = load_dlq_entry(state, scope, entry_id).await?;
+    let (engine, store) = envelope_engine(state).await;
+    if row.sequence.is_some() {
+        engine
+            .resolve_push_dead_letter(
+                scope,
+                &row.task_id,
+                entry_id,
+                PushDeadLetterResolution::Discard,
+            )
+            .await
+            .map_err(|error| map_engine_error(error, &row.task_id))?;
+        return Ok(());
+    }
     let key = dlq_key(scope, &row.task_id, entry_id);
-    let store: Arc<dyn StateStore> = {
-        let gw = state.gateway.read().await;
-        gw.state_store().clone()
-    };
     store.delete(&key).await.map_err(|e| {
         tracing::warn!(error = %e, "push-dlq: delete failed");
         PushConfigError::Internal

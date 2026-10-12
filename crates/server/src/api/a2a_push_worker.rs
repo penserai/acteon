@@ -1,9 +1,8 @@
 //! A2A push-notification delivery worker (Phase 4.2).
 //!
-//! Consumes the gateway-wide `StreamEvent` broadcast and, for every
-//! event tagged `action_type = "a2a.task"`, reloads the durable Task,
-//! projects a protocol `StreamResponse`, and fans it out to the
-//! `TaskPushNotificationConfig` rows registered for that `action_id`.
+//! Delivers the Task envelope's ordered callback log under CAS-fenced leases.
+//! The gateway broadcast is a low-latency wake-up only; bounded cross-scope
+//! Task pages recover work after restart, lag, or a missed wake-up.
 //!
 //! Architecture (post-#178 rebuild — concurrency + cache + retry
 //! refinement):
@@ -21,19 +20,13 @@
 //!   state store with redundant `scan_keys`. TTL is intentionally
 //!   short so a `DELETE` of a config takes effect fast enough not to
 //!   surprise users.
-//! - Per-config retry loop with bounded attempts and capped
-//!   exponential backoff. The transient-vs-terminal classification
+//! - Retry attempts, deadlines, acknowledgements, and dead letters are stored
+//!   in the same Task envelope as the event. The transient-vs-terminal classification
 //!   treats `408`, `425`, and `429` as transient — they are exactly
 //!   the codes a well-behaved server uses to ask the client to back
 //!   off, so retrying is correct.
-//! - Terminal and exhausted failures land in a persistent Dead
-//!   Letter Queue (`KeyKind::A2aPushDlq`) keyed
-//!   `{task_id}:{entry_id}`, with the failing event payload
-//!   truncated to `MAX_DLQ_EVENT_BYTES`. The DLQ write is
-//!   best-effort: a state-store failure is logged with `warn!` and
-//!   counted in `dlq_write_failures` but does not block the
-//!   worker's hot path. Operator CRUD lives at
-//!   `/v1/a2a/{ns}/{tenant}/push-dlq[/{id}]` (see `a2a_push.rs`).
+//! - Terminal and exhausted failures block the callback at its failed sequence
+//!   and land in the Task envelope's bounded dead-letter state.
 //!
 //! The HTTP client is provided by the caller — typically the shared
 //! `reqwest::Client` `main.rs` builds once and threads through every
@@ -45,9 +38,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use acteon_core::{DlqFailureKind, PushDeliveryDlqEntry, StreamEvent, TaskPushNotificationConfig};
-use acteon_gateway::{TaskEngine, TaskScope};
-use acteon_state::{KeyKind, StateKey, StateStore};
+use acteon_core::{DlqFailureKind, StreamEvent, TaskPushNotificationConfig};
+use acteon_gateway::{TaskEngine, TaskPushDeliveryClaim, TaskScope};
+use acteon_state::{KeyKind, StateStore};
 use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracing::{debug, error, warn};
 
@@ -73,6 +66,14 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Per-request timeout for one delivery attempt.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A claim comfortably outlives one request timeout. If a process stalls
+/// longer, another replica takes over and the stable event ID makes the
+/// resulting at-least-once duplicate identifiable.
+const DELIVERY_LEASE: Duration = Duration::from_secs(60);
+
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
+const RECOVERY_PAGE_SIZE: usize = 128;
+
 /// Cap on in-flight HTTP deliveries across **all** tasks and
 /// configs. A misbehaving destination can stall up to this many
 /// concurrent slots, but cannot block the broadcast loop or the rest
@@ -86,6 +87,7 @@ const MAX_INFLIGHT_DELIVERIES: usize = 64;
 /// scan.
 const CONFIG_CACHE_TTL: Duration = Duration::from_millis(500);
 
+#[cfg(test)]
 fn project_push_payload(
     task: &acteon_core::Task,
     event: &StreamEvent,
@@ -198,7 +200,7 @@ pub struct PushDeliveryMetricsSnapshot {
 struct Shared {
     state: Arc<dyn StateStore>,
     http: acteon_http::GuardedClient,
-    dlq_retention: Option<Duration>,
+    worker_id: String,
     delivery_permits: Arc<Semaphore>,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
     metrics: Arc<PushDeliveryMetrics>,
@@ -252,7 +254,7 @@ impl PushDeliveryWorker {
             shared: Arc::new(Shared {
                 state,
                 http,
-                dlq_retention: None,
+                worker_id: uuid::Uuid::now_v7().to_string(),
                 delivery_permits: Arc::new(Semaphore::new(MAX_INFLIGHT_DELIVERIES)),
                 cache: Mutex::new(HashMap::new()),
                 metrics,
@@ -275,18 +277,6 @@ impl PushDeliveryWorker {
         self
     }
 
-    /// Set the retention window for persisted push-delivery DLQ entries.
-    ///
-    /// The state backend evaluates this TTL in its configured clock domain;
-    /// omitting it preserves the historical indefinite-retention behavior.
-    #[must_use]
-    pub fn with_dlq_retention(mut self, retention: Duration) -> Self {
-        Arc::get_mut(&mut self.shared)
-            .expect("push worker shared state must be uniquely owned while configuring")
-            .dlq_retention = Some(retention);
-        self
-    }
-
     /// Borrow the metrics handle. Useful from tests and from the
     /// eventual Prometheus exporter.
     #[must_use]
@@ -297,39 +287,48 @@ impl PushDeliveryWorker {
     /// Drive the worker until the broadcast channel closes (server
     /// shutdown). Intended to be `tokio::spawn`'d at startup.
     ///
-    /// The loop body is intentionally tiny — receive, filter,
-    /// detach. Every per-event step (config lookup, fan-out,
-    /// delivery, retry) runs in a spawned task so a slow webhook
-    /// cannot block the loop from draining the broadcast.
+    /// Broadcasts trigger a fast, detached drain. A periodic bounded page
+    /// scan repairs missed wake-ups and resumes work after restart.
     pub async fn run(mut self) {
+        let mut recovery = tokio::time::interval(RECOVERY_INTERVAL);
+        recovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut recovery_cursor = None;
         loop {
-            match self.rx.recv().await {
-                Ok(event) => {
-                    if event.action_type.as_deref() != Some(A2A_TASK_ACTION_TYPE) {
-                        continue;
+            tokio::select! {
+                received = self.rx.recv() => match received {
+                    Ok(event) => {
+                        if event.action_type.as_deref() != Some(A2A_TASK_ACTION_TYPE) {
+                            continue;
+                        }
+                        self.shared
+                            .metrics
+                            .events_dispatched
+                            .fetch_add(1, Ordering::Relaxed);
+                        let Some(task_id) = event.action_id else {
+                            continue;
+                        };
+                        let shared = Arc::clone(&self.shared);
+                        tokio::spawn(async move {
+                            Shared::dispatch_task(shared, event.namespace, event.tenant, task_id).await;
+                        });
                     }
-                    self.shared
-                        .metrics
-                        .events_dispatched
-                        .fetch_add(1, Ordering::Relaxed);
-                    let shared = Arc::clone(&self.shared);
-                    // Detached — the dispatch task lives independent
-                    // of this loop and the loop returns to recv
-                    // immediately.
-                    tokio::spawn(async move {
-                        Shared::dispatch_event(shared, event).await;
-                    });
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    self.shared
-                        .metrics
-                        .events_lagged
-                        .fetch_add(n, Ordering::Relaxed);
-                    warn!(skipped = n, "A2A push worker lagged behind the broadcast");
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    debug!("A2A push worker: broadcast closed, shutting down");
-                    return;
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        self.shared
+                            .metrics
+                            .events_lagged
+                            .fetch_add(n, Ordering::Relaxed);
+                        warn!(skipped = n, "A2A push worker lagged; durable recovery will repair it");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("A2A push worker: broadcast closed, shutting down");
+                        return;
+                    }
+                },
+                _ = recovery.tick() => {
+                    match self.shared.recover_task_page(recovery_cursor.as_deref()).await {
+                        Ok(next) => recovery_cursor = next,
+                        Err(error) => warn!(%error, "A2A push recovery page failed"),
+                    }
                 }
             }
         }
@@ -337,28 +336,50 @@ impl PushDeliveryWorker {
 }
 
 impl Shared {
-    /// Look up every config registered for `event.action_id` (=
-    /// `task_id`) under the event's namespace + tenant and fan the
-    /// delivery out to each — **concurrently**.
-    async fn dispatch_event(self: Arc<Self>, event: StreamEvent) {
-        let Some(task_id) = event.action_id.as_deref() else {
-            return;
-        };
+    async fn recover_task_page(
+        self: &Arc<Self>,
+        after: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let page = self
+            .state
+            .scan_keys_by_kind_page(KeyKind::A2aTask, after, RECOVERY_PAGE_SIZE)
+            .await
+            .map_err(|error| error.to_string())?;
+        for (key, _) in page.entries {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::A2aTask.to_string() {
+                warn!(%key, "A2A push recovery skipped malformed task key");
+                continue;
+            }
+            let shared = Arc::clone(self);
+            let namespace = parts[0].to_string();
+            let tenant = parts[1].to_string();
+            let task_id = parts[3].to_string();
+            tokio::spawn(async move {
+                Shared::dispatch_task(shared, namespace, tenant, task_id).await;
+            });
+        }
+        Ok(page.next_cursor)
+    }
+
+    /// Wake every callback registered for one Task. Claiming inside the Task
+    /// CAS determines ownership and ordering; duplicate wake-ups are harmless.
+    async fn dispatch_task(self: Arc<Self>, namespace: String, tenant: String, task_id: String) {
         if task_id.is_empty() {
             return;
         }
         let configs = match self
-            .load_configs_cached(&event.namespace, &event.tenant, task_id)
+            .load_configs_cached(&namespace, &tenant, &task_id)
             .await
         {
             Ok(c) => c,
             Err(e) => {
                 warn!(
                     error = %e,
-                    namespace = %event.namespace,
-                    tenant = %event.tenant,
+                    namespace,
+                    tenant,
                     task_id,
-                    "A2A push worker: config lookup failed; skipping event",
+                    "A2A push worker: config lookup failed",
                 );
                 return;
             }
@@ -366,45 +387,16 @@ impl Shared {
         if configs.is_empty() {
             return;
         }
-        let scope = TaskScope::new(&event.namespace, &event.tenant);
-        let task = match TaskEngine::new(Arc::clone(&self.state))
-            .get_task(&scope, task_id)
-            .await
-        {
-            Ok(Some(task)) => task,
-            Ok(None) => {
-                warn!(task_id, "A2A push worker: task disappeared before delivery");
-                return;
-            }
-            Err(error) => {
-                warn!(error = %error, task_id, "A2A push worker: task read failed");
-                return;
-            }
-        };
-        let payload = project_push_payload(&task, &event);
-        let Some(payload) = payload else {
-            return;
-        };
-        let event = Arc::new(event);
-        let payload = Arc::new(payload);
-        // Fan out: each delivery runs in its own task, bounded by
-        // the global semaphore. A slow URL holds a permit but does
-        // not stall the other deliveries for the same event (or
-        // future events).
         for config in configs.iter() {
             let shared = Arc::clone(&self);
-            let event = Arc::clone(&event);
-            let payload = Arc::clone(&payload);
-            let config = config.clone();
+            let namespace = namespace.clone();
+            let tenant = tenant.clone();
+            let task_id = task_id.clone();
+            let config_id = config.id.clone();
             tokio::spawn(async move {
-                // Acquire a permit *inside* the spawned task so the
-                // detach happens fast and the semaphore back-pressures
-                // queued deliveries rather than the dispatch loop.
-                let Ok(_permit) = shared.delivery_permits.acquire().await else {
-                    // The semaphore was closed — shutdown.
-                    return;
-                };
-                shared.deliver_with_retry(config, event, payload).await;
+                shared
+                    .drain_callback(namespace, tenant, task_id, config_id)
+                    .await;
             });
         }
     }
@@ -497,8 +489,6 @@ impl Shared {
                 || config.tenant != tenant
                 || config.task_id != task_id
                 || config.validate().is_err()
-                || self.enforce_ssrf.load(Ordering::Relaxed)
-                    && super::a2a_ssrf::check_url_literal(&config.url).is_err()
             {
                 return Err("stored push configuration failed identity or validation".into());
             }
@@ -506,189 +496,176 @@ impl Shared {
         Ok(out)
     }
 
-    /// Deliver one event to one config with bounded retries. Holds
-    /// a delivery-permit for the duration of all attempts so a
-    /// retry-storm under one URL doesn't double-count against the
-    /// concurrency budget.
-    async fn deliver_with_retry(
+    /// Drain one callback in strict sequence order. State transitions happen
+    /// through fenced Task CAS operations; this method holds only a process
+    /// semaphore permit and therefore remains safe across replicas.
+    async fn drain_callback(
         &self,
-        config: TaskPushNotificationConfig,
-        event: Arc<StreamEvent>,
-        payload: Arc<serde_json::Value>,
+        namespace: String,
+        tenant: String,
+        task_id: String,
+        config_id: String,
     ) {
-        for attempt in 0..MAX_DELIVERY_ATTEMPTS {
+        let Ok(_permit) = self.delivery_permits.acquire().await else {
+            return;
+        };
+        let scope = TaskScope::new(namespace, tenant);
+        let engine = TaskEngine::new(self.state.clone());
+        loop {
+            let claim = match engine
+                .claim_push_delivery(
+                    &scope,
+                    &task_id,
+                    &config_id,
+                    &self.worker_id,
+                    DELIVERY_LEASE,
+                )
+                .await
+            {
+                Ok(Some(claim)) => claim,
+                Ok(None) => return,
+                Err(error) => {
+                    warn!(%error, task_id, config_id, "A2A push claim failed");
+                    return;
+                }
+            };
             self.metrics
                 .deliveries_attempted
                 .fetch_add(1, Ordering::Relaxed);
-            match self.post_once(&config, &payload).await {
-                Ok(()) => {
-                    self.metrics
-                        .deliveries_succeeded
-                        .fetch_add(1, Ordering::Relaxed);
-                    debug!(
-                        url = %config.url,
-                        config_id = %config.id,
-                        task_id = %config.task_id,
-                        attempt,
-                        "A2A push delivered",
-                    );
-                    return;
-                }
-                Err(DeliveryError::Terminal(reason)) => {
-                    self.metrics
-                        .deliveries_terminal
-                        .fetch_add(1, Ordering::Relaxed);
-                    error!(
-                        url = %config.url,
-                        config_id = %config.id,
-                        task_id = %config.task_id,
-                        attempt,
-                        reason = %reason,
-                        "A2A push permanently rejected; not retrying",
-                    );
-                    // Persist a DLQ entry so the operator-facing
-                    // surface (`GET /v1/a2a/.../push-dlq`) can
-                    // surface the failure and so a manual cleanup is
-                    // possible. Best-effort — a DLQ write failure
-                    // is logged with `warn!` but does not block the
-                    // worker's hot path.
-                    let attempts_so_far = u32::try_from(attempt + 1).unwrap_or(u32::MAX);
-                    self.write_dlq_entry(
-                        &config,
-                        &event,
-                        DlqFailureKind::Terminal,
-                        &reason,
-                        attempts_so_far,
-                    )
-                    .await;
-                    return;
-                }
-                Err(DeliveryError::Transient(reason)) => {
-                    let last = attempt + 1 == MAX_DELIVERY_ATTEMPTS;
-                    if last {
-                        self.metrics
-                            .deliveries_exhausted
-                            .fetch_add(1, Ordering::Relaxed);
-                        error!(
-                            url = %config.url,
-                            config_id = %config.id,
-                            task_id = %config.task_id,
-                            attempt,
-                            reason = %reason,
-                            "A2A push exhausted retries",
-                        );
-                        let attempts_so_far =
-                            u32::try_from(MAX_DELIVERY_ATTEMPTS).unwrap_or(u32::MAX);
-                        self.write_dlq_entry(
-                            &config,
-                            &event,
-                            DlqFailureKind::Exhausted,
-                            &reason,
-                            attempts_so_far,
-                        )
-                        .await;
-                        return;
-                    }
-                    let delay = backoff(attempt);
-                    warn!(
-                        url = %config.url,
-                        config_id = %config.id,
-                        task_id = %config.task_id,
-                        attempt,
-                        retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                        reason = %reason,
-                        "A2A push transient failure, retrying",
-                    );
-                    tokio::time::sleep(delay).await;
-                }
+            if !self
+                .complete_claim(&engine, &scope, &task_id, &config_id, claim)
+                .await
+            {
+                return;
             }
         }
     }
 
-    /// Persist a Dead-Letter-Queue entry for a delivery that failed
-    /// terminally or exhausted its retry budget. Best-effort: a
-    /// failure to write the DLQ row is logged with `warn!` and
-    /// counted in `dlq_write_failures` but does not block the
-    /// worker's hot path. The event payload is serialized + the
-    /// core type truncates it to `MAX_DLQ_EVENT_BYTES` so a single
-    /// oversized event can't blow up the DLQ row.
-    async fn write_dlq_entry(
+    /// Apply one HTTP outcome to its fenced claim. `true` means the
+    /// acknowledgement committed and the caller may claim the next sequence.
+    async fn complete_claim(
         &self,
-        config: &TaskPushNotificationConfig,
-        event: &StreamEvent,
+        engine: &TaskEngine,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        claim: TaskPushDeliveryClaim,
+    ) -> bool {
+        match self
+            .post_once(
+                &claim.config,
+                &claim.payload,
+                &claim.event_id,
+                claim.sequence,
+            )
+            .await
+        {
+            Ok(()) => {
+                self.metrics
+                    .deliveries_succeeded
+                    .fetch_add(1, Ordering::Relaxed);
+                if let Err(error) = engine
+                    .acknowledge_push_delivery(scope, task_id, config_id, &claim.lease_id)
+                    .await
+                {
+                    warn!(%error, task_id, config_id, sequence = claim.sequence, "A2A push acknowledgement was not committed");
+                    return false;
+                }
+                debug!(
+                    task_id,
+                    config_id,
+                    sequence = claim.sequence,
+                    attempt = claim.attempt,
+                    "A2A push delivered and acknowledged"
+                );
+                true
+            }
+            Err(DeliveryError::Terminal(reason)) => {
+                self.metrics
+                    .deliveries_terminal
+                    .fetch_add(1, Ordering::Relaxed);
+                error!(
+                    task_id,
+                    config_id,
+                    sequence = claim.sequence,
+                    attempt = claim.attempt,
+                    "A2A push permanently rejected"
+                );
+                self.persist_dead_letter(engine, scope, &claim, DlqFailureKind::Terminal, &reason)
+                    .await;
+                false
+            }
+            Err(DeliveryError::Transient(reason)) => {
+                if usize::try_from(claim.attempt).unwrap_or(usize::MAX) >= MAX_DELIVERY_ATTEMPTS {
+                    self.metrics
+                        .deliveries_exhausted
+                        .fetch_add(1, Ordering::Relaxed);
+                    error!(
+                        task_id,
+                        config_id,
+                        sequence = claim.sequence,
+                        attempt = claim.attempt,
+                        "A2A push exhausted retries"
+                    );
+                    self.persist_dead_letter(
+                        engine,
+                        scope,
+                        &claim,
+                        DlqFailureKind::Exhausted,
+                        &reason,
+                    )
+                    .await;
+                    return false;
+                }
+                let attempt_index =
+                    usize::try_from(claim.attempt.saturating_sub(1)).unwrap_or(usize::MAX);
+                let delay = backoff(attempt_index);
+                let retry_at = engine.clock().now()
+                    + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
+                if let Err(error) = engine
+                    .retry_push_delivery_at(scope, task_id, config_id, &claim.lease_id, retry_at)
+                    .await
+                {
+                    warn!(%error, task_id, config_id, sequence = claim.sequence, "A2A push retry deadline was not committed");
+                }
+                false
+            }
+        }
+    }
+
+    async fn persist_dead_letter(
+        &self,
+        engine: &TaskEngine,
+        scope: &TaskScope,
+        claim: &TaskPushDeliveryClaim,
         failure_kind: DlqFailureKind,
         last_error: &str,
-        attempts: u32,
     ) {
-        let event_json = match serde_json::to_string(event) {
-            Ok(s) => s,
-            Err(e) => {
-                self.metrics
-                    .dlq_write_failures
-                    .fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    config_id = %config.id,
-                    task_id = %config.task_id,
-                    error = %e,
-                    "A2A push worker: DLQ event serialization failed; skipping DLQ write"
-                );
-                return;
-            }
-        };
-        let entry_id = uuid::Uuid::now_v7().to_string();
-        let entry = PushDeliveryDlqEntry::new(
-            &entry_id,
-            &config.id,
-            &config.task_id,
-            &config.namespace,
-            &config.tenant,
-            &config.url,
-            failure_kind,
-            last_error,
-            attempts,
-            event_json,
-        );
-        let key = StateKey::new(
-            config.namespace.clone(),
-            config.tenant.clone(),
-            KeyKind::A2aPushDlq,
-            entry.storage_id(),
-        );
-        let payload = match serde_json::to_string(&entry) {
-            Ok(s) => s,
-            Err(e) => {
-                self.metrics
-                    .dlq_write_failures
-                    .fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    config_id = %config.id,
-                    task_id = %config.task_id,
-                    error = %e,
-                    "A2A push worker: DLQ entry serialization failed; skipping DLQ write"
-                );
-                return;
-            }
-        };
-        match self.state.set(&key, &payload, self.dlq_retention).await {
-            Ok(()) => {
+        match engine
+            .dead_letter_push_delivery(
+                scope,
+                &claim.task_id,
+                &claim.config.id,
+                &claim.lease_id,
+                failure_kind,
+                last_error,
+            )
+            .await
+        {
+            Ok(entry) => {
                 self.metrics.dlq_writes.fetch_add(1, Ordering::Relaxed);
                 debug!(
-                    config_id = %config.id,
-                    task_id = %config.task_id,
-                    entry_id = %entry_id,
-                    "A2A push DLQ entry written",
+                    task_id = claim.task_id,
+                    config_id = claim.config.id,
+                    entry_id = entry.id,
+                    "A2A push dead letter committed"
                 );
             }
-            Err(e) => {
+            Err(error) => {
                 self.metrics
                     .dlq_write_failures
                     .fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    config_id = %config.id,
-                    task_id = %config.task_id,
-                    error = %e,
-                    "A2A push worker: DLQ state write failed"
-                );
+                warn!(%error, task_id = claim.task_id, config_id = claim.config.id, "A2A push dead letter was not committed");
             }
         }
     }
@@ -709,6 +686,8 @@ impl Shared {
         &self,
         config: &TaskPushNotificationConfig,
         payload: &serde_json::Value,
+        event_id: &str,
+        sequence: u64,
     ) -> Result<(), DeliveryError> {
         if self.enforce_ssrf.load(Ordering::Relaxed)
             && let Err(reason) = super::a2a_ssrf::check_url_resolved(&config.url).await
@@ -720,28 +699,8 @@ impl Shared {
                 "SSRF guard refused delivery URL: {reason}"
             )));
         }
-        let mut req = self
-            .http
-            .post(&config.url)
-            .map_err(|e| DeliveryError::Terminal(e.to_string()))?
-            .timeout(REQUEST_TIMEOUT)
-            .header(reqwest::header::CONTENT_TYPE, "application/a2a+json")
-            .header("a2a-version", super::a2a::A2A_PROTOCOL_VERSION)
-            .json(payload);
-        if let Some(token) = &config.token {
-            req = req.header("x-a2a-notification-token", token);
-        }
-        if let Some(authentication) = &config.authentication
-            && let ([scheme], Some(credentials)) = (
-                authentication.schemes.as_slice(),
-                &authentication.credentials,
-            )
-        {
-            let value = reqwest::header::HeaderValue::from_str(&format!("{scheme} {credentials}"))
-                .map_err(|_| DeliveryError::Terminal("invalid push authentication".into()))?;
-            req = req.header(reqwest::header::AUTHORIZATION, value);
-        }
-        let resp = req.send().await.map_err(|e| {
+        let request = self.build_request(config, payload, event_id, sequence)?;
+        let resp = request.send().await.map_err(|e| {
             // Network / timeout / serialization — treat as transient.
             DeliveryError::Transient(e.to_string())
         })?;
@@ -759,6 +718,39 @@ impl Shared {
             // non-client-error: treat as transient.
             Err(DeliveryError::Transient(format!("HTTP {status}")))
         }
+    }
+
+    fn build_request(
+        &self,
+        config: &TaskPushNotificationConfig,
+        payload: &serde_json::Value,
+        event_id: &str,
+        sequence: u64,
+    ) -> Result<reqwest::RequestBuilder, DeliveryError> {
+        let mut request = self
+            .http
+            .post(&config.url)
+            .map_err(|e| DeliveryError::Terminal(e.to_string()))?
+            .timeout(REQUEST_TIMEOUT)
+            .header(reqwest::header::CONTENT_TYPE, "application/a2a+json")
+            .header("a2a-version", super::a2a::A2A_PROTOCOL_VERSION)
+            .header("x-acteon-delivery-id", event_id)
+            .header("x-acteon-delivery-sequence", sequence.to_string())
+            .json(payload);
+        if let Some(token) = &config.token {
+            request = request.header("x-a2a-notification-token", token);
+        }
+        if let Some(authentication) = &config.authentication
+            && let ([scheme], Some(credentials)) = (
+                authentication.schemes.as_slice(),
+                &authentication.credentials,
+            )
+        {
+            let value = reqwest::header::HeaderValue::from_str(&format!("{scheme} {credentials}"))
+                .map_err(|_| DeliveryError::Terminal("invalid push authentication".into()))?;
+            request = request.header(reqwest::header::AUTHORIZATION, value);
+        }
+        Ok(request)
     }
 }
 
@@ -786,8 +778,6 @@ mod tests {
     use acteon_core::{StreamEventType, Task, TaskState};
     use acteon_state::{StateKey, StateStore};
     use acteon_state_memory::MemoryStateStore;
-    use acteon_time::ManualClock;
-    use chrono::TimeZone;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -823,6 +813,19 @@ mod tests {
             .upsert_push_config(&scope, &c.task_id, c.clone())
             .await
             .unwrap();
+    }
+
+    async fn persist_transition(store: &Arc<dyn StateStore>, task_id: &str) -> StreamEvent {
+        TaskEngine::new(Arc::clone(store))
+            .transition_task(
+                &TaskScope::new("agents", "demo"),
+                task_id,
+                TaskState::Working,
+                None,
+            )
+            .await
+            .unwrap();
+        mk_event(task_id)
     }
 
     /// Mock that responds with `status` after a configurable delay,
@@ -954,58 +957,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_dlq_retention_uses_state_ttl() {
-        let clock = Arc::new(ManualClock::new(
-            chrono::Utc.with_ymd_and_hms(2026, 9, 12, 0, 0, 0).unwrap(),
-        ));
-        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::with_clock(
-            Arc::clone(&clock) as Arc<dyn acteon_time::Clock>
-        ));
-        let http = acteon_http::GuardedClient::new(
-            acteon_http::OutboundPolicy::default(),
-            REQUEST_TIMEOUT,
-        )
-        .unwrap();
-        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(Arc::clone(&store), http, rx)
-            .with_dlq_retention(Duration::from_secs(10));
-        let config = TaskPushNotificationConfig::new(
-            "cfg-retention",
-            "task-retention",
-            "agents",
-            "demo",
-            "https://example.com/hook",
-        );
-        worker
-            .shared
-            .write_dlq_entry(
-                &config,
-                &mk_event("task-retention"),
-                DlqFailureKind::Terminal,
-                "HTTP 410",
-                1,
-            )
-            .await;
-
-        assert_eq!(
-            store
-                .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        clock.advance_to(Duration::from_secs(10)).unwrap();
-        assert!(
-            store
-                .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
     async fn worker_imports_legacy_standalone_configs_once() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         let task = Task::new("legacy-task", "agents", "demo");
@@ -1074,14 +1025,50 @@ mod tests {
         save_config(&store, &cfg).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
         let metrics = Arc::new(PushDeliveryMetrics::default());
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
-            .with_ssrf_enforcement(false);
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-1")).unwrap();
+        tx.send(persist_transition(&store, "task-1").await).unwrap();
         wait_for_deliveries(&metrics, 1).await;
         drop(tx);
         let _ = handle.await;
         assert_eq!(hits.load(Ordering::Relaxed), 1, "expected one POST");
+    }
+
+    #[test]
+    fn delivery_request_carries_stable_identity_headers() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy::default(),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker = PushDeliveryWorker::new(store, http, rx);
+        let config = TaskPushNotificationConfig::new(
+            "cfg-1",
+            "task-1",
+            "agents",
+            "demo",
+            "https://callbacks.example/hook",
+        );
+        let request = worker
+            .shared
+            .build_request(
+                &config,
+                &serde_json::json!({"statusUpdate": {}}),
+                "0199d789-6900-7e03-8b2d-211e0bcbe296",
+                7,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers()["x-acteon-delivery-id"],
+            "0199d789-6900-7e03-8b2d-211e0bcbe296"
+        );
+        assert_eq!(request.headers()["x-acteon-delivery-sequence"], "7");
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = false)]
@@ -1160,10 +1147,11 @@ mod tests {
         }
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
         let metrics = Arc::new(PushDeliveryMetrics::default());
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
-            .with_ssrf_enforcement(false);
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-1")).unwrap();
+        tx.send(persist_transition(&store, "task-1").await).unwrap();
         wait_for_deliveries(&metrics, 3).await;
         drop(tx);
         let _ = handle.await;
@@ -1194,7 +1182,7 @@ mod tests {
             PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
                 .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-1")).unwrap();
+        tx.send(persist_transition(&store, "task-1").await).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
         drop(tx);
         let _ = handle.await;
@@ -1210,13 +1198,12 @@ mod tests {
         // can observe it through `/v1/a2a/.../push-dlq`.
         assert_eq!(snap.dlq_writes, 1);
         assert_eq!(snap.dlq_write_failures, 0);
-        let dlq_entries = store
-            .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+        let dlq_entries = TaskEngine::new(Arc::clone(&store))
+            .list_push_dead_letters(&TaskScope::new("agents", "demo"), "task-1")
             .await
             .unwrap();
-        assert_eq!(dlq_entries.len(), 1, "expected one DLQ row on disk");
-        let (_, raw) = &dlq_entries[0];
-        let row: PushDeliveryDlqEntry = serde_json::from_str(raw).unwrap();
+        assert_eq!(dlq_entries.len(), 1, "expected one durable dead letter");
+        let row = &dlq_entries[0];
         assert_eq!(row.failure_kind, DlqFailureKind::Terminal);
         assert_eq!(row.config_id, "cfg-1");
         assert_eq!(row.task_id, "task-1");
@@ -1249,10 +1236,11 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
-            .with_ssrf_enforcement(false);
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-1")).unwrap();
+        tx.send(persist_transition(&store, "task-1").await).unwrap();
         // First attempt 429, BASE_BACKOFF=1s, then success. Give it
         // 1.5s of slack.
         tokio::time::sleep(Duration::from_millis(1_500)).await;
@@ -1294,12 +1282,12 @@ mod tests {
             PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
                 .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-x")).unwrap();
+        tx.send(persist_transition(&store, "task-x").await).unwrap();
         // Poll for the DLQ row. The retry cycle is 3 attempts +
         // (1s + 2s) backoff, so allow up to ~5s.
         let dlq_row = loop {
-            let entries = store
-                .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+            let entries = TaskEngine::new(Arc::clone(&store))
+                .list_push_dead_letters(&TaskScope::new("agents", "demo"), "task-x")
                 .await
                 .unwrap();
             if !entries.is_empty() {
@@ -1314,25 +1302,21 @@ mod tests {
         };
         drop(tx);
         let _ = handle.await;
-        let row: PushDeliveryDlqEntry = serde_json::from_str(&dlq_row.1).unwrap();
-        assert_eq!(row.failure_kind, DlqFailureKind::Exhausted);
-        assert_eq!(row.config_id, "cfg-x");
-        assert_eq!(row.task_id, "task-x");
+        assert_eq!(dlq_row.failure_kind, DlqFailureKind::Exhausted);
+        assert_eq!(dlq_row.config_id, "cfg-x");
+        assert_eq!(dlq_row.task_id, "task-x");
         // Exhausted entries record the full attempt count.
-        assert_eq!(row.attempts, MAX_DELIVERY_ATTEMPTS as u32);
+        assert_eq!(dlq_row.attempts, MAX_DELIVERY_ATTEMPTS as u32);
         let snap = metrics.snapshot();
         assert_eq!(snap.deliveries_exhausted, 1);
         assert_eq!(snap.dlq_writes, 1);
         assert_eq!(snap.dlq_write_failures, 0);
     }
 
-    /// Security review (Phase 5): with SSRF enforcement ON (the
-    /// production default), a config pointing at a loopback address
-    /// must be refused *before* any HTTP request is made — no POST
-    /// reaches the mock, the failure is terminal (not retried), and
-    /// a DLQ entry records the SSRF refusal.
-    #[tokio::test(flavor = "current_thread", start_paused = false)]
-    async fn ssrf_guard_refuses_loopback_delivery_url() {
+    /// The production-default SSRF guard fails before network I/O and the
+    /// failure is committed in the same Task envelope as the event.
+    #[tokio::test]
+    async fn ssrf_guard_dead_letters_durable_claim_without_network_io() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         let http = acteon_http::GuardedClient::new(
             acteon_http::OutboundPolicy {
@@ -1341,48 +1325,82 @@ mod tests {
             REQUEST_TIMEOUT,
         )
         .unwrap();
-        let hits = Arc::new(AtomicUsize::new(0));
-        // The mock binds 127.0.0.1; a config pointing at it is
-        // exactly the internal-target an SSRF guard must block.
-        let url = start_mock(200, Arc::clone(&hits)).await;
-        let cfg = TaskPushNotificationConfig::new("cfg-s", "task-s", "agents", "demo", &url);
+        let cfg = TaskPushNotificationConfig::new(
+            "cfg-s",
+            "task-s",
+            "agents",
+            "demo",
+            "http://127.0.0.1:9/hook",
+        );
         save_config(&store, &cfg).await;
+        persist_transition(&store, "task-s").await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
-        let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        // NOTE: no `.with_ssrf_enforcement(false)` — this test runs
-        // the worker in its secure, production-default mode.
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
         let worker =
             PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics));
-        let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-s")).unwrap();
-        // 800ms is well past a single delivery attempt; if the guard
-        // weren't refusing, the mock would have been hit by now.
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        drop(tx);
-        let _ = handle.await;
-        assert_eq!(
-            hits.load(Ordering::Relaxed),
-            0,
-            "the SSRF guard must refuse the URL before any POST is sent"
-        );
+        worker
+            .shared
+            .drain_callback(
+                "agents".into(),
+                "demo".into(),
+                "task-s".into(),
+                "cfg-s".into(),
+            )
+            .await;
         let snap = metrics.snapshot();
         assert_eq!(snap.deliveries_ssrf_blocked, 1);
-        // An SSRF refusal is terminal (a blocked URL won't unblock).
         assert_eq!(snap.deliveries_terminal, 1);
         assert_eq!(snap.deliveries_exhausted, 0);
-        // ...and lands a DLQ entry that names the SSRF guard.
-        let dlq = store
-            .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+        let dlq = TaskEngine::new(Arc::clone(&store))
+            .list_push_dead_letters(&TaskScope::new("agents", "demo"), "task-s")
             .await
             .unwrap();
         assert_eq!(dlq.len(), 1, "the refused delivery must land in the DLQ");
-        let row: PushDeliveryDlqEntry = serde_json::from_str(&dlq[0].1).unwrap();
+        let row = &dlq[0];
         assert_eq!(row.failure_kind, DlqFailureKind::Terminal);
         assert!(
             row.last_error.contains("SSRF"),
             "DLQ entry should name the SSRF guard: {}",
             row.last_error
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_page_repairs_a_missed_broadcast() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy::default(),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let cfg = TaskPushNotificationConfig::new(
+            "cfg-recovery",
+            "task-recovery",
+            "agents",
+            "demo",
+            "http://127.0.0.1:9/hook",
+        );
+        save_config(&store, &cfg).await;
+        persist_transition(&store, "task-recovery").await;
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker = PushDeliveryWorker::new(Arc::clone(&store), http, rx);
+
+        worker.shared.recover_task_page(None).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let entries = TaskEngine::new(Arc::clone(&store))
+                    .list_push_dead_letters(&TaskScope::new("agents", "demo"), "task-recovery")
+                    .await
+                    .unwrap();
+                if entries.len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("recovery did not drain the durable event");
     }
 
     /// Adversarial review #1: a slow webhook on one tenant must not
@@ -1412,13 +1430,16 @@ mod tests {
         save_config(&store, &slow_cfg).await;
         save_config(&store, &fast_cfg).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(16);
-        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
+        let worker =
+            PushDeliveryWorker::new(Arc::clone(&store), http, rx).with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         // Slow event first, fast event right behind. A sequential
         // worker would only reach the fast event after the slow
         // one's 2s delay finished.
-        tx.send(mk_event("task-slow")).unwrap();
-        tx.send(mk_event("task-fast")).unwrap();
+        tx.send(persist_transition(&store, "task-slow").await)
+            .unwrap();
+        tx.send(persist_transition(&store, "task-fast").await)
+            .unwrap();
         let start = Instant::now();
         // Poll for the fast hit. It must land well before the slow
         // delay completes (2s).
@@ -1456,20 +1477,21 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(64);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
-            .with_ssrf_enforcement(false);
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        // Fire 20 events for the same task in a tight burst (well
-        // inside CONFIG_CACHE_TTL = 500ms).
+        let wake = persist_transition(&store, "task-1").await;
+        // Fire 20 duplicate wake-ups for one durable event in a tight burst.
+        // Fenced claims must collapse them to one delivery.
         for _ in 0..20 {
-            tx.send(mk_event("task-1")).unwrap();
+            tx.send(wake.clone()).unwrap();
         }
         // Wait for the deliveries to settle.
         tokio::time::sleep(Duration::from_millis(400)).await;
         drop(tx);
         let _ = handle.await;
-        // 20 events → 20 POSTs delivered.
-        assert_eq!(hits.load(Ordering::Relaxed), 20);
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
         let snap = metrics.snapshot();
         assert_eq!(snap.events_dispatched, 20);
         // The cache may produce a couple of redundant scans because
@@ -1500,10 +1522,11 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
-            .with_ssrf_enforcement(false);
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
-        tx.send(mk_event("task-1")).unwrap();
+        tx.send(persist_transition(&store, "task-1").await).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         drop(tx);
         let _ = handle.await;

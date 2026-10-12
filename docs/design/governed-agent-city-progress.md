@@ -2256,18 +2256,18 @@ Exact-agent push configuration now uses that same task authority and adds an
 operations-management check for create, secret-bearing get/list, delete, and
 inline registration. Inline replay derives a stable configuration identity.
 Stored rows are schema, identity, and URL validated again when read or delivered.
-Callbacks reload durable Task state and carry official A2A `StreamResponse`
-bodies, `application/a2a+json`, protocol version, notification token, and the
-configured authentication scheme. Rust, Python, TypeScript, Go, and Java expose
-typed, task-bound CRUD helpers. The remaining protocol gap is delivery itself:
-the worker consumes a live broadcast and fans events out concurrently, so lag,
-restart, and scheduling can lose or reorder callbacks. The next platform slice
-is a state-backend outbox with a per-configuration sequence, leases, retry state,
-and acknowledged cursor before push can claim ordered at-least-once delivery.
-Two control-plane follow-ups remain: sanitized audit receipts for configuration
-mutation, and secret-provider references or encrypted state values for callback
-credentials. Neither should place credentials in audit payloads, model context,
-or ordinary operator projections.
+Callbacks carry official A2A `StreamResponse` bodies, `application/a2a+json`,
+protocol version, notification token, and the configured authentication scheme.
+Rust, Python, TypeScript, Go, and Java expose typed, task-bound CRUD helpers.
+Task mutations now append the callback payload in the same state-backend CAS;
+per-configuration cursors, fenced leases, persisted retry deadlines, and bounded
+dead letters provide ordered at-least-once delivery across lag, restart, and
+concurrent replicas. The live broadcast is only a fast wake-up, while bounded
+cross-scope Task pages repair missed work. Configuration mutations emit
+sanitized audit receipts. The remaining delivery efficiency slice is a
+repairable ready-work index. Secret-provider references or encrypted state
+values remain the credential-custody follow-up; credentials must not enter audit
+payloads, model context, or ordinary operator projections.
 
 Exact-agent `CancelTask` now commits the coordinator's execution-subtree fence
 before returning. A task with no registered attempt is projected `Canceled`, as

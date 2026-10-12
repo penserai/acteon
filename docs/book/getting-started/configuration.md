@@ -339,7 +339,7 @@ recovery_timeout_seconds = 60        # Seconds before probing
 | `timeout_seconds` | u64 | `30` | Per-action execution timeout |
 | `max_concurrent` | usize | `10` | Maximum concurrent action executions |
 | `dlq_enabled` | bool | `false` | Enable the dead-letter queue |
-| `dlq_retention_seconds` | u64? | — | Remove action and A2A push DLQ entries at this age |
+| `dlq_retention_seconds` | u64? | — | Remove built-in action DLQ entries at this age |
 
 ### `[auth]`
 

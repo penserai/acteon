@@ -240,6 +240,8 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::PushConfigAlreadyExists(_)
             | TaskEngineError::PushConfigCapacityExceeded
             | TaskEngineError::PushConfigNotFound(_)
+            | TaskEngineError::PushConfigDeliveryInFlight
+            | TaskEngineError::PushDeadLetterNotFound(_)
             | TaskEngineError::InvalidPushWorkerId
             | TaskEngineError::InvalidPushLeaseDuration
             | TaskEngineError::InvalidPushRetryTime

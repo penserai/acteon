@@ -54,8 +54,8 @@ pub use task_chain_bridge::{
 };
 pub use task_engine::{
     MAX_CAS_RETRY_ATTEMPTS as A2A_MAX_CAS_RETRY_ATTEMPTS,
-    MESSAGE_DEDUP_TTL as A2A_MESSAGE_DEDUP_TTL, ScopedTaskEngine, TaskEngine, TaskEngineError,
-    TaskScope,
+    MESSAGE_DEDUP_TTL as A2A_MESSAGE_DEDUP_TTL, PushDeadLetterResolution, ScopedTaskEngine,
+    TaskEngine, TaskEngineError, TaskPushDeliveryClaim, TaskScope,
 };
 pub use time_interval_management::{TimeIntervalDecision, time_interval_cache_id};
 pub use watcher::RuleWatcher;

@@ -15,22 +15,18 @@ separates shipped milestones from possible extensions; it is not a delivery comm
 
 ## Areas under consideration
 
-### Durable ordered A2A callback delivery
+### A2A callback delivery efficiency and secret custody
 
-Exact-agent A2A push configuration and protocol-correct callback projection are
-available today. Callback delivery still consumes the live Task event broadcast,
-so lag, restart, and concurrent scheduling can lose or reorder notifications.
-The next delivery building block is a state-backend outbox keyed by Task and
-configuration, with monotonic sequence numbers, leases, persisted retry state,
-dead letters, and an acknowledged cursor. Inline push registration must join the
-same acceptance transaction or pre-runnable fence so the first Task transition
-cannot race configuration persistence.
+Durable ordered A2A callbacks now use the configured state backend for the Task
+mutation log, callback cursors, fenced leases, retry deadlines, and dead letters.
+The live broadcast is only a low-latency wake-up; bounded Task-page recovery
+repairs missed events and restart gaps. A repairable ready-work index is the next
+efficiency step so idle installations do not revisit every Task page.
 
-The completed control plane should also emit sanitized, durable audit evidence
-for create, update, and delete. Callback credentials currently follow the A2A
-wire model into the configured state backend; a production secret-custody layer
-should support encrypted values or secret-provider references without returning
-plaintext through ordinary projections.
+Callback credentials currently follow the A2A wire model into the configured
+state backend. A production secret-custody layer should support encrypted values
+or secret-provider references without returning plaintext through ordinary
+projections.
 
 ### DynamoDB Hierarchical Tenant Index
 
