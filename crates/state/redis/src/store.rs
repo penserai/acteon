@@ -80,6 +80,18 @@ impl RedisStateStore {
         )
     }
 
+    fn ordered_kind_index_key(&self, key: &StateKey) -> String {
+        self.ordered_kind_index(&key.kind)
+    }
+
+    fn ordered_kind_index(&self, kind: &KeyKind) -> String {
+        format!("{}:__state_ordered_kind__:{kind}", self.prefix)
+    }
+
+    fn ordered_kind_index_marker(&self, kind: &KeyKind) -> String {
+        format!("{}:__state_ordered_kind_complete__:{kind}", self.prefix)
+    }
+
     /// Obtain a connection from the pool.
     async fn conn(&self) -> Result<deadpool_redis::Connection, StateError> {
         self.pool
@@ -107,6 +119,63 @@ impl RedisStateStore {
             return Ok(());
         }
         let pattern = format!("{}:{namespace}:{tenant}:{kind}:*", self.prefix);
+        let physical_prefix = format!("{}:", self.prefix);
+        let mut cursor = 0_u64;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(500)
+                .query_async(&mut **conn)
+                .await
+                .map_err(|error| StateError::Backend(error.to_string()))?;
+            if !keys.is_empty() {
+                let mut pipe = redis::pipe();
+                for key in keys {
+                    let stripped = key.strip_prefix(&physical_prefix).unwrap_or(&key);
+                    let canonical = stripped.strip_suffix(":h").unwrap_or(stripped);
+                    pipe.zadd(&index, canonical, 0).ignore();
+                }
+                pipe.query_async::<()>(&mut **conn)
+                    .await
+                    .map_err(|error| StateError::Backend(error.to_string()))?;
+            }
+            cursor = next;
+            if cursor == 0 {
+                break;
+            }
+        }
+        redis::pipe()
+            .atomic()
+            .zadd(&index, "__acteon_state_index_sentinel__", 0)
+            .ignore()
+            .set(marker, "1")
+            .ignore()
+            .query_async::<()>(&mut **conn)
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn ensure_ordered_kind_index(
+        &self,
+        conn: &mut deadpool_redis::Connection,
+        kind: &KeyKind,
+    ) -> Result<(), StateError> {
+        let marker = self.ordered_kind_index_marker(kind);
+        let index = self.ordered_kind_index(kind);
+        let (complete, index_exists): (bool, bool) = redis::pipe()
+            .exists(&marker)
+            .exists(&index)
+            .query_async(&mut **conn)
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        if complete && index_exists {
+            return Ok(());
+        }
+        let pattern = format!("{}:*:*:{kind}:*", self.prefix);
         let physical_prefix = format!("{}:", self.prefix);
         let mut cursor = 0_u64;
         loop {
@@ -184,6 +253,7 @@ impl StateStore for RedisStateStore {
             .key(&string_key)
             .key(&hash_key)
             .key(self.ordered_index_key(key))
+            .key(self.ordered_kind_index_key(key))
             .arg(value)
             .arg(ttl_ms)
             .arg(key.canonical())
@@ -206,6 +276,7 @@ impl StateStore for RedisStateStore {
             .key(self.hash_key(key))
             .key(self.string_key(key))
             .key(self.ordered_index_key(key))
+            .key(self.ordered_kind_index_key(key))
             .arg(key.canonical())
             .invoke_async(&mut conn)
             .await
@@ -236,6 +307,8 @@ impl StateStore for RedisStateStore {
             .hset(&redis_key, "ver", new_ver)
             .ignore()
             .zadd(self.ordered_index_key(key), key.canonical(), 0)
+            .ignore()
+            .zadd(self.ordered_kind_index_key(key), key.canonical(), 0)
             .ignore()
             .exec_async(&mut conn)
             .await
@@ -278,9 +351,10 @@ impl StateStore for RedisStateStore {
             .del(&hash_key)
             .del(&string_key)
             .zrem(self.ordered_index_key(key), key.canonical())
+            .zrem(self.ordered_kind_index_key(key), key.canonical())
             .query_async(&mut conn)
             .await
-            .map(|(hash, string, _): (i64, i64, i64)| hash + string)
+            .map(|(hash, string, _, _): (i64, i64, i64, i64)| hash + string)
             .map_err(|e| StateError::Backend(e.to_string()))?;
 
         Ok(deleted > 0)
@@ -296,6 +370,7 @@ impl StateStore for RedisStateStore {
             .key(self.hash_key(key))
             .key(self.string_key(key))
             .key(self.ordered_index_key(key))
+            .key(self.ordered_kind_index_key(key))
             .arg(expected_version)
             .arg(key.canonical())
             .invoke_async(&mut conn)
@@ -318,6 +393,7 @@ impl StateStore for RedisStateStore {
             .key(self.string_key(key))
             .key(self.hash_key(key))
             .key(self.ordered_index_key(key))
+            .key(self.ordered_kind_index_key(key))
             .arg(delta)
             .arg(ttl_ms)
             .arg(key.canonical())
@@ -345,6 +421,7 @@ impl StateStore for RedisStateStore {
             .key(&redis_key)
             .key(self.string_key(key))
             .key(self.ordered_index_key(key))
+            .key(self.ordered_kind_index_key(key))
             .arg(expected_version)
             .arg(new_value)
             .arg(ttl_ms)
@@ -589,6 +666,73 @@ impl StateStore for RedisStateStore {
         }
 
         Ok(results)
+    }
+
+    async fn scan_keys_by_kind_page(
+        &self,
+        kind: KeyKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let marker = format!(":{kind}:");
+        if after.is_some_and(|cursor| !cursor.contains(&marker)) {
+            return Err(StateError::Backend("invalid state scan page cursor".into()));
+        }
+        let index = self.ordered_kind_index(&kind);
+        let mut conn = self.conn().await?;
+        self.ensure_ordered_kind_index(&mut conn, &kind).await?;
+        let mut entries = Vec::new();
+        let mut cursor = after.map(str::to_owned);
+        while entries.len() <= limit {
+            let minimum = cursor
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |value| format!("({value}"));
+            let batch = (limit + 1 - entries.len()).max(64);
+            let members: Vec<String> = redis::cmd("ZRANGEBYLEX")
+                .arg(&index)
+                .arg(minimum)
+                .arg("+")
+                .arg("LIMIT")
+                .arg(0)
+                .arg(batch)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| StateError::Backend(error.to_string()))?;
+            if members.is_empty() {
+                break;
+            }
+            let member_count = members.len();
+            for member in members {
+                cursor = Some(member.clone());
+                if member == "__acteon_state_index_sentinel__" {
+                    continue;
+                }
+                if let Some(value) = self.indexed_value(&mut conn, &member).await? {
+                    entries.push((member, value));
+                    if entries.len() > limit {
+                        break;
+                    }
+                } else {
+                    let _: usize = conn
+                        .zrem(&index, &member)
+                        .await
+                        .map_err(|error| StateError::Backend(error.to_string()))?;
+                }
+            }
+            if entries.len() > limit || member_count < batch {
+                break;
+            }
+        }
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        let next_cursor = has_more.then(|| entries[entries.len() - 1].0.clone());
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
     }
 
     async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {

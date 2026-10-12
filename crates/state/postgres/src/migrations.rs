@@ -24,6 +24,14 @@ pub async fn run_migrations(pool: &PgPool, config: &PostgresConfig) -> Result<()
         )"
     );
 
+    // Cross-scope recovery scans select by the key-kind segment, then advance
+    // by canonical key. Keep that bounded operation on an ordered index.
+    let create_state_kind_key_idx = format!(
+        "CREATE INDEX IF NOT EXISTS {}state_kind_key_idx \
+         ON {state_table} ((split_part(key, ':', 3)), key)",
+        config.table_prefix
+    );
+
     let create_locks = format!(
         "CREATE TABLE IF NOT EXISTS {locks_table} (
             name TEXT PRIMARY KEY,
@@ -61,6 +69,9 @@ pub async fn run_migrations(pool: &PgPool, config: &PostgresConfig) -> Result<()
     );
 
     sqlx::query(&create_state).execute(pool).await?;
+    sqlx::query(&create_state_kind_key_idx)
+        .execute(pool)
+        .await?;
     sqlx::query(&create_locks).execute(pool).await?;
     sqlx::query(&create_timeout_index).execute(pool).await?;
     sqlx::query(&create_timeout_index_idx).execute(pool).await?;

@@ -493,6 +493,7 @@ async fn scan_kind(
 ) -> Result<Vec<(String, String)>, A2aPushCutoverError> {
     let mut entries = Vec::new();
     let mut after = None;
+    let mut cursors = BTreeSet::new();
     loop {
         let page = state
             .scan_keys_by_kind_page(kind.clone(), after.as_deref(), 500)
@@ -501,7 +502,7 @@ async fn scan_kind(
         let Some(cursor) = page.next_cursor else {
             break;
         };
-        if after.as_ref().is_some_and(|previous| previous >= &cursor) {
+        if !cursors.insert(cursor.clone()) {
             return Err(A2aPushCutoverError::Invalid(
                 "state inventory cursor did not advance".into(),
             ));

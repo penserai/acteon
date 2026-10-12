@@ -774,6 +774,92 @@ impl StateStore for DynamoStateStore {
         Ok(results)
     }
 
+    async fn scan_keys_by_kind_page(
+        &self,
+        kind: KeyKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let exclusive_start_key = after
+            .map(|cursor| {
+                let [pk, sk]: [String; 2] = serde_json::from_str(cursor)
+                    .map_err(|_| StateError::Backend("invalid state scan page cursor".into()))?;
+                if !pk.starts_with(&format!("{}:", self.prefix)) {
+                    return Err(StateError::Backend("invalid state scan page cursor".into()));
+                }
+                Ok(std::collections::HashMap::from([
+                    ("pk".into(), AttributeValue::S(pk)),
+                    ("sk".into(), AttributeValue::S(sk)),
+                ]))
+            })
+            .transpose()?;
+        let sk_prefix = format!("{kind}:");
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let mut scan = self
+            .client
+            .scan()
+            .table_name(&self.table_name)
+            .filter_expression(
+                "begins_with(sk, :sk_prefix) AND \
+                 (attribute_not_exists(expires_at) OR expires_at > :now)",
+            )
+            .expression_attribute_values(":sk_prefix", AttributeValue::S(sk_prefix))
+            .expression_attribute_values(":now", AttributeValue::N(now_epoch.to_string()))
+            .limit(
+                i32::try_from(limit)
+                    .map_err(|_| StateError::Backend("invalid state scan page limit".into()))?,
+            );
+        if let Some(key) = exclusive_start_key {
+            scan = scan.set_exclusive_start_key(Some(key));
+        }
+        let response = scan
+            .send()
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        let mut entries = Vec::new();
+        for item in response.items() {
+            let Some(AttributeValue::S(pk)) = item.get("pk") else {
+                continue;
+            };
+            let Some(AttributeValue::S(sk)) = item.get("sk") else {
+                continue;
+            };
+            let value = match item.get("value") {
+                Some(AttributeValue::S(value) | AttributeValue::N(value)) => value.clone(),
+                _ => continue,
+            };
+            let namespace_tenant = pk
+                .strip_prefix(&format!("{}:", self.prefix))
+                .ok_or_else(|| StateError::Backend("invalid state row prefix".into()))?;
+            entries.push((format!("{namespace_tenant}:{sk}"), value));
+        }
+        let next_cursor = response
+            .last_evaluated_key()
+            .filter(|key| !key.is_empty())
+            .map(|key| {
+                let pk = match key.get("pk") {
+                    Some(AttributeValue::S(value)) => value.clone(),
+                    _ => return Err(StateError::Backend("invalid DynamoDB page cursor".into())),
+                };
+                let sk = match key.get("sk") {
+                    Some(AttributeValue::S(value)) => value.clone(),
+                    _ => return Err(StateError::Backend("invalid DynamoDB page cursor".into())),
+                };
+                serde_json::to_string(&[pk, sk])
+                    .map_err(|error| StateError::Serialization(error.to_string()))
+            })
+            .transpose()?;
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
+    }
+
     async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
         let canonical = key.canonical();
         // Use a composite sort key: "{expires_at_ms}#{canonical_key}"

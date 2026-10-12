@@ -2070,6 +2070,7 @@ impl TaskEngine {
     pub async fn list_all_task_refs(&self) -> Result<Vec<(TaskScope, String)>, TaskEngineError> {
         let mut tasks = Vec::new();
         let mut after = None;
+        let mut cursors = BTreeSet::new();
         loop {
             let page = self
                 .state
@@ -2088,7 +2089,7 @@ impl TaskEngine {
             let Some(cursor) = page.next_cursor else {
                 break;
             };
-            if after.as_ref().is_some_and(|previous| previous >= &cursor) {
+            if !cursors.insert(cursor.clone()) {
                 return Err(TaskEngineError::InvalidDurableRecord(
                     "A2A Task inventory cursor did not advance".into(),
                 ));

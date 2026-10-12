@@ -89,8 +89,12 @@ canonical state key, reload the Task under CAS before claiming, and ignore a
 hint that is early, malformed, or stale. Updating the Task and its hint is not a
 cross-key transaction: a crash or racing writer can leave a missing or stale
 hint. The bounded Task walk rebuilds the hint from the authoritative envelope,
-so this changes wake-up latency rather than delivery correctness. The portable
-index is key ordered; a backend-native due-time index remains an optional scale
+so this changes wake-up latency rather than delivery correctness. Built-in
+backends expose bounded continuation directly: PostgreSQL uses an indexed
+keyset query, Redis uses a per-kind sorted index, and DynamoDB returns its
+native continuation token. Custom state stores inherit a correctness fallback
+that materializes and orders the kind scan; high-scale implementations should
+override the page method. A backend-native due-time index remains an optional
 optimization rather than part of the correctness contract.
 
 A worker claims the next callback event by CAS, recording its worker ID, lease

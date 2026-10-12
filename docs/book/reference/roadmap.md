@@ -21,9 +21,11 @@ Durable ordered A2A callbacks now use the configured state backend for the Task
 mutation log, callback cursors, fenced leases, retry deadlines, and dead letters.
 The live broadcast is only a low-latency wake-up; bounded Task-page recovery
 repairs missed events and restart gaps. A repairable ready-work index directs
-normal polling to Tasks with callback work. Backends may later add a native
-due-time index for very large fleets; the portable implementation intentionally
-keeps bounded Task-page repair as its correctness fallback.
+normal polling to Tasks with callback work. Redis, PostgreSQL, and DynamoDB use
+native bounded continuation for recovery inventory; custom state backends can
+override the same paging contract. Backends may later add a native due-time
+index for very large fleets. Bounded Task-page repair remains the correctness
+fallback.
 
 Callback credentials currently follow the A2A wire model into the configured
 state backend. A production secret-custody layer should support encrypted values

@@ -476,6 +476,45 @@ impl StateStore for PostgresStateStore {
         Ok(rows)
     }
 
+    async fn scan_keys_by_kind_page(
+        &self,
+        kind: KeyKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let kind = kind.to_string();
+        let marker = format!(":{kind}:");
+        if after.is_some_and(|cursor| !cursor.contains(&marker)) {
+            return Err(StateError::Backend("invalid state scan page cursor".into()));
+        }
+        let table = self.config.state_table();
+        let query = format!(
+            "SELECT key, value FROM {table} \
+             WHERE split_part(key, ':', 3) = $1 AND key > $2 \
+             AND (expires_at IS NULL OR expires_at > NOW()) \
+             ORDER BY key ASC LIMIT $3"
+        );
+        let fetch = i64::try_from(limit + 1)
+            .map_err(|_| StateError::Backend("invalid state scan page limit".into()))?;
+        let mut entries: Vec<(String, String)> = sqlx::query_as(&query)
+            .bind(&kind)
+            .bind(after.unwrap_or(""))
+            .bind(fetch)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        let next_cursor = has_more.then(|| entries[entries.len() - 1].0.clone());
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
+    }
+
     async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
         let canonical = key.canonical();
         let table = self.config.timeout_index_table();

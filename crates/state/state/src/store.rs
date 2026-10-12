@@ -17,9 +17,8 @@ pub enum CasResult {
     },
 }
 
-/// A stable lexicographic page within one namespace, tenant and key kind.
-/// `next_cursor` is the last returned canonical key and is supplied as
-/// `after` on the next request.
+/// A stable page of canonical key/value rows. `next_cursor` is an opaque,
+/// backend-owned continuation token supplied as `after` on the next request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateScanPage {
     pub entries: Vec<(String, String)>,
@@ -158,9 +157,9 @@ pub trait StateStore: Send + Sync {
     ) -> Result<Vec<(String, String)>, StateError>;
 
     /// Read one stable, bounded page for a key kind across all namespaces and
-    /// tenants. The default preserves correctness by sorting the existing
-    /// cross-scope scan; large backends should override it with native keyset
-    /// pagination so work is proportional to `limit`.
+    /// tenants. The cursor is opaque to callers. The default preserves
+    /// correctness by sorting the existing cross-scope scan; production
+    /// backends override it so work is proportional to `limit`.
     async fn scan_keys_by_kind_page(
         &self,
         kind: crate::key::KeyKind,

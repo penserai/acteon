@@ -37,7 +37,7 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_ttl_set(store).await?;
     test_scan_by_kind_includes_check_and_set(store).await?;
     test_ordered_scan_pages(store).await?;
-    test_ordered_cross_scope_scan_pages(store).await?;
+    test_cross_scope_scan_pages(store).await?;
     test_set_clears_ttl_on_overwrite(store).await?;
     test_cas_replaces_ttl(store).await?;
     test_timeout_index_reindex_replaces(store).await?;
@@ -45,7 +45,7 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     Ok(())
 }
 
-async fn test_ordered_cross_scope_scan_pages(store: &dyn StateStore) -> Result<(), StateError> {
+async fn test_cross_scope_scan_pages(store: &dyn StateStore) -> Result<(), StateError> {
     let kind = KeyKind::Custom("ordered-cross-scope-page-conformance".into());
     for (namespace, tenant, id) in [
         ("z-ns", "tenant", "a"),
@@ -60,14 +60,29 @@ async fn test_ordered_cross_scope_scan_pages(store: &dyn StateStore) -> Result<(
             )
             .await?;
     }
-    let first = store.scan_keys_by_kind_page(kind.clone(), None, 2).await?;
-    assert_eq!(first.entries.len(), 2);
-    assert!(first.entries[0].0 < first.entries[1].0);
-    let second = store
-        .scan_keys_by_kind_page(kind, first.next_cursor.as_deref(), 2)
-        .await?;
-    assert_eq!(second.entries.len(), 1);
-    assert!(second.next_cursor.is_none());
+    let mut entries = Vec::new();
+    let mut after = None;
+    let mut cursors = std::collections::BTreeSet::new();
+    loop {
+        let page = store
+            .scan_keys_by_kind_page(kind.clone(), after.as_deref(), 2)
+            .await?;
+        assert!(page.entries.len() <= 2);
+        entries.extend(page.entries);
+        let Some(cursor) = page.next_cursor else {
+            break;
+        };
+        assert!(cursors.insert(cursor.clone()), "cursor must advance");
+        after = Some(cursor);
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "c", "a"]
+    );
     Ok(())
 }
 

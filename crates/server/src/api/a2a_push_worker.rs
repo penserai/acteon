@@ -382,6 +382,9 @@ impl Shared {
                 });
             }
         }
+        if page.next_cursor.as_deref() == after {
+            return Err("A2A push ready-index cursor did not advance".into());
+        }
         Ok(page.next_cursor)
     }
 
@@ -417,6 +420,9 @@ impl Shared {
                     }
                 }
             });
+        }
+        if page.next_cursor.as_deref() == after {
+            return Err("A2A push Task repair cursor did not advance".into());
         }
         Ok(page.next_cursor)
     }
