@@ -17,6 +17,7 @@ Options:
 Commands:
   encrypt   Encrypt a value for use in auth.toml (reads from stdin)
   migrate   Run database migrations for configured backends, then exit
+  a2a-push-cutover  Preview or apply the reviewed backend-wide A2A callback cutover
 ```
 
 CLI flags override values in the config file.

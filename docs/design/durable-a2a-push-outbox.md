@@ -1,7 +1,8 @@
 # Durable A2A push outbox
 
-Status: implementation in progress, October 11, 2026. Phases 1–4 are complete
-on the feature branch. Migration and the phase 5 release gates remain.
+Status: implementation in progress, October 11, 2026. Phases 1–4 and the
+reviewed migration mechanism are complete on the feature branch. Backend and
+protocol conformance release gates remain.
 
 ## Problem
 
@@ -106,11 +107,22 @@ operations.
 Mutable standalone callback configurations remain present during the
 mixed-version window. Each configuration first imported into an envelope keeps
 a private content digest as migration provenance. Native envelope CRUD removes
-that provenance for the affected ID. After pre-envelope writers have stopped,
-the cutover reconciler can therefore apply old-writer creates and updates,
-remove old-writer deletions, preserve native configurations, and clear all
-provenance in one Task CAS. Deleting standalone rows before that CAS would make
-successful cleanup indistinguishable from an old-writer delete.
+that provenance for the affected ID and retains a bounded native-override
+marker; a delete keeps the marker as a tombstone. After pre-envelope writers
+have stopped, the cutover reconciler can therefore apply old-writer creates and
+updates, remove old-writer deletions, preserve native edits and deletes, and
+clear all provenance in one Task CAS. Deleting standalone rows before that CAS
+would make successful cleanup indistinguishable from an old-writer delete.
+
+The backend-wide `a2a-push-cutover` command inventories every Task, standalone
+configuration and standalone dead letter through `StateStore`. Its public
+preview contains canonical row identities and SHA-256 content evidence, never
+callback tokens, credentials, payloads or error bodies. Apply requires that
+exact review digest, rejects inventory drift, rechecks row versions before each
+Task CAS, and uses compare-and-delete for cleanup. It writes the durable global
+`Migration` marker only after a rescan proves the legacy key spaces empty.
+Server startup enforces that marker: a standalone row written after cutover is
+a visible startup failure.
 
 ## Secret custody
 
@@ -173,12 +185,13 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 - [x] Drain append-only standalone DLQ rows into Task envelopes idempotently on
   operator access. Conflicting duplicate evidence fails closed, and standalone
   rows are deleted only after the Task CAS succeeds.
-- [ ] Drain existing standalone configuration rows into envelopes under an
-  explicit cutover. Per-configuration provenance and the atomic per-Task
-  reconciler are complete; the reviewed global inventory command remains.
-- [ ] Require a coordinated binary cutover (or add a dual-write compatibility
-  bridge) because pre-envelope writers can create standalone callback rows
-  after a new binary seals the one-time migration marker.
+- [x] Drain existing standalone configuration and DLQ rows through an explicit,
+  reviewed backend-wide cutover. Bind apply to the exact redacted inventory,
+  reconcile each Task under CAS, delete source rows by version, and persist a
+  global completion marker only after an empty rescan.
+- [x] Require a coordinated binary cutover: stop pre-envelope writers before
+  apply. New binaries enforce the durable marker at startup and at compatibility
+  reads, so a legacy writer that returns after cutover fails visibly.
 - [ ] Add conformance tests for Memory, Redis, PostgreSQL, and DynamoDB.
 - [ ] Run the official A2A callback suite against restart, lost acknowledgement,
   lag, deletion, inline replay, and credential-rotation scenarios.

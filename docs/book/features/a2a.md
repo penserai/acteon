@@ -708,9 +708,38 @@ losing the failure evidence.
 
 Standalone callback configurations are mutable, so their upgrade uses a
 coordinated cutover. Acteon retains private per-config migration provenance
-during the mixed-version window. Native edits take ownership of their IDs;
-after older writers stop, the reconciler applies remaining legacy creates,
-updates, and deletes in the Task CAS before legacy rows are removed.
+during the mixed-version window. Native edits take ownership of their IDs, and
+native deletes leave private bounded tombstones until cutover. After older
+writers stop, the reconciler applies remaining legacy creates, updates, and
+deletes in the Task CAS without resurrecting native deletes, then removes the
+legacy rows.
+
+Run that cutover against the same configuration file as the server. First stop
+every pre-envelope Acteon binary, then generate a reviewable preview:
+
+```bash
+acteon-server -c acteon.toml a2a-push-cutover \
+  --actor operator@example.com \
+  --reason "move callback state into durable Task envelopes"
+```
+
+The JSON report lists Task and legacy-row counts, canonical row identities, and
+content digests. It does not print callback tokens, authentication credentials,
+DLQ payloads, or receiver errors. Apply only the digest from the reviewed
+report:
+
+```bash
+acteon-server -c acteon.toml a2a-push-cutover \
+  --actor operator@example.com \
+  --reason "move callback state into durable Task envelopes" \
+  --review-digest <review_digest>
+```
+
+Any inventory change rejects apply and requires a new preview. Successful apply
+reconciles each Task atomically, removes legacy rows by exact state version, and
+commits a backend-wide migration marker after an empty rescan. All later server
+starts enforce that marker. A legacy callback row that reappears becomes an
+operator-visible failure instead of being silently accepted.
 
 ```text
 GET    /v1/a2a/{namespace}/{tenant}/push-dlq

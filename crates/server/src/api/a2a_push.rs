@@ -178,6 +178,36 @@ async fn migrate_legacy_configs(
     task_id: &str,
 ) -> Result<TaskEngine, PushConfigError> {
     let (engine, store) = envelope_engine(state).await;
+    let cutover_complete = crate::a2a_push_cutover::a2a_push_cutover_complete(store.as_ref())
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, task_id, "push-config: cutover marker check failed");
+            PushConfigError::Internal
+        })?;
+    if cutover_complete {
+        let prefix = format!("{task_id}:");
+        let legacy = store
+            .scan_keys(
+                &scope.namespace,
+                &scope.tenant,
+                KeyKind::A2aTaskPushConfig,
+                Some(&prefix),
+            )
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, task_id, "push-config: post-cutover legacy scan failed");
+                PushConfigError::Internal
+            })?;
+        if !legacy.is_empty() {
+            tracing::error!(
+                task_id,
+                rows = legacy.len(),
+                "push-config: post-cutover legacy rows detected"
+            );
+            return Err(PushConfigError::Internal);
+        }
+        return Ok(engine);
+    }
     if engine
         .push_config_migration_complete(scope, task_id)
         .await
@@ -600,6 +630,20 @@ async fn collect_dlq(
             tracing::warn!(error = %e, "push-dlq: scan failed");
             PushConfigError::Internal
         })?;
+    if !legacy_entries.is_empty()
+        && crate::a2a_push_cutover::a2a_push_cutover_complete(store.as_ref())
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "push-dlq: cutover marker check failed");
+                PushConfigError::Internal
+            })?
+    {
+        tracing::error!(
+            rows = legacy_entries.len(),
+            "push-dlq: post-cutover legacy rows detected"
+        );
+        return Err(PushConfigError::Internal);
+    }
     let mut legacy_by_task = BTreeMap::<String, Vec<acteon_core::PushDeliveryDlqEntry>>::new();
     for (key, raw) in legacy_entries {
         let entry =

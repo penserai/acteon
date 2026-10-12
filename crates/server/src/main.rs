@@ -78,6 +78,15 @@ enum Commands {
         #[arg(long)]
         review_digest: Option<String>,
     },
+    /// Preview or apply the reviewed backend-wide A2A callback cutover.
+    A2aPushCutover {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        review_digest: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -96,10 +105,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_encrypt();
     }
 
-    if matches!(&cli.command, Some(Commands::ScopeUpgrade { .. }))
-        && !Path::new(&cli.config).exists()
+    if matches!(
+        &cli.command,
+        Some(Commands::ScopeUpgrade { .. } | Commands::A2aPushCutover { .. })
+    ) && !Path::new(&cli.config).exists()
     {
-        return Err("scope upgrade requires an existing backend configuration file".into());
+        return Err(
+            "state migration commands require an existing backend configuration file".into(),
+        );
     }
 
     // Load configuration from TOML file, or use defaults if the file does not exist.
@@ -159,6 +172,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "applied"
             } else {
                 "reconciled"
+            }
+        } else {
+            "preview"
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"status": status, "plan": plan.report()})
+            )?
+        );
+        return Ok(());
+    }
+
+    if let Some(Commands::A2aPushCutover {
+        actor,
+        reason,
+        review_digest,
+    }) = cli.command
+    {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        let (store, _lock) = acteon_server::state_factory::create_state(&config.state).await?;
+        let plan =
+            acteon_server::a2a_push_cutover::A2aPushCutoverPlan::preview(store, actor, reason)
+                .await?;
+        let status = if let Some(digest) = review_digest {
+            if plan.apply(&digest).await? {
+                "applied"
+            } else {
+                "already_applied"
             }
         } else {
             "preview"
@@ -273,6 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the state backend.
     let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
+    acteon_server::a2a_push_cutover::verify_a2a_push_cutover_fence(store.as_ref()).await?;
 
     // Create the audit store if enabled.
     let audit_store = if config.audit.enabled {

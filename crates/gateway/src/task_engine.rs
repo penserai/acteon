@@ -60,7 +60,7 @@
 //! - **Protocol codecs**: A2A JSON-RPC 2.0 + REST framing lives in
 //!   the server layer, not here. The engine speaks pure Rust types.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -176,6 +176,12 @@ struct DurableTaskDelivery {
     /// cutover makes old-writer deletes distinguishable from native configs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     legacy_config_imports: BTreeMap<String, String>,
+    /// IDs whose standalone representation lost authority because native
+    /// envelope CRUD edited or deleted the callback. An ID may remain here as
+    /// a tombstone until reviewed cutover, preventing stale source rows from
+    /// resurrecting a native delete.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    legacy_config_native_overrides: BTreeSet<String>,
     #[serde(default)]
     next_sequence: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -310,6 +316,29 @@ impl DurableTaskDelivery {
             .min()
     }
 
+    fn validate_legacy_config_provenance(&self) -> Result<(), TaskEngineError> {
+        if self.legacy_config_imports.iter().any(|(id, digest)| {
+            !self.callbacks.contains_key(id)
+                || digest.len() != 64
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "invalid legacy callback migration provenance".into(),
+            ));
+        }
+        if self.legacy_config_native_overrides.len() > MAX_DURABLE_TASK_CALLBACKS
+            || self
+                .legacy_config_native_overrides
+                .iter()
+                .any(|id| id.is_empty() || self.legacy_config_imports.contains_key(id))
+        {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "invalid native callback migration overrides".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(&self, task: &Task) -> Result<(), TaskEngineError> {
         if self.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
             return Err(TaskEngineError::InvalidDurableRecord(
@@ -373,15 +402,7 @@ impl DurableTaskDelivery {
                 ));
             }
         }
-        if self.legacy_config_imports.iter().any(|(id, digest)| {
-            !self.callbacks.contains_key(id)
-                || digest.len() != 64
-                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-        }) {
-            return Err(TaskEngineError::InvalidDurableRecord(
-                "invalid legacy callback migration provenance".into(),
-            ));
-        }
+        self.validate_legacy_config_provenance()?;
         self.validate_dead_letters(task)?;
         if let Some(first) = self.events.first()
             && self
@@ -770,6 +791,15 @@ impl TaskScope {
             self.tenant.clone(),
             KeyKind::A2aPushReady,
             task_id.to_string(),
+        )
+    }
+
+    fn legacy_push_config_key(&self, task_id: &str, config_id: &str) -> StateKey {
+        StateKey::new(
+            self.namespace.clone(),
+            self.tenant.clone(),
+            KeyKind::A2aTaskPushConfig,
+            format!("{task_id}:{config_id}"),
         )
     }
 
@@ -1214,6 +1244,11 @@ impl TaskEngine {
         if self.hidden_governed_task(scope, task_id).await? {
             return Err(TaskEngineError::NotFound(task_id.into()));
         }
+        let legacy_row_exists = self
+            .state
+            .get(&scope.legacy_push_config_key(task_id, &config.id))
+            .await?
+            .is_some();
         let key = scope.task_key(task_id);
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
@@ -1243,7 +1278,23 @@ impl TaskEngine {
                 .delivery
                 .callbacks
                 .insert(config.id.clone(), callback);
-            record.delivery.legacy_config_imports.remove(&config.id);
+            let imported = record
+                .delivery
+                .legacy_config_imports
+                .remove(&config.id)
+                .is_some();
+            if legacy_row_exists
+                || imported
+                || record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .contains(&config.id)
+            {
+                record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .insert(config.id.clone());
+            }
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
             match self
@@ -1879,6 +1930,9 @@ impl TaskEngine {
                 }
             }
             for (id, config) in &snapshot {
+                if record.delivery.legacy_config_native_overrides.contains(id) {
+                    continue;
+                }
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     record.delivery.callbacks.entry(id.clone())
                 {
@@ -1891,6 +1945,7 @@ impl TaskEngine {
             }
             record.delivery.legacy_config_scan_complete = true;
             record.delivery.legacy_config_imports.clear();
+            record.delivery.legacy_config_native_overrides.clear();
             record.delivery.prune_acknowledged();
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
@@ -1929,6 +1984,11 @@ impl TaskEngine {
         if self.hidden_governed_task(scope, task_id).await? {
             return Err(TaskEngineError::NotFound(task_id.into()));
         }
+        let legacy_row_exists = self
+            .state
+            .get(&scope.legacy_push_config_key(task_id, config_id))
+            .await?
+            .is_some();
         let key = scope.task_key(task_id);
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
@@ -1938,7 +1998,23 @@ impl TaskEngine {
             if record.delivery.callbacks.remove(config_id).is_none() {
                 return Ok(false);
             }
-            record.delivery.legacy_config_imports.remove(config_id);
+            let imported = record
+                .delivery
+                .legacy_config_imports
+                .remove(config_id)
+                .is_some();
+            if legacy_row_exists
+                || imported
+                || record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .contains(config_id)
+            {
+                record
+                    .delivery
+                    .legacy_config_native_overrides
+                    .insert(config_id.to_owned());
+            }
             record.delivery.prune_acknowledged();
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
@@ -1986,6 +2062,47 @@ impl TaskEngine {
             }
         }
         Ok(out)
+    }
+
+    /// Inventory every durable A2A Task identity across the configured state
+    /// backend. Migration tooling uses the value as the authority and verifies
+    /// that each scanned key is its exact canonical identity before acting.
+    pub async fn list_all_task_refs(&self) -> Result<Vec<(TaskScope, String)>, TaskEngineError> {
+        let mut tasks = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .state
+                .scan_keys_by_kind_page(KeyKind::A2aTask, after.as_deref(), 500)
+                .await?;
+            for (key, raw) in page.entries {
+                let record = DurableTaskRecord::decode(&raw)?;
+                let scope = TaskScope::new(&record.task.namespace, &record.task.tenant);
+                if key != scope.task_key(&record.task.id).canonical() {
+                    return Err(TaskEngineError::InvalidDurableRecord(
+                        "A2A Task row identity does not match its canonical key".into(),
+                    ));
+                }
+                tasks.push((scope, record.task.id));
+            }
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            if after.as_ref().is_some_and(|previous| previous >= &cursor) {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "A2A Task inventory cursor did not advance".into(),
+                ));
+            }
+            after = Some(cursor);
+        }
+        tasks.sort_by(|left, right| {
+            (&left.0.namespace, &left.0.tenant, &left.1).cmp(&(
+                &right.0.namespace,
+                &right.0.tenant,
+                &right.1,
+            ))
+        });
+        Ok(tasks)
     }
 
     /// Transition a task to a new state with an optional driving
@@ -5090,7 +5207,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let imported = ["updated", "deleted", "native-edit"]
+        let imported = ["updated", "deleted", "native-edit", "native-delete"]
             .map(|id| test_push_config(&task, id))
             .to_vec();
         e.import_legacy_push_configs(&scope(), &task.id, imported.clone())
@@ -5103,6 +5220,11 @@ mod tests {
         e.upsert_push_config(&scope(), &task.id, native_edit.clone())
             .await
             .unwrap();
+        assert!(
+            e.delete_push_config(&scope(), &task.id, "native-delete")
+                .await
+                .unwrap()
+        );
         let native_only = test_push_config(&task, "native-only");
         e.upsert_push_config(&scope(), &task.id, native_only.clone())
             .await
@@ -5119,6 +5241,7 @@ mod tests {
                 vec![
                     old_writer_update.clone(),
                     imported[2].clone(),
+                    imported[3].clone(),
                     late_create.clone(),
                 ],
             )
@@ -5132,6 +5255,7 @@ mod tests {
         assert_eq!(by_id["updated"].url, old_writer_update.url);
         assert!(!by_id.contains_key("deleted"));
         assert_eq!(by_id["native-edit"].url, native_edit.url);
+        assert!(!by_id.contains_key("native-delete"));
         assert_eq!(by_id["native-only"].url, native_only.url);
         assert_eq!(by_id["late-create"].url, late_create.url);
         let raw = state
@@ -5141,6 +5265,7 @@ mod tests {
             .unwrap();
         let record = DurableTaskRecord::decode(&raw).unwrap();
         assert!(record.delivery.legacy_config_imports.is_empty());
+        assert!(record.delivery.legacy_config_native_overrides.is_empty());
     }
 
     #[tokio::test]
@@ -5465,6 +5590,35 @@ mod tests {
         let mut ids: Vec<_> = all.iter().map(|t| t.id.clone()).collect();
         ids.sort();
         assert_eq!(ids, vec!["t1".to_string(), "t2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn migration_inventory_pages_and_validates_canonical_task_identity() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        for index in 0..501 {
+            e.create_task(sample_task(&format!("task-{index:03}")))
+                .await
+                .unwrap();
+        }
+        let refs = e.list_all_task_refs().await.unwrap();
+        assert_eq!(refs.len(), 501);
+        assert_eq!(refs.first().unwrap().1, "task-000");
+        assert_eq!(refs.last().unwrap().1, "task-500");
+
+        let wrong_key = scope().task_key("wrong-key");
+        state
+            .set(
+                &wrong_key,
+                &serde_json::to_string(&sample_task("actual-id")).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            e.list_all_task_refs().await,
+            Err(TaskEngineError::InvalidDurableRecord(_))
+        ));
     }
 
     #[tokio::test]
