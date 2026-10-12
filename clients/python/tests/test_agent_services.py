@@ -208,9 +208,7 @@ async def test_official_list_tasks_has_typed_sync_and_async_parity():
 def _push_response(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
     assert request.url.path == "/a2a/prod/acme/agents/notifier"
-    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0][
-        "source_context"
-    ]
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
     method = body["method"]
     params = body["params"]
     assert params["taskId"] == "job-1"

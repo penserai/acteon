@@ -85,9 +85,7 @@ class AgentServicePushConfigInput:
     url: str
     id: str | None = None
     token: str | None = field(default=None, repr=False)
-    authentication: AgentServicePushAuthentication | None = field(
-        default=None, repr=False
-    )
+    authentication: AgentServicePushAuthentication | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -98,9 +96,7 @@ class AgentServicePushConfig:
     task_id: str
     url: str
     token: str | None = field(default=None, repr=False)
-    authentication: AgentServicePushAuthentication | None = field(
-        default=None, repr=False
-    )
+    authentication: AgentServicePushAuthentication | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -672,9 +668,7 @@ def _list_params(
         if value is not None:
             params[key] = value
     if status_timestamp_after is not None:
-        params["statusTimestampAfter"] = status_timestamp_after.isoformat().replace(
-            "+00:00", "Z"
-        )
+        params["statusTimestampAfter"] = status_timestamp_after.isoformat().replace("+00:00", "Z")
     if include_artifacts:
         params["includeArtifacts"] = True
     return params
@@ -781,10 +775,7 @@ def _push_input(value: AgentServicePushConfigInput, task_id: str) -> dict[str, A
         if (
             not authentication.scheme.strip()
             or len(authentication.scheme) > 256
-            or (
-                authentication.credentials is not None
-                and len(authentication.credentials) > 4096
-            )
+            or (authentication.credentials is not None and len(authentication.credentials) > 4096)
         ):
             raise ValueError("push authentication is invalid")
         result["authentication"] = {"scheme": authentication.scheme}

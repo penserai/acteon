@@ -278,8 +278,7 @@ class FederationDeliveryEvidence:
                     else None
                 ),
                 "reconciliations": [
-                    FederationDeliveryFinalityEvidence.from_dict(item)
-                    for item in reconciliations
+                    FederationDeliveryFinalityEvidence.from_dict(item) for item in reconciliations
                 ],
             }
         )

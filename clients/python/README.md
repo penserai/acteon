@@ -526,9 +526,7 @@ task = client.agent_service_get_task(receipt)
 The same client makes real official A2A streaming calls:
 
 ```python
-for frame in client.agent_service_send_streaming_message(
-    "prod", "acme", "notifier", message
-):
+for frame in client.agent_service_send_streaming_message("prod", "acme", "notifier", message):
     save_host_provenance(frame.source_context)
     render(frame.result)
 
@@ -600,15 +598,17 @@ The helper sends that job's original identity and source context in one request:
 
 ```python
 stopped = client.agent_service_stop_task(receipt)
-print(stopped.future_starts_blocked, stopped.cancellation_confirmed,
-      stopped.provider_abort, stopped.task["status"]["state"])
+print(
+    stopped.future_starts_blocked,
+    stopped.cancellation_confirmed,
+    stopped.provider_abort,
+    stopped.task["status"]["state"],
+)
 
 official_task = client.agent_service_cancel_task(receipt)
 print(official_task["metadata"]["acteonCancellation"]["state"])
 
-page = client.agent_service_list_tasks(
-    "prod", "acme", "notifier", page_size=25
-)
+page = client.agent_service_list_tasks("prod", "acme", "notifier", page_size=25)
 print(len(page.tasks), page.total_size, page.next_page_token)
 # Agent principals pass source=receipt to retain exact job isolation.
 ```
@@ -619,16 +619,24 @@ Manage an official callback with an operations-management credential:
 from acteon_client import AgentServicePushAuthentication, AgentServicePushConfigInput
 
 push = client.agent_service_create_push_config(
-    "prod", "acme", "notifier", receipt.task_id,
+    "prod",
+    "acme",
+    "notifier",
+    receipt.task_id,
     AgentServicePushConfigInput(
-        "https://hooks.example/a2a", id="incident-hook", token=callback_token,
+        "https://hooks.example/a2a",
+        id="incident-hook",
+        token=callback_token,
         authentication=AgentServicePushAuthentication("Bearer", webhook_secret),
-    ), source=receipt,
+    ),
+    source=receipt,
 )
 configs = client.agent_service_list_push_configs(
-    "prod", "acme", "notifier", receipt.task_id, page_size=25, source=receipt)
+    "prod", "acme", "notifier", receipt.task_id, page_size=25, source=receipt
+)
 client.agent_service_delete_push_config(
-    "prod", "acme", "notifier", receipt.task_id, push.id, source=receipt)
+    "prod", "acme", "notifier", receipt.task_id, push.id, source=receipt
+)
 ```
 
 Create, get, list, delete, and inline registration require

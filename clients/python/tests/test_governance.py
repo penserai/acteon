@@ -241,7 +241,9 @@ async def test_federation_management_and_inert_import_wire(async_client):
         assert asdict(results[9]) == FEDERATION["abandoned_evidence"]
         assert asdict(results[10]) == FEDERATION["finality_correlation"]
         assert asdict(results[11]) == FEDERATION["reconciled_evidence"]
-        assert [request.method for request in seen] == ["POST", "POST", "GET"] + ["POST"] * 5 + ["GET", "POST", "GET", "POST"]
+        assert [request.method for request in seen] == (
+            ["POST", "POST", "GET"] + ["POST"] * 5 + ["GET", "POST", "GET", "POST"]
+        )
         assert json.loads(seen[0].content) == FEDERATION["publication"]
         assert json.loads(seen[1].content) == FEDERATION["revocation"]
         assert seen[2].url.path.endswith("/capabilities")
