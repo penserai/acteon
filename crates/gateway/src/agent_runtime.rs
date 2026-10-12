@@ -735,6 +735,47 @@ impl AgentProviderRuntime {
         Ok(self.observe(original.reference.execution_id()).await?.task)
     }
 
+    /// Replay an existing immutable acceptance without requiring the service's
+    /// former admission permits. This path cannot create work, so retained
+    /// service epochs can answer exact retries after their live declaration is
+    /// removed.
+    pub async fn replay_acceptance(
+        &self,
+        context: &VerifiedExecutionContext,
+        message: &TaskMessage,
+        initial_push_configs: Vec<acteon_core::TaskPushNotificationConfig>,
+    ) -> Result<Task, AgentRuntimeError> {
+        let action = self.prepare_message(message)?;
+        let reference = context.reference()?;
+        if reference.principal() != self.binding.target()
+            || governed_provider_input_digest(&action)? != reference.request_digest()
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let key = self.key(reference.execution_id());
+        let raw = self
+            .dependencies
+            .state
+            .get(&key)
+            .await?
+            .ok_or(AgentRuntimeError::Missing)?;
+        let original = self.decode(&raw)?;
+        let normalized =
+            normalize_initial_push_configs(initial_push_configs, &original.initial_task)?;
+        if original.reference != reference
+            || governed_provider_input_digest(&original.action)?
+                != governed_provider_input_digest(&action)?
+            || !initial_push_configs_match(&original.initial_push_configs, &normalized)?
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let task = self.materialize(&original).await?;
+        if !task.status.state.is_terminal() {
+            return Ok(task);
+        }
+        Ok(self.observe(original.reference.execution_id()).await?.task)
+    }
+
     /// Persist one task admitted by a current signed federation invocation.
     /// This starts no provider effect. The authenticated host must immediately
     /// call `resume_federated`; generic background recovery deliberately skips

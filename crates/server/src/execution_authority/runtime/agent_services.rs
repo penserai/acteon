@@ -813,7 +813,6 @@ impl ExecutionAuthorityRuntime {
                 return Err(AgentServiceError::Conflict);
             }
         }
-        let (_, agent, _) = self.service(request.namespace, request.tenant, request.agent_id)?;
         let initial_push_configs = materialize_initial_push_configs(
             request,
             child.execution_id(),
@@ -822,12 +821,7 @@ impl ExecutionAuthorityRuntime {
             self.clock.now(),
         );
         let task = runtime
-            .accept_with_push_configs(
-                &child,
-                &agent.declaration.recipient_permits,
-                request.message,
-                initial_push_configs,
-            )
+            .replay_acceptance(&child, request.message, initial_push_configs)
             .await
             .map_err(AgentServiceError::from)?;
         self.accepted_service_snapshot(
@@ -960,12 +954,6 @@ impl ExecutionAuthorityRuntime {
                     .canonical()
                 {
                     return Err(AgentServiceError::Conflict);
-                }
-                if request
-                    .source_context
-                    .is_some_and(|source| source.execution_id() != task_id)
-                {
-                    continue;
                 }
                 let source = runtime
                     .source_context(task_id)

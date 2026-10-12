@@ -176,7 +176,7 @@ providers = ["agent.notifier"]
 actions = ["invoke"]
 [[api_keys]]
 name = "alice-manager"
-authority_id = "credential/alice"
+authority_id = "credential/alice-manager"
 principal = {{id="alice",kind={source_kind:?}}}
 key_hash = {:?}
 role = "operator"
@@ -840,12 +840,15 @@ async fn send_task(server: &Server, client: &reqwest::Client, id: &str) -> (Valu
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    let source = response.headers()["x-acteon-agent-source-context"]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    (response.json().await.unwrap(), source)
+    let source = response
+        .headers()
+        .get("x-acteon-agent-source-context")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "message={id}; {body}; {}", server.log());
+    (serde_json::from_str(&body).unwrap(), source.unwrap())
 }
 
 #[tokio::test]
@@ -1244,7 +1247,7 @@ async fn official_governed_push_configs_require_management_and_exact_source_auth
     server.ready(&client).await;
     let accepted: Value = client
         .post(server.rpc_endpoint())
-        .bearer_auth("alice-secret")
+        .bearer_auth("alice-manager-secret")
         .header("a2a-version", "1.0")
         .json(&json!({
             "jsonrpc":"2.0", "id":"push-task", "method":"SendMessage",
@@ -1431,7 +1434,7 @@ async fn official_list_tasks_requires_the_exact_job_receipt_for_agent_sources() 
             request = request.header("x-acteon-agent-source-context", source_header);
         }
         let listed: Value = request.send().await.unwrap().json().await.unwrap();
-        assert_eq!(listed["result"]["totalSize"], expected_total);
+        assert_eq!(listed["result"]["totalSize"], expected_total, "{listed}");
         if expected_total == 1 {
             assert_eq!(listed["result"]["tasks"][0]["id"], task_id);
         }
@@ -3034,7 +3037,8 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let canceled: Value = response.json().await.unwrap();
-    assert_eq!(canceled["status"]["state"], "restricted");
+    assert_eq!(canceled["status"]["state"], "reconciled");
+    assert_eq!(canceled["status"]["task"]["status"]["state"], "canceled");
     assert_eq!(
         canceled["status"]["task"]["id"],
         peer["status"]["task"]["id"]
@@ -3056,17 +3060,17 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
     assert_eq!(replayed, canceled);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
-    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 0);
     assert_eq!(
         proxy
             .state
             .conditional_task_observations
             .load(Ordering::SeqCst),
-        1
+        0
     );
     assert_eq!(
         proxy.state.not_modified_observations.load(Ordering::SeqCst),
-        1
+        0
     );
     webhook_task.abort();
 }
@@ -3179,7 +3183,8 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     let committed = proxy.state.committed_stop.lock().unwrap().clone().unwrap();
     assert_eq!(committed["future_starts_blocked"], true);
     assert_eq!(committed["task"]["id"], task_id);
-    assert_eq!(committed["task"]["status"]["state"], "submitted");
+    assert_eq!(committed["task"]["status"]["state"], "canceled");
+    assert_eq!(committed["cancellation_confirmed"], true);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
     let cancellation_id = uncertain["cancellation_id"].clone();
@@ -3194,7 +3199,9 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let replayed: Value = response.json().await.unwrap();
     assert_eq!(replayed["cancellation_id"], cancellation_id);
-    assert_eq!(replayed, uncertain);
+    assert_eq!(replayed["status"]["state"], "reconciled");
+    assert_eq!(replayed["status"]["task"]["id"], task_id);
+    assert_eq!(replayed["status"]["task"]["status"]["state"], "canceled");
     assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
     assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -3206,7 +3213,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     );
     assert_eq!(
         proxy.state.not_modified_observations.load(Ordering::SeqCst),
-        1
+        0
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
@@ -3387,6 +3394,19 @@ async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the
 
     server.remove_service_and_retain_current(new_digest);
     server.ready(&client).await;
+    let retained_observation = client
+        .get(server.task_url(completed_task["id"].as_str().unwrap()))
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", &completed_source)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        retained_observation.status(),
+        200,
+        "{}",
+        retained_observation.text().await.unwrap()
+    );
     for (message_id, expected_id) in [
         ("completed-before-replacement", &completed_task["id"]),
         ("after-replacement", &new_task["id"]),
@@ -3679,8 +3699,9 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
     assert_eq!(task.status.state, acteon_core::TaskState::Submitted);
     let stopped = client.agent_service_stop_task(&restored).await.unwrap();
     assert!(stopped.future_starts_blocked);
+    assert!(stopped.cancellation_confirmed);
     assert_eq!(stopped.task.id, receipt.task_id());
-    assert_eq!(stopped.task.status.state, acteon_core::TaskState::Submitted);
+    assert_eq!(stopped.task.status.state, acteon_core::TaskState::Canceled);
     let repeated = client.agent_service_stop_task(&restored).await.unwrap();
     assert!(repeated.future_starts_blocked);
     assert_eq!(repeated.task.id, receipt.task_id());
@@ -3772,8 +3793,9 @@ async fn requester_stop_requires_original_job_provenance_and_never_starts_effect
         if expected == 200 {
             let body: Value = response.json().await.unwrap();
             assert_eq!(body["future_starts_blocked"], true);
+            assert_eq!(body["cancellation_confirmed"], true);
             assert_eq!(body["task"]["id"], task["id"]);
-            assert_eq!(body["task"]["status"]["state"], "submitted");
+            assert_eq!(body["task"]["status"]["state"], "canceled");
         }
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -3825,7 +3847,7 @@ async fn redis_restart_does_not_start_stopped_queued_service_work() {
         let stopped: Value = response.json().await.unwrap();
         assert_eq!(stopped["future_starts_blocked"], true);
         assert_eq!(stopped["task"]["id"], task["id"]);
-        assert_eq!(stopped["task"]["status"]["state"], "submitted");
+        assert_eq!(stopped["task"]["status"]["state"], "canceled");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let coordinator = acteon_governance::AuthorityCoordinator::connect(store, "prod", "acme")

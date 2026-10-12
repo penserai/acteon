@@ -254,7 +254,10 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
                     |receipt| {
                         if !receipt.future_starts_blocked {
                             PeerCancelDisposition::Uncertain
-                        } else if receipt.task.status.state.is_terminal() {
+                        } else if receipt.task.status.state.is_terminal()
+                            && (receipt.task.status.state != acteon_core::TaskState::Canceled
+                                || receipt.cancellation_confirmed)
+                        {
                             PeerCancelDisposition::Final {
                                 task: Box::new(receipt.task),
                             }
@@ -421,6 +424,8 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
 struct PeerStopResponse {
     task: Task,
     future_starts_blocked: bool,
+    #[serde(default)]
+    cancellation_confirmed: bool,
     #[serde(default, rename = "provider_abort")]
     _provider_abort: Option<serde_json::Value>,
 }
