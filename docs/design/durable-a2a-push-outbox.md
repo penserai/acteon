@@ -103,6 +103,15 @@ The existing tenant DLQ endpoint becomes a projection over envelope dead
 letters during migration. Purge, replay, and discard remain explicit management
 operations.
 
+Mutable standalone callback configurations remain present during the
+mixed-version window. Each configuration first imported into an envelope keeps
+a private content digest as migration provenance. Native envelope CRUD removes
+that provenance for the affected ID. After pre-envelope writers have stopped,
+the cutover reconciler can therefore apply old-writer creates and updates,
+remove old-writer deletions, preserve native configurations, and clear all
+provenance in one Task CAS. Deleting standalone rows before that CAS would make
+successful cleanup indistinguishable from an old-writer delete.
+
 ## Secret custody
 
 The A2A wire accepts callback credentials. Durable records should store either:
@@ -165,7 +174,8 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
   operator access. Conflicting duplicate evidence fails closed, and standalone
   rows are deleted only after the Task CAS succeeds.
 - [ ] Drain existing standalone configuration rows into envelopes under an
-  explicit cutover.
+  explicit cutover. Per-configuration provenance and the atomic per-Task
+  reconciler are complete; the reviewed global inventory command remains.
 - [ ] Require a coordinated binary cutover (or add a dual-write compatibility
   bridge) because pre-envelope writers can create standalone callback rows
   after a new binary seals the one-time migration marker.

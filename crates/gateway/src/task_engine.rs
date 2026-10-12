@@ -170,6 +170,12 @@ struct DurableTaskDelivery {
     /// imported. New tasks set this immediately; legacy task rows begin false.
     #[serde(default)]
     legacy_config_scan_complete: bool,
+    /// Content digests for callbacks imported from standalone rows and still
+    /// owned by the mixed-version compatibility bridge. Native envelope CRUD
+    /// removes an ID from this map. Retaining this provenance until reviewed
+    /// cutover makes old-writer deletes distinguishable from native configs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    legacy_config_imports: BTreeMap<String, String>,
     #[serde(default)]
     next_sequence: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -366,6 +372,15 @@ impl DurableTaskDelivery {
                     "invalid callback lease or retry state".into(),
                 ));
             }
+        }
+        if self.legacy_config_imports.iter().any(|(id, digest)| {
+            !self.callbacks.contains_key(id)
+                || digest.len() != 64
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "invalid legacy callback migration provenance".into(),
+            ));
         }
         self.validate_dead_letters(task)?;
         if let Some(first) = self.events.first()
@@ -709,6 +724,11 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
         }
         scalar => scalar.clone(),
     }
+}
+
+fn push_config_digest(config: &TaskPushNotificationConfig) -> Result<String, serde_json::Error> {
+    let value = canonical_json(&serde_json::to_value(config)?);
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
 fn task_message_digest(message: &TaskMessage) -> Result<String, serde_json::Error> {
@@ -1223,6 +1243,7 @@ impl TaskEngine {
                 .delivery
                 .callbacks
                 .insert(config.id.clone(), callback);
+            record.delivery.legacy_config_imports.remove(&config.id);
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
             match self
@@ -1754,11 +1775,16 @@ impl TaskEngine {
                 let tail = record.delivery.next_sequence;
                 let mut imported_ids = Vec::new();
                 for config in &configs {
+                    let digest = push_config_digest(config)?;
                     if let std::collections::btree_map::Entry::Vacant(entry) =
                         record.delivery.callbacks.entry(config.id.clone())
                     {
                         imported_ids.push(config.id.clone());
                         entry.insert(DurableTaskCallback::new(config.clone(), tail));
+                        record
+                            .delivery
+                            .legacy_config_imports
+                            .insert(config.id.clone(), digest);
                     }
                 }
                 if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
@@ -1790,6 +1816,108 @@ impl TaskEngine {
         Err(TaskEngineError::CasExhausted(task_id.into()))
     }
 
+    /// Reconcile the complete standalone configuration snapshot after all
+    /// pre-envelope writers have been stopped. Imported callbacks follow old
+    /// creates, updates, and deletes; callbacks subsequently changed through
+    /// native envelope CRUD remain authoritative. The successful Task CAS
+    /// clears migration provenance, after which callers may delete standalone
+    /// rows.
+    pub async fn finalize_legacy_push_configs(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        configs: Vec<TaskPushNotificationConfig>,
+    ) -> Result<Vec<TaskPushNotificationConfig>, TaskEngineError> {
+        let mut snapshot = BTreeMap::new();
+        for config in configs {
+            Self::validate_push_config_identity(scope, task_id, &config)?;
+            if snapshot.insert(config.id.clone(), config).is_some() {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "duplicate standalone callback configuration".into(),
+                ));
+            }
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let tail = record.delivery.next_sequence;
+            let tracked_ids = record
+                .delivery
+                .legacy_config_imports
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut mutations = Vec::new();
+            for id in tracked_ids {
+                if let Some(config) = snapshot.get(&id) {
+                    let callback = record.delivery.callbacks.get_mut(&id).ok_or_else(|| {
+                        TaskEngineError::InvalidDurableRecord(
+                            "legacy callback provenance lost its configuration".into(),
+                        )
+                    })?;
+                    if callback.lease.is_some() {
+                        return Err(TaskEngineError::PushConfigDeliveryInFlight);
+                    }
+                    if push_config_digest(&callback.config)? != push_config_digest(config)? {
+                        callback.config = config.clone();
+                        mutations.push(("legacy_cutover_update", id.clone()));
+                    }
+                } else {
+                    let callback = record.delivery.callbacks.get(&id).ok_or_else(|| {
+                        TaskEngineError::InvalidDurableRecord(
+                            "legacy callback provenance lost its configuration".into(),
+                        )
+                    })?;
+                    if callback.lease.is_some() {
+                        return Err(TaskEngineError::PushConfigDeliveryInFlight);
+                    }
+                    record.delivery.callbacks.remove(&id);
+                    mutations.push(("legacy_cutover_delete", id));
+                }
+            }
+            for (id, config) in &snapshot {
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    record.delivery.callbacks.entry(id.clone())
+                {
+                    entry.insert(DurableTaskCallback::new(config.clone(), tail));
+                    mutations.push(("legacy_cutover_import", id.clone()));
+                }
+            }
+            if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
+                return Err(TaskEngineError::PushConfigCapacityExceeded);
+            }
+            record.delivery.legacy_config_scan_complete = true;
+            record.delivery.legacy_config_imports.clear();
+            record.delivery.prune_acknowledged();
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    self.sync_push_ready_hint_best_effort(&record).await;
+                    for (operation, config_id) in mutations {
+                        self.emit_push_config_audit(&record.task, operation, &config_id)
+                            .await;
+                    }
+                    return Ok(record
+                        .delivery
+                        .callbacks
+                        .values()
+                        .map(|callback| callback.config.clone())
+                        .collect());
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
     /// Delete a callback configuration and immediately release any event-log
     /// prefix retained only for that callback. Returns `false` when absent.
     pub async fn delete_push_config(
@@ -1810,6 +1938,7 @@ impl TaskEngine {
             if record.delivery.callbacks.remove(config_id).is_none() {
                 return Ok(false);
             }
+            record.delivery.legacy_config_imports.remove(config_id);
             record.delivery.prune_acknowledged();
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
@@ -4946,6 +5075,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(configs[0].url, "https://current.example/a2a");
+    }
+
+    #[tokio::test]
+    async fn legacy_callback_cutover_reconciles_owned_rows_and_preserves_native_edits() {
+        let state = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(state.clone());
+        let task = sample_task("legacy-cutover");
+        state
+            .set(
+                &scope().task_key(&task.id),
+                &serde_json::to_string(&task).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let imported = ["updated", "deleted", "native-edit"]
+            .map(|id| test_push_config(&task, id))
+            .to_vec();
+        e.import_legacy_push_configs(&scope(), &task.id, imported.clone())
+            .await
+            .unwrap();
+
+        let mut native_edit = imported[2].clone();
+        native_edit.url = "https://native.example/a2a".into();
+        native_edit.updated_at += chrono::Duration::seconds(1);
+        e.upsert_push_config(&scope(), &task.id, native_edit.clone())
+            .await
+            .unwrap();
+        let native_only = test_push_config(&task, "native-only");
+        e.upsert_push_config(&scope(), &task.id, native_only.clone())
+            .await
+            .unwrap();
+
+        let mut old_writer_update = imported[0].clone();
+        old_writer_update.url = "https://old-writer.example/a2a".into();
+        old_writer_update.updated_at += chrono::Duration::seconds(2);
+        let late_create = test_push_config(&task, "late-create");
+        let configs = e
+            .finalize_legacy_push_configs(
+                &scope(),
+                &task.id,
+                vec![
+                    old_writer_update.clone(),
+                    imported[2].clone(),
+                    late_create.clone(),
+                ],
+            )
+            .await
+            .unwrap();
+        let by_id = configs
+            .into_iter()
+            .map(|config| (config.id.clone(), config))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(by_id["updated"].url, old_writer_update.url);
+        assert!(!by_id.contains_key("deleted"));
+        assert_eq!(by_id["native-edit"].url, native_edit.url);
+        assert_eq!(by_id["native-only"].url, native_only.url);
+        assert_eq!(by_id["late-create"].url, late_create.url);
+        let raw = state
+            .get(&scope().task_key(&task.id))
+            .await
+            .unwrap()
+            .unwrap();
+        let record = DurableTaskRecord::decode(&raw).unwrap();
+        assert!(record.delivery.legacy_config_imports.is_empty());
     }
 
     #[tokio::test]

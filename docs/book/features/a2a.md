@@ -706,6 +706,12 @@ from the pre-envelope key space into the Task envelope. Acteon deletes a legacy
 row only after the Task CAS commits, so a crash can repeat the import without
 losing the failure evidence.
 
+Standalone callback configurations are mutable, so their upgrade uses a
+coordinated cutover. Acteon retains private per-config migration provenance
+during the mixed-version window. Native edits take ownership of their IDs;
+after older writers stop, the reconciler applies remaining legacy creates,
+updates, and deletes in the Task CAS before legacy rows are removed.
+
 ```text
 GET    /v1/a2a/{namespace}/{tenant}/push-dlq
 GET    /v1/a2a/{namespace}/{tenant}/push-dlq/{entry_id}

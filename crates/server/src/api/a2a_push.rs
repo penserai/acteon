@@ -168,9 +168,10 @@ async fn envelope_engine(state: &AppState) -> (TaskEngine, Arc<dyn StateStore>) 
     (engine, store)
 }
 
-/// Import standalone rows into the task envelope exactly once. The envelope
-/// becomes authoritative at the successful CAS; deleting migrated rows is
-/// cleanup only and can be completed by the phase-5 drain after an outage.
+/// Import standalone rows into the task envelope exactly once. Rows remain in
+/// place during the mixed-version window so reviewed cutover can distinguish
+/// pre-envelope updates and deletes from configurations created natively in the
+/// envelope. The phase-5 cutover deletes them only after reconciliation.
 async fn migrate_legacy_configs(
     state: &AppState,
     scope: &TaskScope,
@@ -198,23 +199,22 @@ async fn migrate_legacy_configs(
             PushConfigError::Internal
         })?;
     let mut configs = Vec::with_capacity(entries.len());
-    for (_, raw) in &entries {
+    for (key, raw) in &entries {
         let config = serde_json::from_str::<TaskPushNotificationConfig>(raw).map_err(|error| {
             tracing::warn!(%error, task_id, "push-config: malformed legacy row");
             PushConfigError::Internal
         })?;
-        configs.push(validate_stored_config(config, scope, task_id, None)?);
+        let config = validate_stored_config(config, scope, task_id, None)?;
+        if *key != config_key(scope, task_id, &config.id).canonical() {
+            tracing::warn!(%key, task_id, config_id = %config.id, "push-config: legacy row identity mismatch");
+            return Err(PushConfigError::Internal);
+        }
+        configs.push(config);
     }
     engine
-        .import_legacy_push_configs(scope, task_id, configs.clone())
+        .import_legacy_push_configs(scope, task_id, configs)
         .await
         .map_err(|error| map_engine_error(error, task_id))?;
-    for config in configs {
-        let key = config_key(scope, task_id, &config.id);
-        if let Err(error) = store.delete(&key).await {
-            tracing::warn!(%error, task_id, config_id = %config.id, "push-config: legacy cleanup deferred");
-        }
-    }
     Ok(engine)
 }
 
