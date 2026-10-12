@@ -701,6 +701,11 @@ envelope. List and inspect entries through the tenant operator view. Deleting
 an entry explicitly discards that failed sequence and atomically allows the
 next sequence to proceed:
 
+During an upgrade, operator reads idempotently move append-only dead letters
+from the pre-envelope key space into the Task envelope. Acteon deletes a legacy
+row only after the Task CAS commits, so a crash can repeat the import without
+losing the failure evidence.
+
 ```text
 GET    /v1/a2a/{namespace}/{tenant}/push-dlq
 GET    /v1/a2a/{namespace}/{tenant}/push-dlq/{entry_id}

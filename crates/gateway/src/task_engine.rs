@@ -73,10 +73,11 @@ use tracing::{debug, warn};
 use acteon_audit::{AuditError, store::AuditStore};
 use acteon_core::{
     Artifact, BusApproval, BusApprovalStatus, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
-    DlqFailureKind, MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, PushDeliveryDlqEntry,
-    Task, TaskArtifactUpdateEvent, TaskAuthorizationRequirement, TaskAuthorizationResolution,
-    TaskMessage, TaskPauseResolution, TaskPushConfigValidationError, TaskPushNotificationConfig,
-    TaskRole, TaskState, TaskValidationError,
+    DlqFailureKind, MAX_APPROVAL_TTL_MS, MAX_DLQ_ERROR_BYTES, MAX_DLQ_EVENT_BYTES,
+    MAX_REFERENCE_DEPTH, PauseKind, PushDeliveryDlqEntry, Task, TaskArtifactUpdateEvent,
+    TaskAuthorizationRequirement, TaskAuthorizationResolution, TaskMessage, TaskPauseResolution,
+    TaskPushConfigValidationError, TaskPushNotificationConfig, TaskRole, TaskState,
+    TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
@@ -1573,6 +1574,83 @@ impl TaskEngine {
             return Err(TaskEngineError::NotFound(task_id.into()));
         };
         Ok(DurableTaskRecord::decode(&raw)?.delivery.dead_letters)
+    }
+
+    /// Import append-only dead letters written by a pre-envelope worker.
+    ///
+    /// The Task envelope wins an exact ID replay. A duplicate ID with different
+    /// evidence is rejected rather than hidden, and the capacity check covers
+    /// the merged set before the Task CAS commits. Callers may delete standalone
+    /// rows only after this method succeeds.
+    pub async fn import_legacy_push_dead_letters(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        entries: Vec<PushDeliveryDlqEntry>,
+    ) -> Result<usize, TaskEngineError> {
+        let mut incoming_ids = HashSet::with_capacity(entries.len());
+        for entry in &entries {
+            if entry.task_id != task_id
+                || entry.namespace != scope.namespace
+                || entry.tenant != scope.tenant
+                || entry.sequence.is_some()
+                || entry.event_id.is_some()
+                || uuid::Uuid::parse_str(&entry.id).is_err()
+                || entry.config_id.is_empty()
+                || entry.url.is_empty()
+                || entry.attempts == 0
+                || entry.first_failed_at > entry.last_failed_at
+                || entry.last_error.len() > MAX_DLQ_ERROR_BYTES
+                || entry.event_json.len() > MAX_DLQ_EVENT_BYTES
+                || !incoming_ids.insert(entry.id.as_str())
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid legacy callback dead letter".into(),
+                ));
+            }
+        }
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let mut imported = 0usize;
+            for entry in &entries {
+                if let Some(existing) = record
+                    .delivery
+                    .dead_letters
+                    .iter()
+                    .find(|existing| existing.id == entry.id)
+                {
+                    if existing != entry {
+                        return Err(TaskEngineError::InvalidDurableRecord(
+                            "legacy callback dead-letter ID conflicts with Task evidence".into(),
+                        ));
+                    }
+                    continue;
+                }
+                record.delivery.dead_letters.push(entry.clone());
+                imported += 1;
+            }
+            if imported == 0 {
+                return Ok(0);
+            }
+            if record.delivery.dead_letters.len() > MAX_DURABLE_TASK_DEAD_LETTERS {
+                return Err(TaskEngineError::PushDeadLetterCapacityExceeded);
+            }
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => return Ok(imported),
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
     }
 
     /// Resolve one Task-embedded dead letter under the same CAS as its callback
@@ -4775,6 +4853,53 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_dead_letter_import_is_idempotent_and_detects_conflicts() {
+        let e = engine();
+        e.create_task(sample_task("legacy-dlq")).await.unwrap();
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let entry = PushDeliveryDlqEntry::new_at(
+            uuid::Uuid::now_v7().to_string(),
+            "callback",
+            "legacy-dlq",
+            "agents",
+            "demo",
+            "https://callback.example/a2a",
+            DlqFailureKind::Terminal,
+            "HTTP 410",
+            1,
+            r#"{"legacy":true}"#.into(),
+            now,
+        );
+
+        assert_eq!(
+            e.import_legacy_push_dead_letters(&scope(), "legacy-dlq", vec![entry.clone()])
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            e.import_legacy_push_dead_letters(&scope(), "legacy-dlq", vec![entry.clone()])
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            e.list_push_dead_letters(&scope(), "legacy-dlq")
+                .await
+                .unwrap(),
+            vec![entry.clone()]
+        );
+
+        let mut conflicting = entry;
+        conflicting.last_error = "different evidence".into();
+        let error = e
+            .import_legacy_push_dead_letters(&scope(), "legacy-dlq", vec![conflicting])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::InvalidDurableRecord(_)));
     }
 
     #[tokio::test]

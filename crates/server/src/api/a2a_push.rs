@@ -22,6 +22,7 @@
 //! (-32001) — so a probe cannot enumerate config ids for a task the
 //! caller has no rights to.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -599,11 +600,55 @@ async fn collect_dlq(
             tracing::warn!(error = %e, "push-dlq: scan failed");
             PushConfigError::Internal
         })?;
-    for (_, raw) in legacy_entries {
-        if let Ok(e) = serde_json::from_str::<acteon_core::PushDeliveryDlqEntry>(&raw) {
-            out.push(e);
+    let mut legacy_by_task = BTreeMap::<String, Vec<acteon_core::PushDeliveryDlqEntry>>::new();
+    for (key, raw) in legacy_entries {
+        let entry =
+            serde_json::from_str::<acteon_core::PushDeliveryDlqEntry>(&raw).map_err(|error| {
+                tracing::warn!(%key, %error, "push-dlq: malformed legacy row");
+                PushConfigError::Internal
+            })?;
+        let expected = dlq_key(scope, &entry.task_id, &entry.id).canonical();
+        if key != expected
+            || entry.namespace != scope.namespace
+            || entry.tenant != scope.tenant
+            || entry.sequence.is_some()
+            || entry.event_id.is_some()
+        {
+            tracing::warn!(%key, "push-dlq: legacy row identity mismatch");
+            return Err(PushConfigError::Internal);
+        }
+        legacy_by_task
+            .entry(entry.task_id.clone())
+            .or_default()
+            .push(entry);
+    }
+    for (task_id, entries) in legacy_by_task {
+        engine
+            .import_legacy_push_dead_letters(scope, &task_id, entries.clone())
+            .await
+            .map_err(|error| map_engine_error(error, &task_id))?;
+        for entry in &entries {
+            let key = dlq_key(scope, &task_id, &entry.id);
+            if let Err(error) = store.delete(&key).await {
+                tracing::warn!(%error, task_id, entry_id = %entry.id, "push-dlq: legacy cleanup deferred");
+            }
+        }
+        out.extend(entries);
+    }
+    let mut unique = BTreeMap::<String, acteon_core::PushDeliveryDlqEntry>::new();
+    for entry in out {
+        match unique.entry(entry.id.clone()) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+            std::collections::btree_map::Entry::Occupied(slot) if slot.get() == &entry => {}
+            std::collections::btree_map::Entry::Occupied(_) => {
+                tracing::warn!(entry_id = %entry.id, "push-dlq: duplicate ID has conflicting evidence");
+                return Err(PushConfigError::Internal);
+            }
         }
     }
+    let mut out = unique.into_values().collect::<Vec<_>>();
     // Most-recent-failure first — the operator-friendly default.
     // `sort_by_key` with a reverse-ordered key keeps clippy happy
     // without an explicit comparator closure.
@@ -648,17 +693,18 @@ pub(crate) async fn delete_dlq_entry(
 ) -> Result<(), PushConfigError> {
     let row = load_dlq_entry(state, scope, entry_id).await?;
     let (engine, store) = envelope_engine(state).await;
-    if row.sequence.is_some() {
-        engine
-            .resolve_push_dead_letter(
-                scope,
-                &row.task_id,
-                entry_id,
-                PushDeadLetterResolution::Discard,
-            )
-            .await
-            .map_err(|error| map_engine_error(error, &row.task_id))?;
-        return Ok(());
+    match engine
+        .resolve_push_dead_letter(
+            scope,
+            &row.task_id,
+            entry_id,
+            PushDeadLetterResolution::Discard,
+        )
+        .await
+    {
+        Ok(_) => return Ok(()),
+        Err(TaskEngineError::PushDeadLetterNotFound(_)) if row.sequence.is_none() => {}
+        Err(error) => return Err(map_engine_error(error, &row.task_id)),
     }
     let key = dlq_key(scope, &row.task_id, entry_id);
     store.delete(&key).await.map_err(|e| {

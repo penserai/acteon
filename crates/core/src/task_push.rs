@@ -4,17 +4,15 @@
 //! projects the durable task into an A2A `StreamResponse` and POSTs it to
 //! every config registered for that task.
 //!
-//! The config row is the durable, addressable record — CRUD over
+//! The Task envelope is the durable, addressable record — CRUD over
 //! JSON-RPC (`tasks/pushNotificationConfig/{set,get,list,delete}`)
 //! and REST (`/v1/tasks/{id}/pushNotificationConfigs[/{cfgId}]`). The
 //! delivery worker is a separate module that consumes the gateway's
-//! stream broadcast.
+//! stream broadcast as a low-latency wake-up and repairs from state.
 //!
-//! Storage layout (see `KeyKind::A2aTaskPushConfig`):
-//! - one row per config, addressed `{task_id}:{config_id}`;
-//! - `scan_keys` with a `task_id:` prefix lists every config bound to
-//!   the task in one call (and so `delete_task` can sweep all of them
-//!   without a separate index row).
+//! Pre-envelope releases stored one `A2aTaskPushConfig` row per config.
+//! Upgrade code imports those rows into the Task envelope; the old key kind
+//! remains readable only for migration compatibility.
 //!
 //! Validation is conservative: HTTPS-only by default (an opt-in flag
 //! is reserved for local-loop testing in the delivery worker, not on
@@ -64,7 +62,7 @@ pub enum DlqFailureKind {
 /// The `Debug` impl redacts both `event_json` and `last_error`
 /// because each can carry tenant payload bytes a log consumer wasn't
 /// authorized to see.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PushDeliveryDlqEntry {

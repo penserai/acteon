@@ -161,14 +161,18 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 
 ### Phase 5: migration and release gate
 
-- Drain existing standalone configuration and DLQ rows into envelopes.
-- Require a coordinated binary cutover (or add a dual-write compatibility
+- [x] Drain append-only standalone DLQ rows into Task envelopes idempotently on
+  operator access. Conflicting duplicate evidence fails closed, and standalone
+  rows are deleted only after the Task CAS succeeds.
+- [ ] Drain existing standalone configuration rows into envelopes under an
+  explicit cutover.
+- [ ] Require a coordinated binary cutover (or add a dual-write compatibility
   bridge) because pre-envelope writers can create standalone callback rows
   after a new binary seals the one-time migration marker.
-- Add conformance tests for Memory, Redis, PostgreSQL, and DynamoDB.
-- Run the official A2A callback suite against restart, lost acknowledgement,
+- [ ] Add conformance tests for Memory, Redis, PostgreSQL, and DynamoDB.
+- [ ] Run the official A2A callback suite against restart, lost acknowledgement,
   lag, deletion, inline replay, and credential-rotation scenarios.
-- Advertise ordered at-least-once push only after these gates pass.
+- [ ] Advertise ordered at-least-once push only after these gates pass.
 
 ## Rejected alternatives
 
