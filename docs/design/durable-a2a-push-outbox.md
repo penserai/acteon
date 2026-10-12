@@ -136,11 +136,13 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 
 ### Phase 4: leased ordered dispatcher
 
-- Replace broadcast fan-out with bounded Task-page recovery plus a repairable
+- [x] Persist CAS-fenced claims, retry deadlines, acknowledgements, blocked
+  failures, and bounded dead letters in the Task envelope.
+- [x] Add backend-neutral cross-scope Task-page recovery pagination.
+- [ ] Replace broadcast fan-out with bounded Task-page recovery plus a repairable
   ready index.
-- Persist claims, retries, acknowledgements, and dead letters in the envelope.
-- Keep the broadcast only as a low-latency wake-up signal.
-- Prove two replicas cannot concurrently deliver different sequences for one
+- [ ] Keep the broadcast only as a low-latency wake-up signal.
+- [x] Prove two replicas cannot concurrently deliver different sequences for one
   callback.
 
 ### Phase 5: migration and release gate

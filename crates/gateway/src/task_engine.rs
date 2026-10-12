@@ -73,10 +73,10 @@ use tracing::{debug, warn};
 use acteon_audit::{AuditError, store::AuditStore};
 use acteon_core::{
     Artifact, BusApproval, BusApprovalStatus, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
-    MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
-    TaskAuthorizationRequirement, TaskAuthorizationResolution, TaskMessage, TaskPauseResolution,
-    TaskPushConfigValidationError, TaskPushNotificationConfig, TaskRole, TaskState,
-    TaskValidationError,
+    DlqFailureKind, MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, PushDeliveryDlqEntry,
+    Task, TaskArtifactUpdateEvent, TaskAuthorizationRequirement, TaskAuthorizationResolution,
+    TaskMessage, TaskPauseResolution, TaskPushConfigValidationError, TaskPushNotificationConfig,
+    TaskRole, TaskState, TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
@@ -141,6 +141,13 @@ pub const MAX_DURABLE_TASK_EVENTS: usize = 256;
 /// keeps one CAS value bounded across every state backend.
 pub const MAX_DURABLE_TASK_CALLBACKS: usize = 64;
 
+/// Maximum dead-lettered callback events retained inside one Task envelope.
+pub const MAX_DURABLE_TASK_DEAD_LETTERS: usize = 64;
+
+/// Upper bound for one callback delivery lease. Workers renew by claiming
+/// again only after expiry; keeping leases short bounds takeover latency.
+pub const MAX_TASK_PUSH_LEASE: Duration = Duration::from_secs(5 * 60);
+
 /// Backend-neutral task envelope. The public A2A [`Task`] remains the wire
 /// projection; this record is private storage state that can grow delivery
 /// cursors, leases, and an ordered mutation log without changing that API.
@@ -170,6 +177,8 @@ struct DurableTaskDelivery {
     /// cursors. Configuration identity and delivery progress share the Task CAS.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     callbacks: BTreeMap<String, DurableTaskCallback>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dead_letters: Vec<PushDeliveryDlqEntry>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -177,6 +186,54 @@ struct DurableTaskDelivery {
 struct DurableTaskCallback {
     config: TaskPushNotificationConfig,
     acknowledged_sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lease: Option<DurableTaskDeliveryLease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    attempts: u32,
+    #[serde(default)]
+    blocked: bool,
+}
+
+impl DurableTaskCallback {
+    fn new(config: TaskPushNotificationConfig, acknowledged_sequence: u64) -> Self {
+        Self {
+            config,
+            acknowledged_sequence,
+            lease: None,
+            next_attempt_at: None,
+            attempts: 0,
+            blocked: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskDeliveryLease {
+    lease_id: String,
+    worker_id: String,
+    sequence: u64,
+    event_id: String,
+    attempt: u32,
+    claimed_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+}
+
+/// Fenced ownership of one callback's next ordered event. The lease ID must be
+/// presented to acknowledge or fail the delivery.
+#[derive(Clone)]
+pub struct TaskPushDeliveryClaim {
+    pub task_id: String,
+    pub config: TaskPushNotificationConfig,
+    pub sequence: u64,
+    pub event_id: String,
+    pub occurred_at: DateTime<Utc>,
+    pub payload: serde_json::Value,
+    pub attempt: u32,
+    pub lease_id: String,
+    pub lease_expires_at: DateTime<Utc>,
 }
 
 impl std::fmt::Debug for DurableTaskCallback {
@@ -184,6 +241,10 @@ impl std::fmt::Debug for DurableTaskCallback {
         f.debug_struct("DurableTaskCallback")
             .field("config", &self.config)
             .field("acknowledged_sequence", &self.acknowledged_sequence)
+            .field("lease", &self.lease)
+            .field("next_attempt_at", &self.next_attempt_at)
+            .field("attempts", &self.attempts)
+            .field("blocked", &self.blocked)
             .finish()
     }
 }
@@ -202,6 +263,11 @@ impl DurableTaskDelivery {
         if self.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
             return Err(TaskEngineError::InvalidDurableRecord(
                 "callback configuration capacity exceeded".into(),
+            ));
+        }
+        if self.dead_letters.len() > MAX_DURABLE_TASK_DEAD_LETTERS {
+            return Err(TaskEngineError::InvalidDurableRecord(
+                "callback dead-letter capacity exceeded".into(),
             ));
         }
         if self.events.len() > MAX_DURABLE_TASK_EVENTS {
@@ -236,6 +302,33 @@ impl DurableTaskDelivery {
             {
                 return Err(TaskEngineError::InvalidDurableRecord(
                     "invalid callback configuration or cursor".into(),
+                ));
+            }
+            if callback.blocked && (callback.lease.is_some() || callback.next_attempt_at.is_some())
+                || callback.lease.as_ref().is_some_and(|lease| {
+                    lease.sequence != callback.acknowledged_sequence.saturating_add(1)
+                        || lease.attempt != callback.attempts
+                        || lease.claimed_at >= lease.expires_at
+                        || uuid::Uuid::parse_str(&lease.lease_id).is_err()
+                        || lease.worker_id.is_empty()
+                        || !self.events.iter().any(|event| {
+                            event.sequence == lease.sequence && event.event_id == lease.event_id
+                        })
+                })
+                || callback.lease.is_some() && callback.next_attempt_at.is_some()
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback lease or retry state".into(),
+                ));
+            }
+        }
+        for entry in &self.dead_letters {
+            if entry.task_id != task.id
+                || entry.namespace != task.namespace
+                || entry.tenant != task.tenant
+            {
+                return Err(TaskEngineError::InvalidDurableRecord(
+                    "invalid callback dead letter".into(),
                 ));
             }
         }
@@ -866,13 +959,10 @@ impl TaskEngine {
                 return Err(TaskEngineError::PushConfigAlreadyExists(config.id));
             }
             config_ids.push(config.id.clone());
-            record.delivery.callbacks.insert(
-                config.id.clone(),
-                DurableTaskCallback {
-                    config,
-                    acknowledged_sequence: 0,
-                },
-            );
+            record
+                .delivery
+                .callbacks
+                .insert(config.id.clone(), DurableTaskCallback::new(config, 0));
             if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
                 return Err(TaskEngineError::PushConfigCapacityExceeded);
             }
@@ -976,10 +1066,7 @@ impl TaskEngine {
             }
             record.delivery.callbacks.insert(
                 config.id.clone(),
-                DurableTaskCallback {
-                    config: config.clone(),
-                    acknowledged_sequence,
-                },
+                DurableTaskCallback::new(config.clone(), acknowledged_sequence),
             );
             record.delivery.validate(&record.task)?;
             let payload = record.encode()?;
@@ -1045,6 +1132,286 @@ impl TaskEngine {
             .collect())
     }
 
+    /// Claim one callback's next unacknowledged event under a fenced lease.
+    /// Concurrent replicas race through the Task CAS; at most one receives a
+    /// claim for a given callback and sequence.
+    pub async fn claim_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        worker_id: &str,
+        lease_for: Duration,
+    ) -> Result<Option<TaskPushDeliveryClaim>, TaskEngineError> {
+        if worker_id.is_empty() || worker_id.len() > 256 {
+            return Err(TaskEngineError::InvalidPushWorkerId);
+        }
+        if lease_for.is_zero() || lease_for > MAX_TASK_PUSH_LEASE {
+            return Err(TaskEngineError::InvalidPushLeaseDuration);
+        }
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
+        let lease_delta = chrono::Duration::from_std(lease_for)
+            .map_err(|_| TaskEngineError::InvalidPushLeaseDuration)?;
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let now = self.clock.now();
+            let callback = record
+                .delivery
+                .callbacks
+                .get(config_id)
+                .ok_or_else(|| TaskEngineError::PushConfigNotFound(config_id.into()))?;
+            if callback.blocked
+                || callback.next_attempt_at.is_some_and(|ready| ready > now)
+                || callback
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires_at > now)
+            {
+                return Ok(None);
+            }
+            let sequence = callback
+                .acknowledged_sequence
+                .checked_add(1)
+                .ok_or(TaskEngineError::PushDeliverySequenceExhausted)?;
+            let Some(event) = record
+                .delivery
+                .events
+                .iter()
+                .find(|event| event.sequence == sequence)
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            let attempt = callback
+                .attempts
+                .checked_add(1)
+                .ok_or(TaskEngineError::PushDeliveryAttemptExhausted)?;
+            let lease = DurableTaskDeliveryLease {
+                lease_id: uuid::Uuid::now_v7().to_string(),
+                worker_id: worker_id.into(),
+                sequence,
+                event_id: event.event_id.clone(),
+                attempt,
+                claimed_at: now,
+                expires_at: now + lease_delta,
+            };
+            let config = {
+                let callback = record
+                    .delivery
+                    .callbacks
+                    .get_mut(config_id)
+                    .expect("callback remained present inside one record");
+                callback.attempts = attempt;
+                callback.next_attempt_at = None;
+                callback.lease = Some(lease.clone());
+                callback.config.clone()
+            };
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    return Ok(Some(TaskPushDeliveryClaim {
+                        task_id: task_id.into(),
+                        config,
+                        sequence,
+                        event_id: event.event_id,
+                        occurred_at: event.occurred_at,
+                        payload: event.payload,
+                        attempt,
+                        lease_id: lease.lease_id,
+                        lease_expires_at: lease.expires_at,
+                    }));
+                }
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Acknowledge a successful leased delivery and advance exactly one
+    /// sequence. A stale or replaced owner cannot advance the cursor.
+    pub async fn acknowledge_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+    ) -> Result<(), TaskEngineError> {
+        self.finish_push_delivery(scope, task_id, config_id, lease_id, None)
+            .await
+    }
+
+    /// Release a failed claim and durably schedule its same sequence for a
+    /// later attempt.
+    pub async fn retry_push_delivery_at(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+        retry_at: DateTime<Utc>,
+    ) -> Result<(), TaskEngineError> {
+        self.finish_push_delivery(scope, task_id, config_id, lease_id, Some(retry_at))
+            .await
+    }
+
+    async fn finish_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+        retry_at: Option<DateTime<Utc>>,
+    ) -> Result<(), TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            let callback = record
+                .delivery
+                .callbacks
+                .get_mut(config_id)
+                .ok_or_else(|| TaskEngineError::PushConfigNotFound(config_id.into()))?;
+            let lease = callback
+                .lease
+                .as_ref()
+                .filter(|lease| lease.lease_id == lease_id)
+                .cloned()
+                .ok_or(TaskEngineError::PushDeliveryLeaseLost)?;
+            if lease.expires_at <= self.clock.now() {
+                return Err(TaskEngineError::PushDeliveryLeaseLost);
+            }
+            callback.lease = None;
+            if let Some(retry_at) = retry_at {
+                if retry_at < self.clock.now() {
+                    return Err(TaskEngineError::InvalidPushRetryTime);
+                }
+                callback.next_attempt_at = Some(retry_at);
+            } else {
+                callback.acknowledged_sequence = lease.sequence;
+                callback.next_attempt_at = None;
+                callback.attempts = 0;
+                record.delivery.prune_acknowledged();
+            }
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => return Ok(()),
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Move a terminally failed leased event into the Task envelope's bounded
+    /// dead-letter state. The callback remains blocked at this sequence until
+    /// an operator policy resolves it.
+    pub async fn dead_letter_push_delivery(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        config_id: &str,
+        lease_id: &str,
+        failure_kind: DlqFailureKind,
+        last_error: &str,
+    ) -> Result<PushDeliveryDlqEntry, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            };
+            let mut record = DurableTaskRecord::decode(&raw)?;
+            if record.delivery.dead_letters.len() >= MAX_DURABLE_TASK_DEAD_LETTERS {
+                return Err(TaskEngineError::PushDeadLetterCapacityExceeded);
+            }
+            let callback = record
+                .delivery
+                .callbacks
+                .get(config_id)
+                .ok_or_else(|| TaskEngineError::PushConfigNotFound(config_id.into()))?;
+            let lease = callback
+                .lease
+                .as_ref()
+                .filter(|lease| lease.lease_id == lease_id)
+                .cloned()
+                .ok_or(TaskEngineError::PushDeliveryLeaseLost)?;
+            let now = self.clock.now();
+            if lease.expires_at <= now {
+                return Err(TaskEngineError::PushDeliveryLeaseLost);
+            }
+            let event = record
+                .delivery
+                .events
+                .iter()
+                .find(|event| event.sequence == lease.sequence)
+                .ok_or_else(|| {
+                    TaskEngineError::InvalidDurableRecord("leased event is absent".into())
+                })?;
+            let entry = PushDeliveryDlqEntry::new_at(
+                uuid::Uuid::now_v7().to_string(),
+                config_id,
+                task_id,
+                &scope.namespace,
+                &scope.tenant,
+                &callback.config.url,
+                failure_kind,
+                last_error,
+                callback.attempts,
+                serde_json::to_string(&event.payload)?,
+                now,
+            );
+            let callback = record
+                .delivery
+                .callbacks
+                .get_mut(config_id)
+                .expect("callback remained present inside one record");
+            callback.lease = None;
+            callback.next_attempt_at = None;
+            callback.blocked = true;
+            record.delivery.dead_letters.push(entry.clone());
+            record.delivery.validate(&record.task)?;
+            let payload = record.encode()?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => return Ok(entry),
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.into()))
+    }
+
+    /// Project Task-embedded dead letters without exposing callback lease state.
+    pub async fn list_push_dead_letters(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Vec<PushDeliveryDlqEntry>, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        };
+        Ok(DurableTaskRecord::decode(&raw)?.delivery.dead_letters)
+    }
+
     /// Whether the one-time standalone push-config scan has been committed for
     /// this Task. Callers use this before scanning the legacy key kind.
     pub async fn push_config_migration_complete(
@@ -1093,10 +1460,7 @@ impl TaskEngine {
                         record.delivery.callbacks.entry(config.id.clone())
                     {
                         imported_ids.push(config.id.clone());
-                        entry.insert(DurableTaskCallback {
-                            config: config.clone(),
-                            acknowledged_sequence: tail,
-                        });
+                        entry.insert(DurableTaskCallback::new(config.clone(), tail));
                     }
                 }
                 if record.delivery.callbacks.len() > MAX_DURABLE_TASK_CALLBACKS {
@@ -3331,6 +3695,22 @@ pub enum TaskEngineError {
     PushConfigAlreadyExists(String),
     #[error("task callback configuration capacity is limited to {MAX_DURABLE_TASK_CALLBACKS}")]
     PushConfigCapacityExceeded,
+    #[error("push configuration '{0}' was not found")]
+    PushConfigNotFound(String),
+    #[error("push delivery worker id is invalid")]
+    InvalidPushWorkerId,
+    #[error("push delivery lease duration must be between 1ns and 5 minutes")]
+    InvalidPushLeaseDuration,
+    #[error("push delivery retry time must not be in the past")]
+    InvalidPushRetryTime,
+    #[error("push delivery lease was lost or replaced")]
+    PushDeliveryLeaseLost,
+    #[error("push delivery sequence is exhausted")]
+    PushDeliverySequenceExhausted,
+    #[error("push delivery attempt counter is exhausted")]
+    PushDeliveryAttemptExhausted,
+    #[error("task callback dead-letter capacity is exhausted")]
+    PushDeadLetterCapacityExceeded,
     #[error("push configuration validation failed: {0}")]
     PushConfigValidation(#[from] TaskPushConfigValidationError),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
@@ -3584,10 +3964,7 @@ mod tests {
     }
 
     fn test_callback(task: &Task, acknowledged_sequence: u64) -> DurableTaskCallback {
-        DurableTaskCallback {
-            config: test_push_config(task, "callback"),
-            acknowledged_sequence,
-        }
+        DurableTaskCallback::new(test_push_config(task, "callback"), acknowledged_sequence)
     }
 
     #[tokio::test]
@@ -3728,6 +4105,195 @@ mod tests {
         assert_eq!(
             e.list_push_configs(&scope(), "t1").await.unwrap().len(),
             MAX_DURABLE_TASK_CALLBACKS
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_lease_fences_replicas_and_expired_acknowledgements() {
+        let epoch = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = Arc::new(acteon_time::ManualClock::new(epoch));
+        let state = Arc::new(MemoryStateStore::new());
+        let first = Arc::new(TaskEngine::new(state.clone()).with_clock(clock.clone()));
+        let second = Arc::new(TaskEngine::new(state.clone()).with_clock(clock.clone()));
+        let task = Task::new_at("t1", "agents", "demo", epoch);
+        first
+            .create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        first
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        let a = first.clone();
+        let b = second.clone();
+        let (left, right) = tokio::join!(
+            async move {
+                a.claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-a",
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+            },
+            async move {
+                b.claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-b",
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+            }
+        );
+        assert!(left.is_some() ^ right.is_some());
+        let original = left.or(right).unwrap();
+        assert_eq!(original.sequence, 1);
+        assert_eq!(original.attempt, 1);
+
+        clock.advance_to(Duration::from_secs(5)).unwrap();
+        let takeover = second
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-c",
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(takeover.sequence, original.sequence);
+        assert_eq!(takeover.event_id, original.event_id);
+        assert_eq!(takeover.attempt, 2);
+        assert!(matches!(
+            first
+                .acknowledge_push_delivery(&scope(), "t1", "callback", &original.lease_id,)
+                .await,
+            Err(TaskEngineError::PushDeliveryLeaseLost)
+        ));
+        second
+            .acknowledge_push_delivery(&scope(), "t1", "callback", &takeover.lease_id)
+            .await
+            .unwrap();
+        assert!(
+            first
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-a",
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_retry_and_dead_letter_survive_engine_replacement() {
+        let epoch = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let clock = Arc::new(acteon_time::ManualClock::new(epoch));
+        let state = Arc::new(MemoryStateStore::new());
+        let engine = TaskEngine::new(state.clone()).with_clock(clock.clone());
+        let task = Task::new_at("t1", "agents", "demo", epoch);
+        engine
+            .create_task_with_push_configs(task.clone(), vec![test_push_config(&task, "callback")])
+            .await
+            .unwrap();
+        engine
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let claim = engine
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-a",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        engine
+            .retry_push_delivery_at(
+                &scope(),
+                "t1",
+                "callback",
+                &claim.lease_id,
+                epoch + chrono::Duration::seconds(10),
+            )
+            .await
+            .unwrap();
+
+        let replacement = TaskEngine::new(state).with_clock(clock.clone());
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-b",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        clock.advance_to(Duration::from_secs(10)).unwrap();
+        let retry = replacement
+            .claim_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                "worker-b",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.sequence, claim.sequence);
+        assert_eq!(retry.attempt, 2);
+        let entry = replacement
+            .dead_letter_push_delivery(
+                &scope(),
+                "t1",
+                "callback",
+                &retry.lease_id,
+                DlqFailureKind::Exhausted,
+                "HTTP 503",
+            )
+            .await
+            .unwrap();
+        assert_eq!(entry.attempts, 2);
+        assert_eq!(entry.failure_kind, DlqFailureKind::Exhausted);
+        assert_eq!(
+            replacement
+                .list_push_dead_letters(&scope(), "t1")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            replacement
+                .claim_push_delivery(
+                    &scope(),
+                    "t1",
+                    "callback",
+                    "worker-c",
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 

@@ -145,7 +145,37 @@ impl PushDeliveryDlqEntry {
         attempts: u32,
         event_json: String,
     ) -> Self {
-        let now = Utc::now();
+        Self::new_at(
+            id,
+            config_id,
+            task_id,
+            namespace,
+            tenant,
+            url,
+            failure_kind,
+            last_error,
+            attempts,
+            event_json,
+            Utc::now(),
+        )
+    }
+
+    /// Build a bounded DLQ entry using the caller's authoritative clock.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)] // 1:1 with the persisted row
+    pub fn new_at(
+        id: impl Into<String>,
+        config_id: impl Into<String>,
+        task_id: impl Into<String>,
+        namespace: impl Into<String>,
+        tenant: impl Into<String>,
+        url: impl Into<String>,
+        failure_kind: DlqFailureKind,
+        last_error: impl Into<String>,
+        attempts: u32,
+        event_json: String,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             id: id.into(),
             config_id: config_id.into(),

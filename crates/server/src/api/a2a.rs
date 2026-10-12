@@ -239,6 +239,10 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::PushConfigIdentityMismatch
             | TaskEngineError::PushConfigAlreadyExists(_)
             | TaskEngineError::PushConfigCapacityExceeded
+            | TaskEngineError::PushConfigNotFound(_)
+            | TaskEngineError::InvalidPushWorkerId
+            | TaskEngineError::InvalidPushLeaseDuration
+            | TaskEngineError::InvalidPushRetryTime
             | TaskEngineError::AuthorizationVerifierMismatch { .. }
             | TaskEngineError::AuthorizationEvidenceExpired
             | TaskEngineError::AuthorizationDecisionConflict(_)
@@ -260,6 +264,10 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::UnsupportedRecordVersion(_)
             | TaskEngineError::InvalidDurableRecord(_)
             | TaskEngineError::DeliveryLogFull
+            | TaskEngineError::PushDeliveryLeaseLost
+            | TaskEngineError::PushDeliverySequenceExhausted
+            | TaskEngineError::PushDeliveryAttemptExhausted
+            | TaskEngineError::PushDeadLetterCapacityExceeded
             | TaskEngineError::ApprovalConflict(_)
             | TaskEngineError::AuthorizationVerification(
                 acteon_gateway::TaskAuthorizationVerificationError::Unavailable

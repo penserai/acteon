@@ -157,6 +157,39 @@ pub trait StateStore: Send + Sync {
         kind: crate::key::KeyKind,
     ) -> Result<Vec<(String, String)>, StateError>;
 
+    /// Read one stable, bounded page for a key kind across all namespaces and
+    /// tenants. The default preserves correctness by sorting the existing
+    /// cross-scope scan; large backends should override it with native keyset
+    /// pagination so work is proportional to `limit`.
+    async fn scan_keys_by_kind_page(
+        &self,
+        kind: crate::key::KeyKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let marker = format!(":{kind}:");
+        if after.is_some_and(|cursor| !cursor.contains(&marker)) {
+            return Err(StateError::Backend("invalid state scan page cursor".into()));
+        }
+        let mut entries = self.scan_keys_by_kind(kind).await?;
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        if let Some(after) = after {
+            entries.retain(|(key, _)| key.as_str() > after);
+        }
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        let next_cursor = has_more
+            .then(|| entries.last().map(|(key, _)| key.clone()))
+            .flatten();
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
+    }
+
     /// Add a key to the timeout index with its expiration timestamp.
     ///
     /// This enables efficient O(log N) queries for expired timeouts instead of
