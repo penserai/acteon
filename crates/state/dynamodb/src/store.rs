@@ -785,9 +785,17 @@ impl StateStore for DynamoStateStore {
         }
         let exclusive_start_key = after
             .map(|cursor| {
-                let [pk, sk]: [String; 2] = serde_json::from_str(cursor)
-                    .map_err(|_| StateError::Backend("invalid state scan page cursor".into()))?;
-                if !pk.starts_with(&format!("{}:", self.prefix)) {
+                let [cursor_prefix, cursor_kind, pk, sk]: [String; 4] =
+                    serde_json::from_str(cursor).map_err(|_| {
+                        StateError::Backend("invalid state scan page cursor".into())
+                    })?;
+                if cursor_prefix != self.prefix
+                    || cursor_kind != kind.to_string()
+                    || pk.is_empty()
+                    || sk.is_empty()
+                    || pk.len() > 2_048
+                    || sk.len() > 1_024
+                {
                     return Err(StateError::Backend("invalid state scan page cursor".into()));
                 }
                 Ok(std::collections::HashMap::from([
@@ -797,6 +805,7 @@ impl StateStore for DynamoStateStore {
             })
             .transpose()?;
         let sk_prefix = format!("{kind}:");
+        let pk_prefix = format!("{}:", self.prefix);
         let now_epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
@@ -805,9 +814,10 @@ impl StateStore for DynamoStateStore {
             .scan()
             .table_name(&self.table_name)
             .filter_expression(
-                "begins_with(sk, :sk_prefix) AND \
+                "begins_with(pk, :pk_prefix) AND begins_with(sk, :sk_prefix) AND \
                  (attribute_not_exists(expires_at) OR expires_at > :now)",
             )
+            .expression_attribute_values(":pk_prefix", AttributeValue::S(pk_prefix))
             .expression_attribute_values(":sk_prefix", AttributeValue::S(sk_prefix))
             .expression_attribute_values(":now", AttributeValue::N(now_epoch.to_string()))
             .limit(
@@ -850,7 +860,7 @@ impl StateStore for DynamoStateStore {
                     Some(AttributeValue::S(value)) => value.clone(),
                     _ => return Err(StateError::Backend("invalid DynamoDB page cursor".into())),
                 };
-                serde_json::to_string(&[pk, sk])
+                serde_json::to_string(&[self.prefix.clone(), kind.to_string(), pk, sk])
                     .map_err(|error| StateError::Serialization(error.to_string()))
             })
             .transpose()?;
