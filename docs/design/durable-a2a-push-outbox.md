@@ -1,8 +1,8 @@
 # Durable A2A push outbox
 
-Status: implementation in progress, October 11, 2026. Phases 1–4 and the
-reviewed migration mechanism are complete on the feature branch. Backend and
-protocol conformance release gates remain.
+Status: release candidate, October 11, 2026. Phases 1–5, reviewed migration,
+portable backend conformance, and the callback failure matrix are implemented.
+The release gate is the required CI run over those contracts.
 
 ## Problem
 
@@ -192,10 +192,26 @@ metrics, DLQ entries, and ordinary Task projections stay redacted.
 - [x] Require a coordinated binary cutover: stop pre-envelope writers before
   apply. New binaries enforce the durable marker at startup and at compatibility
   reads, so a legacy writer that returns after cutover fails visibly.
-- [ ] Add conformance tests for Memory, Redis, PostgreSQL, and DynamoDB.
-- [ ] Run the official A2A callback suite against restart, lost acknowledgement,
-  lag, deletion, inline replay, and credential-rotation scenarios.
-- [ ] Advertise ordered at-least-once push only after these gates pass.
+- [x] Run one cutover contract against Memory, Redis, PostgreSQL, and DynamoDB.
+  CI provisions the three external stores; the same contract verifies native
+  edits and deletes, legacy updates, DLQ import, redacted review, cleanup, the
+  completion marker, and the post-marker fence.
+- [x] Cover the official A2A callback failure matrix. The official SDK exercises
+  push configuration and inline replay over the public protocol, while focused
+  durability tests exercise the persistence boundaries that an HTTP client
+  cannot deterministically interrupt.
+
+| Scenario | Release evidence |
+| --- | --- |
+| Restart | `callback_retry_and_dead_letter_survive_engine_replacement` and bounded Task/ready-index recovery |
+| Lost acknowledgement | `committed_acknowledgement_survives_lost_response_and_worker_replacement` injects loss after the ACK CAS commits and proves the replacement does not redeliver |
+| Broadcast lag | `recovery_page_repairs_a_missed_broadcast` and `ready_index_recovers_work_without_a_broadcast` |
+| Callback deletion | `callback_delete_releases_its_delivery_retention_floor` |
+| Inline replay | official SDK conformance plus `official_governed_inline_push_is_deterministic_on_exact_send_replay` |
+| Credential rotation | `credential_rotation_applies_only_to_subsequent_callback_events` captures real HTTP token, authorization, delivery ID, and sequence headers |
+
+- [x] Advertise ordered at-least-once push with stable delivery identity after
+  the portable contracts and failure matrix became required CI evidence.
 
 ## Rejected alternatives
 

@@ -695,6 +695,11 @@ worker crash can be repeated after the lease expires; each retry keeps the same
 deduplicate it. Later sequences remain blocked until the earlier sequence is
 acknowledged or explicitly resolved by an operator.
 
+Credential updates are fenced against an active delivery. After the current
+sequence is acknowledged, an updated token or authentication credential applies
+to the next claimed sequence. A restart reloads that configuration and the
+acknowledged cursor from the configured state backend.
+
 **Persistent DLQ.** Terminal failures (`4xx` other than `408/425/429`)
 and exhausted-retry failures enter bounded dead-letter state inside the Task
 envelope. List and inspect entries through the tenant operator view. Deleting

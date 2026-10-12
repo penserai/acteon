@@ -834,8 +834,11 @@ fn backoff(attempt: usize) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acteon_core::{StreamEventType, Task, TaskState};
-    use acteon_state::{StateKey, StateStore};
+    use acteon_core::{PushAuthentication, StreamEventType, Task, TaskState};
+    use acteon_state::{
+        StateKey, StateStore,
+        testing::faults::{FaultStore, FaultTiming, WriteOperation},
+    };
     use acteon_state_memory::MemoryStateStore;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -924,6 +927,60 @@ mod tests {
 
     async fn start_mock(status: u16, hits: Arc<AtomicUsize>) -> String {
         start_mock_with_delay(status, Duration::ZERO, hits).await
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CapturedDeliveryHeaders {
+        token: Option<String>,
+        authorization: Option<String>,
+        delivery_id: String,
+        sequence: String,
+    }
+
+    async fn start_header_capture_mock(
+        captures: Arc<Mutex<Vec<CapturedDeliveryHeaders>>>,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let captures = Arc::clone(&captures);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let read = stream.read(&mut buf).await.unwrap();
+                    let request = String::from_utf8_lossy(&buf[..read]);
+                    let header = |name: &str| {
+                        request.lines().find_map(|line| {
+                            let (candidate, value) = line.split_once(':')?;
+                            candidate
+                                .eq_ignore_ascii_case(name)
+                                .then(|| value.trim().to_owned())
+                        })
+                    };
+                    captures.lock().await.push(CapturedDeliveryHeaders {
+                        token: header("x-a2a-notification-token"),
+                        authorization: header("authorization"),
+                        delivery_id: header("x-acteon-delivery-id").unwrap(),
+                        sequence: header("x-acteon-delivery-sequence").unwrap(),
+                    });
+                    let body = "{}";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: application/json\r\n\
+                         Content-Length: {len}\r\n\
+                         Connection: close\r\n\
+                         \r\n{body}",
+                        len = body.len(),
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
+                });
+            }
+        });
+        format!("http://{addr}")
     }
 
     /// Mock that returns `first_status` once, then `200` afterward.
@@ -1093,6 +1150,155 @@ mod tests {
         drop(tx);
         let _ = handle.await;
         assert_eq!(hits.load(Ordering::Relaxed), 1, "expected one POST");
+    }
+
+    #[tokio::test]
+    async fn committed_acknowledgement_survives_lost_response_and_worker_replacement() {
+        let memory: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let faults = Arc::new(FaultStore::new(memory));
+        let store: Arc<dyn StateStore> = faults.clone();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = start_mock(200, Arc::clone(&hits)).await;
+        let cfg = TaskPushNotificationConfig::new(
+            "cfg-lost-ack",
+            "task-lost-ack",
+            "agents",
+            "demo",
+            &url,
+        );
+        save_config(&store, &cfg).await;
+        persist_transition(&store, "task-lost-ack").await;
+        faults
+            .fail_after_matches(
+                KeyKind::A2aTask,
+                WriteOperation::CompareAndSwap,
+                FaultTiming::After,
+                1,
+            )
+            .unwrap();
+
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let first = PushDeliveryWorker::new(Arc::clone(&store), http.clone(), rx)
+            .with_ssrf_enforcement(false);
+        first
+            .shared
+            .drain_callback(
+                "agents".into(),
+                "demo".into(),
+                "task-lost-ack".into(),
+                "cfg-lost-ack".into(),
+            )
+            .await;
+        assert_eq!(faults.consumed(), 1, "the committed ACK response was lost");
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
+
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let replacement =
+            PushDeliveryWorker::new(Arc::clone(&store), http, rx).with_ssrf_enforcement(false);
+        replacement
+            .shared
+            .drain_callback(
+                "agents".into(),
+                "demo".into(),
+                "task-lost-ack".into(),
+                "cfg-lost-ack".into(),
+            )
+            .await;
+        assert_eq!(
+            hits.load(Ordering::Relaxed),
+            1,
+            "replacement must observe the committed cursor and avoid redelivery"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_rotation_applies_only_to_subsequent_callback_events() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let captures = Arc::new(Mutex::new(Vec::new()));
+        let url = start_header_capture_mock(Arc::clone(&captures)).await;
+        let mut cfg = TaskPushNotificationConfig::new(
+            "cfg-rotation",
+            "task-rotation",
+            "agents",
+            "demo",
+            &url,
+        );
+        cfg.token = Some("notification-token-v1".into());
+        cfg.authentication = Some(PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("callback-credential-v1".into()),
+        });
+        save_config(&store, &cfg).await;
+        persist_transition(&store, "task-rotation").await;
+
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker =
+            PushDeliveryWorker::new(Arc::clone(&store), http, rx).with_ssrf_enforcement(false);
+        worker
+            .shared
+            .drain_callback(
+                "agents".into(),
+                "demo".into(),
+                "task-rotation".into(),
+                "cfg-rotation".into(),
+            )
+            .await;
+
+        cfg.token = Some("notification-token-v2".into());
+        cfg.authentication = Some(PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("callback-credential-v2".into()),
+        });
+        cfg.updated_at += chrono::Duration::seconds(1);
+        let scope = TaskScope::new("agents", "demo");
+        let engine = TaskEngine::new(Arc::clone(&store));
+        engine
+            .upsert_push_config(&scope, "task-rotation", cfg)
+            .await
+            .unwrap();
+        engine
+            .transition_task(&scope, "task-rotation", TaskState::Completed, None)
+            .await
+            .unwrap();
+        worker
+            .shared
+            .drain_callback(
+                "agents".into(),
+                "demo".into(),
+                "task-rotation".into(),
+                "cfg-rotation".into(),
+            )
+            .await;
+
+        let captures = captures.lock().await;
+        assert_eq!(captures.len(), 2);
+        assert_eq!(captures[0].token.as_deref(), Some("notification-token-v1"));
+        assert_eq!(
+            captures[0].authorization.as_deref(),
+            Some("Bearer callback-credential-v1")
+        );
+        assert_eq!(captures[0].sequence, "1");
+        assert_eq!(captures[1].token.as_deref(), Some("notification-token-v2"));
+        assert_eq!(
+            captures[1].authorization.as_deref(),
+            Some("Bearer callback-credential-v2")
+        );
+        assert_eq!(captures[1].sequence, "2");
+        assert_ne!(captures[0].delivery_id, captures[1].delivery_id);
     }
 
     #[test]
