@@ -48,6 +48,7 @@ const NAMESPACE: &str = "prod";
 const TENANT: &str = "acme";
 const SOURCE_DOMAIN: &str = "acteon://source/prod";
 const DESTINATION_DOMAIN: &str = "acteon://destination/prod";
+const EXECUTION_AUTHORITY_KEY: &str = "federation-test-execution-authority-key";
 
 struct BinaryServer {
     process: Child,
@@ -94,10 +95,7 @@ impl BinaryServer {
                 "ACTEON_AUTH_AUTHORITY_KEY",
                 "federation-test-auth-authority-key",
             )
-            .env(
-                "ACTEON_EXECUTION_AUTHORITY_KEY",
-                "federation-test-execution-authority-key",
-            )
+            .env("ACTEON_EXECUTION_AUTHORITY_KEY", EXECUTION_AUTHORITY_KEY)
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
         for (name, value) in environment {
@@ -298,7 +296,11 @@ fn destination_execution(
     }))
     .unwrap();
     let prepared = registry
-        .prepare(&execution, ("auth-control", "deployment"), &[8; 32])
+        .prepare(
+            &execution,
+            ("auth-control", "deployment"),
+            EXECUTION_AUTHORITY_KEY.as_bytes(),
+        )
         .unwrap();
     let shape = destination_shape(&prepared[0]);
     let source_principal = PrincipalIdentity::new("agent/source", PrincipalKind::Agent).unwrap();
@@ -365,7 +367,11 @@ fn destination_execution(
         .unwrap(),
     );
     registry
-        .prepare(&execution, ("auth-control", "deployment"), &[8; 32])
+        .prepare(
+            &execution,
+            ("auth-control", "deployment"),
+            EXECUTION_AUTHORITY_KEY.as_bytes(),
+        )
         .unwrap();
     (execution, trust)
 }
@@ -561,7 +567,11 @@ fn source_and_destination_declarations_prepare_as_one_exact_contract() {
     let (destination, trust) = destination_execution(&registry);
     let source = source_execution(&destination, "https://destination.example");
     let prepared_source = registry
-        .prepare(&source, ("auth-control", "deployment"), &[8; 32])
+        .prepare(
+            &source,
+            ("auth-control", "deployment"),
+            EXECUTION_AUTHORITY_KEY.as_bytes(),
+        )
         .unwrap();
     let export = &source.scopes[0].federation.as_ref().unwrap().exports[0];
     let epoch = &export.epochs[0];
@@ -753,7 +763,11 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
     let (proxy_url, proxy_state, proxy_task) = response_loss_proxy(destination.url.clone()).await;
     let source_execution = source_execution(&destination_execution, &proxy_url);
     registry
-        .prepare(&source_execution, ("auth-control", "deployment"), &[8; 32])
+        .prepare(
+            &source_execution,
+            ("auth-control", "deployment"),
+            EXECUTION_AUTHORITY_KEY.as_bytes(),
+        )
         .unwrap();
     let source_prefix = format!("federation-source-{}", uuid::Uuid::new_v4());
     let source_config = server_configuration(
@@ -884,7 +898,10 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         .send()
         .await
         .unwrap();
-    assert_eq!(remote.status(), 200, "{}", remote.text().await.unwrap());
+    let remote_status = remote.status();
+    let remote_body = remote.text().await.unwrap();
+    assert_eq!(remote_status, 404, "{remote_body}");
+    assert_eq!(remote_body, r#"{"error":"service_task_unavailable"}"#);
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
     proxy_task.abort();
     webhook_task.abort();

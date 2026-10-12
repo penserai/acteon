@@ -1530,9 +1530,9 @@ mod tests {
                 .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(persist_transition(&store, "task-1").await).unwrap();
-        // First attempt 429, BASE_BACKOFF=1s, then success. Give it
-        // 1.5s of slack.
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        // First attempt 429, BASE_BACKOFF=1s, then success. Observe the
+        // durable outcome instead of assuming a loaded runner's timing.
+        wait_for_deliveries(&metrics, 1).await;
         drop(tx);
         let _ = handle.await;
         assert_eq!(
