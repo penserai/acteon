@@ -94,7 +94,7 @@ it("lists exact-agent tasks with a typed filter-bound page", async () => {
 
 it("manages exact-agent push configurations with task-bound typed responses", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
-  const stored = { id: "push-1", taskId: "job-1", url: "https://hooks.example/a2a", token: "callback-token", authentication: { scheme: "Bearer", credentials: "secret" } };
+  const stored = { id: "push-1", taskId: "job-1", url: "https://hooks.example/a2a", tokenRef: { provider: "vault", key: "callbacks/token", version: "v2" }, authentication: { scheme: "Bearer", credentialsRef: { provider: "vault", key: "callbacks/auth", version: "v2" } } };
   const methods: string[] = [];
   const fetch = vi.fn(async (input: string, init: RequestInit) => {
     expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
@@ -110,8 +110,9 @@ it("manages exact-agent push configurations with task-bound typed responses", as
   });
   vi.stubGlobal("fetch", fetch);
   const client = new ActeonClient("http://acteon");
-  const created = await client.agentServiceCreatePushConfig("prod", "acme", "notifier", "job-1", { id: "push-1", url: stored.url, token: stored.token, authentication: stored.authentication }, source);
-  expect(created.authentication?.credentials).toBe("secret");
+  const created = await client.agentServiceCreatePushConfig("prod", "acme", "notifier", "job-1", { id: "push-1", url: stored.url, tokenRef: stored.tokenRef, authentication: stored.authentication }, source);
+  expect(created.authentication?.credentialsRef?.key).toBe("callbacks/auth");
+  expect(created.tokenRef?.version).toBe("v2");
   expect((await client.agentServiceGetPushConfig("prod", "acme", "notifier", "job-1", "push-1", source)).id).toBe("push-1");
   expect((await client.agentServiceListPushConfigs("prod", "acme", "notifier", "job-1", { pageSize: 1, source })).nextPageToken).toBe("next");
   await client.agentServiceDeletePushConfig("prod", "acme", "notifier", "job-1", "push-1", source);

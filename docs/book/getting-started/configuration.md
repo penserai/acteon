@@ -630,6 +630,28 @@ scripts/migrate.sh -c examples/postgres.toml
 cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 ```
 
+## Host-owned secret references
+
+Durable callback configuration can retain a logical credential reference while
+the value stays in host custody. Register every allowed environment-backed key:
+
+```toml
+[[secret_custody.environment]]
+key = "callbacks/incident-router"
+env = "ACTEON_INCIDENT_CALLBACK_TOKEN"
+version = "2026-10"
+namespace = "observability"
+tenant = "acme"
+purposes = ["a2a.callback.authorization"]
+audiences = ["https://incident-router.example/a2a"]
+```
+
+Clients use `{ provider = "environment", key =
+"callbacks/incident-router", version = "2026-10" }`. Acteon does not permit a
+client to name arbitrary environment variables. See [secret
+custody](../features/secret-custody.md) for rotation, failure, and callback
+examples.
+
 ## Replicated authentication configuration
 
 Optional `[auth.authority]` uses the configured state backend to coordinate an explicit

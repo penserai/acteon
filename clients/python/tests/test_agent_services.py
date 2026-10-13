@@ -17,6 +17,7 @@ from acteon_client import (
     AgentServiceReceipt,
     AsyncActeonClient,
     PermitReference,
+    SecretRef,
 )
 from acteon_client.agent_services import (
     AGENT_EXECUTION_CONTEXT_HEADER,
@@ -216,8 +217,15 @@ def _push_response(request: httpx.Request) -> httpx.Response:
         "id": "cfg-1",
         "taskId": "job-1",
         "url": "https://hooks.example/a2a",
-        "token": "notification-token",
-        "authentication": {"scheme": "Bearer", "credentials": "webhook-secret"},
+        "tokenRef": {"provider": "vault", "key": "callbacks/token", "version": "v2"},
+        "authentication": {
+            "scheme": "Bearer",
+            "credentialsRef": {
+                "provider": "vault",
+                "key": "callbacks/auth",
+                "version": "v2",
+            },
+        },
     }
     if method == "CreateTaskPushNotificationConfig":
         assert params == config
@@ -248,8 +256,9 @@ async def test_official_push_configs_have_typed_sync_and_async_parity():
     config = AgentServicePushConfigInput(
         "https://hooks.example/a2a",
         "cfg-1",
-        "notification-token",
-        AgentServicePushAuthentication("Bearer", "webhook-secret"),
+        None,
+        AgentServicePushAuthentication("Bearer", None, SecretRef("vault", "callbacks/auth", "v2")),
+        SecretRef("vault", "callbacks/token", "v2"),
     )
     sync = ActeonClient("http://acteon")
     sync._client = httpx.Client(transport=httpx.MockTransport(_push_response))
@@ -259,6 +268,9 @@ async def test_official_push_configs_have_typed_sync_and_async_parity():
         created = sync.agent_service_create_push_config(
             "prod", "acme", "notifier", "job-1", config, source=receipt
         )
+        assert created.token_ref == SecretRef("vault", "callbacks/token", "v2")
+        assert created.authentication is not None
+        assert created.authentication.credentials_ref == SecretRef("vault", "callbacks/auth", "v2")
         fetched = await async_client.agent_service_get_push_config(
             "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
         )

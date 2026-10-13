@@ -13,6 +13,7 @@ members = [
     "crates/executor",
     "crates/provider",
     "crates/crypto",
+    "crates/secrets",
 
     # State backends
     "crates/state/state",
@@ -100,6 +101,7 @@ acteon-executor = { path = "crates/executor" }
 acteon-http = { path = "crates/http" }
 acteon-provider = { path = "crates/provider" }
 acteon-crypto = { path = "crates/crypto" }
+acteon-secrets = { path = "crates/secrets" }
 
 # State backends
 acteon-state = { path = "crates/state/state" }

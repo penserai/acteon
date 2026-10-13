@@ -22,6 +22,7 @@
 
 use std::fmt;
 
+use acteon_secrets::SecretRef;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -284,6 +285,10 @@ pub enum TaskPushConfigValidationError {
     EmptyScheme,
     /// Authentication credentials exceeded [`MAX_PUSH_AUTH_CREDENTIAL_BYTES`].
     CredentialsTooLong(usize),
+    /// Inline and referenced values cannot both be configured.
+    AmbiguousSecret(&'static str),
+    /// A secret reference is structurally invalid.
+    InvalidSecretReference(&'static str),
 }
 
 impl fmt::Display for TaskPushConfigValidationError {
@@ -318,6 +323,13 @@ impl fmt::Display for TaskPushConfigValidationError {
                 f,
                 "authentication credentials must be at most {MAX_PUSH_AUTH_CREDENTIAL_BYTES} bytes (got {n})"
             ),
+            Self::AmbiguousSecret(field) => write!(
+                f,
+                "{field} cannot contain both an inline value and a secret reference"
+            ),
+            Self::InvalidSecretReference(field) => {
+                write!(f, "{field} contains an invalid secret reference")
+            }
         }
     }
 }
@@ -344,6 +356,9 @@ pub struct PushAuthentication {
     /// Opaque credentials blob. Shape is scheme-defined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
+    /// Host-owned credential reference resolved only when a delivery is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_ref: Option<SecretRef>,
 }
 
 impl fmt::Debug for PushAuthentication {
@@ -354,6 +369,7 @@ impl fmt::Debug for PushAuthentication {
                 "credentials",
                 &self.credentials.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("credentials_ref", &self.credentials_ref)
             .finish()
     }
 }
@@ -384,6 +400,9 @@ pub struct TaskPushNotificationConfig {
     /// `X-A2A-Notification-Token` header. Treated as a secret — never logged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Host-owned token reference resolved only when a delivery is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<SecretRef>,
     /// Optional richer authentication metadata pointing at one or
     /// more `securitySchemes` on the `AgentCard`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,6 +423,7 @@ impl fmt::Debug for TaskPushNotificationConfig {
             .field("tenant", &self.tenant)
             .field("url", &self.url)
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("token_ref", &self.token_ref)
             .field("authentication", &self.authentication)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
@@ -429,6 +449,7 @@ impl TaskPushNotificationConfig {
             tenant: tenant.into(),
             url: url.into(),
             token: None,
+            token_ref: None,
             authentication: None,
             created_at: now,
             updated_at: now,
@@ -481,6 +502,18 @@ impl TaskPushNotificationConfig {
         {
             return Err(TaskPushConfigValidationError::TokenTooLong(t.len()));
         }
+        if self.token.is_some() && self.token_ref.is_some() {
+            return Err(TaskPushConfigValidationError::AmbiguousSecret("token"));
+        }
+        if self
+            .token_ref
+            .as_ref()
+            .is_some_and(|reference| reference.validate().is_err())
+        {
+            return Err(TaskPushConfigValidationError::InvalidSecretReference(
+                "tokenRef",
+            ));
+        }
         if let Some(auth) = &self.authentication {
             if auth.schemes.len() > MAX_PUSH_SCHEMES_PER_CONFIG {
                 return Err(TaskPushConfigValidationError::TooManySchemes(
@@ -500,6 +533,20 @@ impl TaskPushNotificationConfig {
             {
                 return Err(TaskPushConfigValidationError::CredentialsTooLong(
                     credentials.len(),
+                ));
+            }
+            if auth.credentials.is_some() && auth.credentials_ref.is_some() {
+                return Err(TaskPushConfigValidationError::AmbiguousSecret(
+                    "authentication.credentials",
+                ));
+            }
+            if auth
+                .credentials_ref
+                .as_ref()
+                .is_some_and(|reference| reference.validate().is_err())
+            {
+                return Err(TaskPushConfigValidationError::InvalidSecretReference(
+                    "authentication.credentialsRef",
                 ));
             }
         }
@@ -584,6 +631,7 @@ mod tests {
                 .map(|i| format!("s{i}"))
                 .collect(),
             credentials: None,
+            credentials_ref: None,
         });
         assert!(matches!(
             c.validate(),
@@ -597,6 +645,7 @@ mod tests {
         empty.authentication = Some(PushAuthentication {
             schemes: vec![" ".into()],
             credentials: None,
+            credentials_ref: None,
         });
         assert_eq!(
             empty.validate(),
@@ -607,11 +656,36 @@ mod tests {
         oversized.authentication = Some(PushAuthentication {
             schemes: vec!["Bearer".into()],
             credentials: Some("x".repeat(MAX_PUSH_AUTH_CREDENTIAL_BYTES + 1)),
+            credentials_ref: None,
         });
         assert!(matches!(
             oversized.validate(),
             Err(TaskPushConfigValidationError::CredentialsTooLong(_))
         ));
+    }
+
+    #[test]
+    fn validate_requires_exactly_one_secret_source() {
+        let mut c = fresh("c1", "t1", "https://example.org/h");
+        c.token = Some("inline".into());
+        c.token_ref = Some(SecretRef::new("environment", "callbacks/main"));
+        assert_eq!(
+            c.validate(),
+            Err(TaskPushConfigValidationError::AmbiguousSecret("token"))
+        );
+
+        c.token = None;
+        c.authentication = Some(PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("inline".into()),
+            credentials_ref: Some(SecretRef::new("environment", "callbacks/main")),
+        });
+        assert_eq!(
+            c.validate(),
+            Err(TaskPushConfigValidationError::AmbiguousSecret(
+                "authentication.credentials"
+            ))
+        );
     }
 
     #[test]
@@ -627,6 +701,7 @@ mod tests {
         c.authentication = Some(PushAuthentication {
             schemes: vec!["api-key".into()],
             credentials: Some("never-leak-this".into()),
+            credentials_ref: None,
         });
         let s = format!("{c:?}");
         assert!(!s.contains("super-secret-bearer"));

@@ -290,6 +290,7 @@ pub(crate) async fn save_authorized_config(
         tenant: scope.tenant.clone(),
         url: input.url,
         token: input.token,
+        token_ref: input.token_ref,
         authentication: input.authentication,
         created_at,
         updated_at: now,
@@ -419,6 +420,9 @@ pub struct SetPushConfigInput {
     /// Optional bearer token sent in `Authorization: Bearer …`.
     #[serde(default)]
     pub token: Option<String>,
+    /// Optional host-owned token reference. Mutually exclusive with `token`.
+    #[serde(default)]
+    pub token_ref: Option<acteon_core::SecretRef>,
     /// Optional richer authentication metadata.
     #[serde(default)]
     pub authentication: Option<PushAuthentication>,

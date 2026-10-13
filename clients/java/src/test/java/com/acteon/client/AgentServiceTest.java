@@ -124,7 +124,7 @@ class AgentServiceTest {
                 assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
                 var request = mapper.readTree(exchange.getRequestBody());
                 assertEquals("job-1", request.path("params").path("taskId").asText());
-                var stored = mapper.readTree("{\"id\":\"push-1\",\"taskId\":\"job-1\",\"url\":\"https://hooks.example/a2a\",\"token\":\"callback-token\",\"authentication\":{\"scheme\":\"Bearer\",\"credentials\":\"secret\"}}");
+                var stored = mapper.readTree("{\"id\":\"push-1\",\"taskId\":\"job-1\",\"url\":\"https://hooks.example/a2a\",\"tokenRef\":{\"provider\":\"vault\",\"key\":\"callbacks/token\",\"version\":\"v2\"},\"authentication\":{\"scheme\":\"Bearer\",\"credentialsRef\":{\"provider\":\"vault\",\"key\":\"callbacks/auth\",\"version\":\"v2\"}}}");
                 com.fasterxml.jackson.databind.JsonNode result;
                 if (request.path("method").asText().equals("ListTaskPushNotificationConfigs")) {
                     result = mapper.createObjectNode().set("configs", mapper.createArrayNode().add(stored));
@@ -142,9 +142,10 @@ class AgentServiceTest {
             } catch(Throwable error) { failure.set(error); exchange.close(); }
         }); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
-            var input = new AgentServicePushConfigInput("push-1", "https://hooks.example/a2a", "callback-token", new AgentServicePushAuthentication("Bearer", "secret"));
+            var input = new AgentServicePushConfigInput("push-1", "https://hooks.example/a2a", null, new AgentServicePushAuthentication("Bearer", null, new SecretRef("vault", "callbacks/auth", "v2")), new SecretRef("vault", "callbacks/token", "v2"));
             var created = client.agentServiceCreatePushConfig("prod","acme","notifier","job-1",input,receipt);
-            assertEquals("secret", created.authentication().credentials());
+            assertEquals("callbacks/auth", created.authentication().credentialsRef().key());
+            assertEquals("v2", created.tokenRef().version());
             assertEquals("push-1", client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",receipt).id());
             assertEquals("next", client.agentServiceListPushConfigs("prod","acme","notifier","job-1",1,null,receipt).nextPageToken());
             client.agentServiceDeletePushConfig("prod","acme","notifier","job-1","push-1",receipt);

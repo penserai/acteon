@@ -13,6 +13,8 @@
  * callers don't have to remember them.
  */
 
+import type { SecretRef } from "./agent_services.js";
+
 /** A2A protocol version this client speaks. Matches the Rust client's
  *  `A2A_PROTOCOL_VERSION` and the server's negotiated version. */
 export const A2A_PROTOCOL_VERSION = "1.0";
@@ -98,8 +100,17 @@ export interface MakePushConfigOptions {
   /** Optional callback token sent in
    *  `X-A2A-Notification-Token` on every push POST. */
   token?: string;
-  /** Optional richer authentication metadata. */
-  authentication?: Record<string, unknown>;
+  /** Host-owned token reference, mutually exclusive with `token`. */
+  tokenRef?: SecretRef;
+  /** Optional standard-A2A callback authentication metadata. */
+  authentication?: A2APushAuthentication;
+}
+
+/** Typed standard-A2A callback authentication metadata. */
+export interface A2APushAuthentication {
+  readonly schemes?: readonly string[];
+  readonly credentials?: string;
+  readonly credentialsRef?: SecretRef;
 }
 
 /** Build a `PushNotificationConfig` body. `url` must be `http://` or
@@ -112,7 +123,10 @@ export function makePushConfig(
   const body: Record<string, unknown> = { url };
   if (options.id !== undefined) body.id = options.id;
   if (options.token !== undefined) body.token = options.token;
+  if (options.token !== undefined && options.tokenRef !== undefined) throw new Error("token and tokenRef are mutually exclusive");
+  if (options.tokenRef !== undefined) body.tokenRef = options.tokenRef;
   if (options.authentication !== undefined) {
+    if (options.authentication.credentials !== undefined && options.authentication.credentialsRef !== undefined) throw new Error("authentication credentials and credentialsRef are mutually exclusive");
     body.authentication = options.authentication;
   }
   return body;

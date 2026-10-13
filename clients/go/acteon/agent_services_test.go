@@ -21,6 +21,17 @@ func (roundTrip agentRoundTripFunc) RoundTrip(request *http.Request) (*http.Resp
 	return roundTrip(request)
 }
 
+func TestSecretRefParserRejectsUnknownFields(t *testing.T) {
+	_, err := parseSecretRef(map[string]any{
+		"provider": "environment",
+		"key":      "callbacks/token",
+		"leak":     "ignored-by-json-unmarshal",
+	})
+	if err == nil {
+		t.Fatal("expected unknown secret reference field to be rejected")
+	}
+}
+
 func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
 	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
 	var calls atomic.Int32
@@ -152,7 +163,7 @@ func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
 		if params["taskId"] != "job-1" {
 			t.Fatalf("task authority missing: %#v", params)
 		}
-		result := any(map[string]any{"id": "push-1", "taskId": "job-1", "url": "https://hooks.example/a2a", "token": "callback-token", "authentication": map[string]any{"scheme": "Bearer", "credentials": "secret"}})
+		result := any(map[string]any{"id": "push-1", "taskId": "job-1", "url": "https://hooks.example/a2a", "tokenRef": map[string]any{"provider": "vault", "key": "callbacks/token", "version": "v2"}, "authentication": map[string]any{"scheme": "Bearer", "credentialsRef": map[string]any{"provider": "vault", "key": "callbacks/auth", "version": "v2"}}})
 		if method == "ListTaskPushNotificationConfigs" {
 			result = map[string]any{"configs": []any{result}, "nextPageToken": "next"}
 		} else if method == "DeleteTaskPushNotificationConfig" {
@@ -164,9 +175,8 @@ func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 	})
 	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
-	token, credentials := "callback-token", "secret"
-	created, err := client.AgentServiceCreatePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigInput{ID: "push-1", URL: "https://hooks.example/a2a", Token: &token, Authentication: &AgentServicePushAuthentication{Scheme: "Bearer", Credentials: &credentials}}, receipt)
-	if err != nil || created.Authentication == nil || *created.Authentication.Credentials != "secret" {
+	created, err := client.AgentServiceCreatePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigInput{ID: "push-1", URL: "https://hooks.example/a2a", TokenRef: &SecretRef{Provider: "vault", Key: "callbacks/token", Version: "v2"}, Authentication: &AgentServicePushAuthentication{Scheme: "Bearer", CredentialsRef: &SecretRef{Provider: "vault", Key: "callbacks/auth", Version: "v2"}}}, receipt)
+	if err != nil || created.Authentication == nil || created.Authentication.CredentialsRef == nil || created.Authentication.CredentialsRef.Key != "callbacks/auth" || created.TokenRef == nil || created.TokenRef.Version != "v2" {
 		t.Fatalf("unexpected created config: %#v %v", created, err)
 	}
 	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {

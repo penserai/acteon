@@ -106,8 +106,17 @@ type MakePushConfigOptions struct {
 	// Token is the optional callback token sent in
 	// `X-A2A-Notification-Token` on every push POST.
 	Token string
-	// Authentication is optional richer authentication metadata.
-	Authentication map[string]any
+	// TokenRef is a host-owned callback token reference, mutually exclusive with Token.
+	TokenRef *SecretRef
+	// Authentication is optional standard-A2A callback authentication metadata.
+	Authentication *A2APushAuthentication
+}
+
+// A2APushAuthentication is standard-A2A callback authentication metadata.
+type A2APushAuthentication struct {
+	Schemes        []string
+	Credentials    *string
+	CredentialsRef *SecretRef
 }
 
 // MakePushConfig builds a `PushNotificationConfig` body. `url` must
@@ -121,8 +130,27 @@ func MakePushConfig(targetURL string, opts MakePushConfigOptions) map[string]any
 	if opts.Token != "" {
 		body["token"] = opts.Token
 	}
+	if opts.Token != "" && opts.TokenRef != nil {
+		panic("token and token reference are mutually exclusive")
+	}
+	if opts.TokenRef != nil {
+		body["tokenRef"] = opts.TokenRef
+	}
 	if opts.Authentication != nil {
-		body["authentication"] = opts.Authentication
+		if opts.Authentication.Credentials != nil && opts.Authentication.CredentialsRef != nil {
+			panic("authentication credentials and credentials reference are mutually exclusive")
+		}
+		auth := map[string]any{}
+		if len(opts.Authentication.Schemes) > 0 {
+			auth["schemes"] = opts.Authentication.Schemes
+		}
+		if opts.Authentication.Credentials != nil {
+			auth["credentials"] = *opts.Authentication.Credentials
+		}
+		if opts.Authentication.CredentialsRef != nil {
+			auth["credentialsRef"] = opts.Authentication.CredentialsRef
+		}
+		body["authentication"] = auth
 	}
 	return body
 }

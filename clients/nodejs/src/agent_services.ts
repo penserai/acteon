@@ -42,11 +42,14 @@ export interface AgentServiceTaskPage {
 export interface AgentServicePushAuthentication {
   readonly scheme: string;
   readonly credentials?: string;
+  readonly credentialsRef?: SecretRef;
 }
+export interface SecretRef { readonly provider: string; readonly key: string; readonly version?: string; }
 export interface AgentServicePushConfigInput {
   readonly url: string;
   readonly id?: string;
   readonly token?: string;
+  readonly tokenRef?: SecretRef;
   readonly authentication?: AgentServicePushAuthentication;
 }
 export interface AgentServicePushConfig {
@@ -54,6 +57,7 @@ export interface AgentServicePushConfig {
   readonly taskId: string;
   readonly url: string;
   readonly token?: string;
+  readonly tokenRef?: SecretRef;
   readonly authentication?: AgentServicePushAuthentication;
 }
 export interface AgentServicePushConfigPage {
@@ -240,20 +244,32 @@ export function agentServiceTaskPage(value: unknown): AgentServiceTaskPage {
 export function agentServicePushConfig(value: unknown, taskId: string, id?: string): AgentServicePushConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A push configuration is invalid");
   const config = value as Record<string, unknown>;
-  if (Object.keys(config).some(key => !["id", "taskId", "url", "token", "authentication"].includes(key))
+  if (Object.keys(config).some(key => !["id", "taskId", "url", "token", "tokenRef", "authentication"].includes(key))
     || typeof config.id !== "string" || !config.id || (id !== undefined && config.id !== id)
     || config.taskId !== taskId || typeof config.url !== "string" || !config.url
-    || (config.token !== undefined && (typeof config.token !== "string" || config.token.length > 4096))) throw new Error("agent service A2A push configuration is invalid");
+    || (config.token !== undefined && (typeof config.token !== "string" || config.token.length > 4096))
+    || (config.token !== undefined && config.tokenRef !== undefined)
+    || (config.tokenRef !== undefined && !isSecretRef(config.tokenRef))) throw new Error("agent service A2A push configuration is invalid");
   let authentication: AgentServicePushAuthentication | undefined;
   if (config.authentication !== undefined) {
     if (!config.authentication || typeof config.authentication !== "object" || Array.isArray(config.authentication)) throw new Error("agent service A2A push authentication is invalid");
     const auth = config.authentication as Record<string, unknown>;
-    if (Object.keys(auth).some(key => !["scheme", "credentials"].includes(key))
+    if (Object.keys(auth).some(key => !["scheme", "credentials", "credentialsRef"].includes(key))
       || typeof auth.scheme !== "string" || !auth.scheme.trim() || auth.scheme.length > 256
-      || (auth.credentials !== undefined && (typeof auth.credentials !== "string" || auth.credentials.length > 4096))) throw new Error("agent service A2A push authentication is invalid");
-    authentication = Object.freeze({ scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}) });
+      || (auth.credentials !== undefined && (typeof auth.credentials !== "string" || auth.credentials.length > 4096))
+      || (auth.credentials !== undefined && auth.credentialsRef !== undefined)
+      || (auth.credentialsRef !== undefined && !isSecretRef(auth.credentialsRef))) throw new Error("agent service A2A push authentication is invalid");
+    authentication = Object.freeze({ scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}), ...(auth.credentialsRef !== undefined ? { credentialsRef: auth.credentialsRef as SecretRef } : {}) });
   }
-  return Object.freeze({ id: config.id, taskId, url: config.url, ...(config.token !== undefined ? { token: config.token } : {}), ...(authentication ? { authentication } : {}) });
+  return Object.freeze({ id: config.id, taskId, url: config.url, ...(config.token !== undefined ? { token: config.token } : {}), ...(config.tokenRef !== undefined ? { tokenRef: config.tokenRef as SecretRef } : {}), ...(authentication ? { authentication } : {}) });
+}
+
+function isSecretRef(value: unknown): value is SecretRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const ref = value as Record<string, unknown>;
+  const valid = (part: unknown): part is string => typeof part === "string" && /^[A-Za-z0-9._/-]{1,256}$/.test(part);
+  return Object.keys(ref).every(key => ["provider", "key", "version"].includes(key))
+    && valid(ref.provider) && valid(ref.key) && (ref.version === undefined || valid(ref.version));
 }
 export function agentServicePushConfigPage(value: unknown, taskId: string): AgentServicePushConfigPage {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A push page is invalid");

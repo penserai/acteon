@@ -58,6 +58,7 @@ pub struct AgentServiceInitialPushConfig {
     pub id: Option<String>,
     pub url: String,
     pub token: Option<String>,
+    pub token_ref: Option<acteon_core::SecretRef>,
     pub authentication: Option<PushAuthentication>,
 }
 
@@ -80,6 +81,7 @@ fn materialize_initial_push_configs(
             tenant: tenant.into(),
             url: input.url.clone(),
             token: input.token.clone(),
+            token_ref: input.token_ref.clone(),
             authentication: input.authentication.clone(),
             created_at: now,
             updated_at: now,

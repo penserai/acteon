@@ -33,7 +33,7 @@ DurableTaskRecord v1
     │   └── StreamResponse
     └── callbacks[]
         ├── public A2A configuration
-        ├── encrypted credential/reference
+        ├── inline compatibility credential or host-owned SecretRef
         ├── acknowledged_sequence
         ├── lease
         ├── next_attempt_at

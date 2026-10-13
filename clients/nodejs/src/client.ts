@@ -514,13 +514,15 @@ export class ActeonClient {
   private agentServicePushInput(taskId: string, config: AgentServicePushConfigInput): Record<string, unknown> {
     if (!taskId || !config.url) throw new Error("taskId and push URL must not be empty");
     if (config.token !== undefined && config.token.length > 4096) throw new Error("push token is too large");
+    if (config.token !== undefined && config.tokenRef !== undefined) throw new Error("push token and tokenRef are mutually exclusive");
     const params: Record<string, unknown> = { taskId, url: config.url };
     if (config.id !== undefined) params.id = config.id;
     if (config.token !== undefined) params.token = config.token;
+    if (config.tokenRef !== undefined) params.tokenRef = config.tokenRef;
     if (config.authentication !== undefined) {
       const auth = config.authentication;
-      if (!auth.scheme.trim() || auth.scheme.length > 256 || (auth.credentials !== undefined && auth.credentials.length > 4096)) throw new Error("push authentication is invalid");
-      params.authentication = { scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}) };
+      if (!auth.scheme.trim() || auth.scheme.length > 256 || (auth.credentials !== undefined && auth.credentials.length > 4096) || (auth.credentials !== undefined && auth.credentialsRef !== undefined)) throw new Error("push authentication is invalid");
+      params.authentication = { scheme: auth.scheme, ...(auth.credentials !== undefined ? { credentials: auth.credentials } : {}), ...(auth.credentialsRef !== undefined ? { credentialsRef: auth.credentialsRef } : {}) };
     }
     return params;
   }

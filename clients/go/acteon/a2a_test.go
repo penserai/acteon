@@ -98,18 +98,32 @@ func TestMakePushConfigMinimal(t *testing.T) {
 	}
 }
 
-func TestMakePushConfigFull(t *testing.T) {
+func TestMakePushConfigSupportsHostOwnedSecretReferences(t *testing.T) {
 	got := MakePushConfig("https://hook/x", MakePushConfigOptions{
-		ID:             "cfg-1",
-		Token:          "t",
-		Authentication: map[string]any{"schemes": []string{"api-key"}},
+		ID:       "cfg-1",
+		TokenRef: &SecretRef{Provider: "environment", Key: "callbacks/token", Version: "v2"},
+		Authentication: &A2APushAuthentication{
+			Schemes:        []string{"Bearer"},
+			CredentialsRef: &SecretRef{Provider: "environment", Key: "callbacks/auth", Version: "v2"},
+		},
 	})
-	if got["id"] != "cfg-1" || got["token"] != "t" {
+	if got["id"] != "cfg-1" || got["tokenRef"].(*SecretRef).Key != "callbacks/token" {
 		t.Errorf("full: got %v", got)
 	}
 	if _, ok := got["authentication"]; !ok {
 		t.Errorf("authentication must be present: got %v", got)
 	}
+}
+
+func TestMakePushConfigRejectsInlineAndReferencedToken(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected mutually exclusive token inputs to panic")
+		}
+	}()
+	MakePushConfig("https://hook/x", MakePushConfigOptions{
+		Token: "inline", TokenRef: &SecretRef{Provider: "environment", Key: "callbacks/token"},
+	})
 }
 
 // ----------------------------------------------------------------------

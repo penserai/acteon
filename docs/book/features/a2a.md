@@ -656,8 +656,8 @@ curl -X POST .../a2a/prod/acme/agents/notifier \
       "taskId": "task-alpha",
       "id": "incident-hook",
       "url": "https://my-service.example.com/a2a-hook",
-      "token": "callback-token",
-      "authentication": {"scheme": "Bearer", "credentials": "secret"}
+      "tokenRef": {"provider": "environment", "key": "callbacks/notification-token", "version": "2026-10"},
+      "authentication": {"scheme": "Bearer", "credentialsRef": {"provider": "environment", "key": "callbacks/incident-router", "version": "2026-10"}}
     }
   }'
 ```
@@ -666,9 +666,11 @@ The callback receives `Content-Type: application/a2a+json` and
 `A2A-Version: 1.0`. Its body is an official status or artifact
 `StreamResponse`. Acteon sends `token` in `X-A2A-Notification-Token`; it sends
 the separately configured authentication scheme and credentials in
-`Authorization`. Secret-bearing create, get, and list results require
-operations-management authority. Treat returned token and credential fields as
-secrets and keep them out of logs and model context.
+`Authorization`. A production callback should use host-owned `tokenRef` and
+`credentialsRef` values, which are resolved only at delivery and remain safe in
+state and management projections. See [secret custody](secret-custody.md).
+Inline values remain available for protocol compatibility; secret-bearing
+create, get, and list results require operations-management authority.
 
 The delivery worker:
 

@@ -226,6 +226,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.allow_unauthenticated_remote,
     )?;
 
+    // Validate the complete host secret allowlist before any workers or
+    // execution authorities become reachable. Values are read lazily at the
+    // effect boundary so refreshing a value does not rewrite durable state.
+    let secret_resolver = config.secret_custody.build_resolver()?;
+
     if config.execution_authority.is_some() {
         if !config.auth.enabled || config.auth.authority.is_none() {
             return Err(
@@ -2101,7 +2106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 false,
             )?,
             rx,
-        );
+        )
+        .with_secret_resolver(secret_resolver.clone());
         tokio::spawn(worker.run())
     };
 

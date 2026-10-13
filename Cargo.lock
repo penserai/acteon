@@ -209,6 +209,7 @@ dependencies = [
 name = "acteon-core"
 version = "0.1.0"
 dependencies = [
+ "acteon-secrets",
  "chrono",
  "chrono-tz",
  "croner",
@@ -595,6 +596,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-secrets"
+version = "0.1.0"
+dependencies = [
+ "acteon-crypto",
+ "async-trait",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "utoipa",
+]
+
+[[package]]
 name = "acteon-server"
 version = "0.1.0"
 dependencies = [
@@ -624,6 +637,7 @@ dependencies = [
  "acteon-pushover",
  "acteon-rules",
  "acteon-rules-yaml",
+ "acteon-secrets",
  "acteon-state",
  "acteon-state-dynamodb",
  "acteon-state-memory",
@@ -704,6 +718,7 @@ dependencies = [
  "acteon-provider",
  "acteon-rules",
  "acteon-rules-yaml",
+ "acteon-secrets",
  "acteon-server",
  "acteon-state",
  "acteon-state-dynamodb",
@@ -722,6 +737,7 @@ dependencies = [
  "clap",
  "criterion",
  "futures",
+ "hex",
  "hyper",
  "hyper-util",
  "parking_lot",

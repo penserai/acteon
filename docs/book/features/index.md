@@ -28,7 +28,7 @@ connect it to the rest of your flow.
 | [Rerouting](rerouting.md), [payload modification](modification.md), and [templates](payload-templates.md) | Select integrations and shape requests before execution |
 | [Human approvals](approvals.md) and [tenant quotas](tenant-quotas.md) | Require authorization for sensitive work and limit usage |
 | [Time-based rules](time-based-rules.md), [silences](silences.md), and [time intervals](time-intervals.md) | Express operating windows and maintenance policy |
-| [Action signing](action-signing.md), [encryption](payload-encryption.md), and [compliance mode](compliance-mode.md) | Verify origin and protect retained evidence |
+| [Action signing](action-signing.md), [encryption](payload-encryption.md), [secret custody](secret-custody.md), and [compliance mode](compliance-mode.md) | Verify origin, protect retained evidence, and keep credentials out of durable execution state |
 
 [Understand the governance model](../concepts/governance.md).
 

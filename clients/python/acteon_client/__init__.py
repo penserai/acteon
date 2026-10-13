@@ -3,6 +3,7 @@
 from .a2a import (
     A2A_CHALLENGE_ID_METADATA_KEY,
     A2A_PROTOCOL_VERSION,
+    A2APushAuthentication,
     make_input_response,
     make_message,
     make_part_data,
@@ -29,6 +30,7 @@ from .agent_services import (
     AgentServiceStopReceipt,
     AgentServiceTaskPage,
     AgentServiceTaskState,
+    SecretRef,
 )
 from .bus_models import (
     AppendBusConversationMessage,
@@ -304,6 +306,7 @@ __all__ = [
     "ActeonClient",
     "AsyncActeonClient",
     "A2A_PROTOCOL_VERSION",
+    "A2APushAuthentication",
     "A2A_CHALLENGE_ID_METADATA_KEY",
     "make_input_response",
     "make_message",
@@ -550,6 +553,7 @@ __all__ += [
     "AgentServiceParent",
     "AgentServiceProviderAbort",
     "AgentServicePushAuthentication",
+    "SecretRef",
     "AgentServicePushConfig",
     "AgentServicePushConfigInput",
     "AgentServicePushConfigPage",

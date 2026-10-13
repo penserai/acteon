@@ -46,7 +46,7 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, authenticated remote auth handoff, and inbound federated execution implemented | Broader recovery and cross-domain qualification proof |
-| 5: Production/federation | Audience-bound trust kernel, configured peer identity binding, authenticated trust management, inert inbound import admission, and exact current-identity agent dispatch/replay implemented on the current branch | Outbound transport, credential exchange, verified peer capability matrix and external failure tests |
+| 5: Production/federation | Signed capability negotiation, durable outbound transport, OAuth credential exchange, governed export authority, exact task lifecycle controls, and host-owned callback secret references are implemented | External secret-manager adapters, two-domain deployment qualification, and fleet-scale due-time indexing |
 
 Next work should integrate trusted execution context into deferred paths and
 complete coordinator/accounting prerequisites before per-effect enforcement. Do
@@ -2314,3 +2314,21 @@ coalesces refreshes, holds tokens only in zeroized process memory, and returns a
 proven-not-sent disposition when acquisition fails before an effect request.
 The credential timeout must finish before the durable transport claim timeout,
 so acquisition failure does not manufacture remote-effect ambiguity.
+
+### Host-owned secret custody
+
+Durable A2A callbacks now accept versioned `SecretRef` values for notification
+tokens and authorization credentials. The Task envelope and every configured
+state backend retain only provider, logical key, and optional version. A new
+`acteon-secrets` crate defines the provider boundary and resolver registry; the
+first host adapter maps explicitly allowlisted logical keys to environment
+variables.
+
+Every host binding is limited to an exact namespace, tenant, and declared
+purpose. The callback worker supplies that trusted execution context and
+resolves the value only after claiming the fenced delivery and immediately
+before request construction. Missing provider values remain retryable;
+unknown, revoked, cross-tenant, wrong-purpose, and version-mismatched references
+fail closed. Rust, Python, TypeScript, Go, and Java expose the same typed
+reference shape. The executable secret-custody simulation proves state
+redaction, restart resolution, pinned rotation, and revocation.

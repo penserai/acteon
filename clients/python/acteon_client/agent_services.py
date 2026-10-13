@@ -71,11 +71,21 @@ class AgentServiceTaskPage:
 
 
 @dataclass(frozen=True)
+class SecretRef:
+    """Durable pointer to host-owned secret material."""
+
+    provider: str
+    key: str
+    version: str | None = None
+
+
+@dataclass(frozen=True)
 class AgentServicePushAuthentication:
     """HTTP authentication included on official A2A webhook deliveries."""
 
     scheme: str
     credentials: str | None = field(default=None, repr=False)
+    credentials_ref: SecretRef | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +96,7 @@ class AgentServicePushConfigInput:
     id: str | None = None
     token: str | None = field(default=None, repr=False)
     authentication: AgentServicePushAuthentication | None = field(default=None, repr=False)
+    token_ref: SecretRef | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +108,7 @@ class AgentServicePushConfig:
     url: str
     token: str | None = field(default=None, repr=False)
     authentication: AgentServicePushAuthentication | None = field(default=None, repr=False)
+    token_ref: SecretRef | None = None
 
 
 @dataclass(frozen=True)
@@ -765,32 +777,50 @@ def _push_input(value: AgentServicePushConfigInput, task_id: str) -> dict[str, A
         raise ValueError("task_id and push URL must not be empty")
     if value.token is not None and len(value.token) > 4096:
         raise ValueError("push token is too large")
+    if value.token is not None and value.token_ref is not None:
+        raise ValueError("push token and token_ref are mutually exclusive")
     result: dict[str, Any] = {"taskId": task_id, "url": value.url}
     if value.id is not None:
         result["id"] = value.id
     if value.token is not None:
         result["token"] = value.token
+    if value.token_ref is not None:
+        result["tokenRef"] = _secret_ref_dict(value.token_ref)
     if value.authentication is not None:
         authentication = value.authentication
         if (
             not authentication.scheme.strip()
             or len(authentication.scheme) > 256
             or (authentication.credentials is not None and len(authentication.credentials) > 4096)
+            or (
+                authentication.credentials is not None
+                and authentication.credentials_ref is not None
+            )
         ):
             raise ValueError("push authentication is invalid")
         result["authentication"] = {"scheme": authentication.scheme}
         if authentication.credentials is not None:
             result["authentication"]["credentials"] = authentication.credentials
+        if authentication.credentials_ref is not None:
+            result["authentication"]["credentialsRef"] = _secret_ref_dict(
+                authentication.credentials_ref
+            )
     return result
 
 
 def _push_config(value: dict[str, Any], task_id: str) -> AgentServicePushConfig:
-    allowed = {"id", "taskId", "url", "token", "authentication"}
+    allowed = {"id", "taskId", "url", "token", "tokenRef", "authentication"}
     if set(value) - allowed:
         raise ActeonError("agent service A2A push configuration fields are invalid")
     config_id = value.get("id")
     url = value.get("url")
     token = value.get("token")
+    try:
+        token_ref = (
+            _secret_ref(value.get("tokenRef")) if value.get("tokenRef") is not None else None
+        )
+    except ValueError as error:
+        raise ActeonError("agent service A2A push token reference is invalid") from error
     auth = value.get("authentication")
     if (
         not isinstance(config_id, str)
@@ -799,15 +829,24 @@ def _push_config(value: dict[str, Any], task_id: str) -> AgentServicePushConfig:
         or not isinstance(url, str)
         or not url
         or (token is not None and (not isinstance(token, str) or len(token) > 4096))
+        or (token is not None and token_ref is not None)
         or (auth is not None and not isinstance(auth, dict))
     ):
         raise ActeonError("agent service A2A push configuration is invalid")
     authentication = None
     if isinstance(auth, dict):
-        if set(auth) - {"scheme", "credentials"}:
+        if set(auth) - {"scheme", "credentials", "credentialsRef"}:
             raise ActeonError("agent service A2A push authentication is invalid")
         scheme = auth.get("scheme")
         credentials = auth.get("credentials")
+        try:
+            credentials_ref = (
+                _secret_ref(auth.get("credentialsRef"))
+                if auth.get("credentialsRef") is not None
+                else None
+            )
+        except ValueError as error:
+            raise ActeonError("agent service A2A push credential reference is invalid") from error
         if (
             not isinstance(scheme, str)
             or not scheme.strip()
@@ -816,10 +855,46 @@ def _push_config(value: dict[str, Any], task_id: str) -> AgentServicePushConfig:
                 credentials is not None
                 and (not isinstance(credentials, str) or len(credentials) > 4096)
             )
+            or (credentials is not None and credentials_ref is not None)
         ):
             raise ActeonError("agent service A2A push authentication is invalid")
-        authentication = AgentServicePushAuthentication(scheme, credentials)
-    return AgentServicePushConfig(config_id, task_id, url, token, authentication)
+        authentication = AgentServicePushAuthentication(scheme, credentials, credentials_ref)
+    return AgentServicePushConfig(config_id, task_id, url, token, authentication, token_ref)
+
+
+def _secret_ref_dict(value: SecretRef) -> dict[str, str]:
+    result = {"provider": value.provider, "key": value.key}
+    if value.version is not None:
+        result["version"] = value.version
+    _secret_ref(result)
+    return result
+
+
+def _secret_ref(value: Any) -> SecretRef:
+    if not isinstance(value, dict) or set(value) - {"provider", "key", "version"}:
+        raise ValueError("secret reference is invalid")
+    provider, key, version = value.get("provider"), value.get("key"), value.get("version")
+
+    def valid(component: Any) -> bool:
+        return (
+            isinstance(component, str)
+            and 0 < len(component) <= 256
+            and all(
+                character.isascii() and (character.isalnum() or character in "._-/")
+                for character in component
+            )
+        )
+
+    if (
+        not isinstance(provider, str)
+        or not isinstance(key, str)
+        or (version is not None and not isinstance(version, str))
+        or not valid(provider)
+        or not valid(key)
+        or (version is not None and not valid(version))
+    ):
+        raise ValueError("secret reference is invalid")
+    return SecretRef(provider, key, version)
 
 
 def _push_page(value: dict[str, Any], task_id: str) -> AgentServicePushConfigPage:
