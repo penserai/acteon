@@ -23,7 +23,6 @@ from .agent_services import (
     AgentServiceParent,
     AgentServiceProviderAbort,
     AgentServicePushAuthentication,
-    SecretRef,
     AgentServicePushConfig,
     AgentServicePushConfigInput,
     AgentServicePushConfigPage,
@@ -31,6 +30,7 @@ from .agent_services import (
     AgentServiceStopReceipt,
     AgentServiceTaskPage,
     AgentServiceTaskState,
+    SecretRef,
 )
 from .bus_models import (
     AppendBusConversationMessage,

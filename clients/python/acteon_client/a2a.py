@@ -199,8 +199,13 @@ def make_push_config(
         if isinstance(authentication, dict):
             body["authentication"] = authentication
         else:
-            if authentication.credentials is not None and authentication.credentials_ref is not None:
-                raise ValueError("authentication credentials and credentials_ref are mutually exclusive")
+            if (
+                authentication.credentials is not None
+                and authentication.credentials_ref is not None
+            ):
+                raise ValueError(
+                    "authentication credentials and credentials_ref are mutually exclusive"
+                )
             auth: dict[str, Any] = {}
             if authentication.schemes:
                 auth["schemes"] = list(authentication.schemes)

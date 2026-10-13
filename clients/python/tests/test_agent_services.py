@@ -218,7 +218,14 @@ def _push_response(request: httpx.Request) -> httpx.Response:
         "taskId": "job-1",
         "url": "https://hooks.example/a2a",
         "tokenRef": {"provider": "vault", "key": "callbacks/token", "version": "v2"},
-        "authentication": {"scheme": "Bearer", "credentialsRef": {"provider": "vault", "key": "callbacks/auth", "version": "v2"}},
+        "authentication": {
+            "scheme": "Bearer",
+            "credentialsRef": {
+                "provider": "vault",
+                "key": "callbacks/auth",
+                "version": "v2",
+            },
+        },
     }
     if method == "CreateTaskPushNotificationConfig":
         assert params == config
