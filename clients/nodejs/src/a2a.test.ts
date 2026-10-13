@@ -89,17 +89,25 @@ describe("a2a factory helpers", () => {
     expect(makePushConfig("https://hook/x")).toEqual({ url: "https://hook/x" });
   });
 
-  it("makePushConfig full carries id, token, authentication", () => {
+  it("makePushConfig carries host-owned secret references", () => {
     const cfg = makePushConfig("https://hook/x", {
       id: "cfg-1",
-      token: "t",
-      authentication: { schemes: ["api-key"] },
+      tokenRef: { provider: "environment", key: "callbacks/token", version: "v2" },
+      authentication: { schemes: ["Bearer"], credentialsRef: { provider: "environment", key: "callbacks/auth", version: "v2" } },
     });
     expect((cfg as Record<string, unknown>).id).toEqual("cfg-1");
-    expect((cfg as Record<string, unknown>).token).toEqual("t");
+    expect((cfg as Record<string, any>).tokenRef.key).toEqual("callbacks/token");
     expect((cfg as Record<string, unknown>).authentication).toEqual({
-      schemes: ["api-key"],
+      schemes: ["Bearer"],
+      credentialsRef: { provider: "environment", key: "callbacks/auth", version: "v2" },
     });
+  });
+
+  it("makePushConfig rejects inline and referenced tokens", () => {
+    expect(() => makePushConfig("https://hook/x", {
+      token: "inline",
+      tokenRef: { provider: "environment", key: "callbacks/token" },
+    })).toThrow(/mutually exclusive/);
   });
 });
 

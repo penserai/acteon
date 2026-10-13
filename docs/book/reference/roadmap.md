@@ -11,11 +11,20 @@ separates shipped milestones from possible extensions; it is not a delivery comm
 - [A2A tasks](../features/a2a.md), the [Agentic Bus](../concepts/agentic-bus.md), and [swarm orchestration](../features/agent-swarm.md).
 - [Governed model inference](../features/governed-model-provider.md) with locked contracts and response validation.
 - [Managed stream stages](../features/managed-stream-stages.md), [quarantine repair](../features/stream-input-contracts.md), audited halt/resume, and [outbox delivery](../features/managed-stream-outbox.md).
+- [Secret custody](../features/secret-custody.md) with versioned, host-owned references resolved at the effect boundary.
 - [Durable dispatch receipts](../features/durable-dispatch.md), [action signing](../features/action-signing.md), [dead-letter retention](../features/dlq-retention.md), and [generated Prometheus alerts](../features/prometheus-alerting.md).
 
 ## Areas under consideration
 
-### A2A callback scale and secret custody
+### External secret-provider adapters
+
+The host-owned secret resolver and scoped environment adapter are available.
+Native adapters for Vault and cloud secret managers can implement the same
+provider contract, retaining namespace, tenant, purpose, and version checks at
+the effect boundary. Adoption should be driven by deployment demand rather
+than adding provider SDKs to the default server binary.
+
+### A2A callback scale
 
 Durable ordered A2A callbacks now use the configured state backend for the Task
 mutation log, callback cursors, fenced leases, retry deadlines, and dead letters.
@@ -27,20 +36,9 @@ override the same paging contract. Backends may later add a native due-time
 index for very large fleets. Bounded Task-page repair remains the correctness
 fallback.
 
-Callback credentials currently follow the A2A wire model into the configured
-state backend. A production secret-custody layer should support encrypted values
-or secret-provider references without returning plaintext through ordinary
-projections.
-
 ### DynamoDB Hierarchical Tenant Index
 
 Hierarchical/multi-tenant audit reads currently fall back to a table `Scan` on the DynamoDB backend, because the `ns_tenant` composite partition key only supports exact match (see [DynamoDB Audit Backend](../backends/dynamodb-audit.md)). Add a sparse GSI keyed on `namespace` (PK) + `tenant` (SK) so a scoped read becomes a `begins_with(tenant, "acme.")` **Query** (indexed range) instead of a full Scan. Requires a write-time projection of the new key attributes and a one-time backfill. Only worth doing if users run scoped multi-tenant audit reads at volume on DynamoDB (ClickHouse/Postgres already handle this as an indexed prefix range).
-
-### Cursor-Based Audit Pagination
-
-`AuditQuery` currently uses offset-based pagination exclusively. This is efficient for Postgres/ClickHouse because rule coverage aggregation uses native `GROUP BY` and bypasses paging, but non-SQL audit backends (Memory, Elasticsearch, DynamoDB) fall through to `InMemoryAnalytics`, which pages with offsets internally and hits the classic linear-degradation anti-pattern on large scans.
-
-Replace offset with cursor-based pagination (`after_id` / `before_timestamp` / opaque continuation tokens) across all audit backends and their client SDKs. Unlocks efficient deep scans for rule coverage, audit replay, and compliance exports on non-SQL backends. Also eliminates pagination-drift bugs when new records land mid-scan.
 
 ### Additional Kafka publishing formats
 

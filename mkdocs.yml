@@ -145,6 +145,7 @@ nav:
       - Action signing: features/action-signing.md
       - Compliance mode: features/compliance-mode.md
       - Payload encryption: features/payload-encryption.md
+      - Secret custody: features/secret-custody.md
       - Mutual TLS: features/mtls.md
     - Agents and AI:
       - features/agents-and-ai.md

@@ -39,7 +39,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use acteon_core::{DlqFailureKind, StreamEvent, TaskPushNotificationConfig};
+use acteon_crypto::{ExposeSecret, SecretString};
 use acteon_gateway::{TaskEngine, TaskPushDeliveryClaim, TaskPushReadyHint, TaskScope};
+use acteon_secrets::{SecretError, SecretRef, SecretResolver, SecretUsage};
 use acteon_state::{KeyKind, StateKey, StateStore};
 use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracing::{debug, error, warn};
@@ -205,6 +207,7 @@ struct Shared {
     delivery_permits: Arc<Semaphore>,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
     metrics: Arc<PushDeliveryMetrics>,
+    secret_resolver: Arc<SecretResolver>,
     /// When `true` (the production default), every delivery URL is
     /// run through the DNS-resolving SSRF guard before the POST.
     /// Tests and the in-process simulation flip it off because they
@@ -259,6 +262,7 @@ impl PushDeliveryWorker {
                 delivery_permits: Arc::new(Semaphore::new(MAX_INFLIGHT_DELIVERIES)),
                 cache: Mutex::new(HashMap::new()),
                 metrics,
+                secret_resolver: Arc::new(SecretResolver::new()),
                 // Secure by default — the production worker built in
                 // `main.rs` keeps this on.
                 enforce_ssrf: AtomicBool::new(true),
@@ -275,6 +279,15 @@ impl PushDeliveryWorker {
     #[must_use]
     pub fn with_ssrf_enforcement(self, enforce: bool) -> Self {
         self.shared.enforce_ssrf.store(enforce, Ordering::Relaxed);
+        self
+    }
+
+    /// Install the host-owned resolver used for durable secret references.
+    #[must_use]
+    pub fn with_secret_resolver(mut self, resolver: Arc<SecretResolver>) -> Self {
+        Arc::get_mut(&mut self.shared)
+            .expect("secret resolver must be installed before the worker is shared")
+            .secret_resolver = resolver;
         self
     }
 
@@ -782,7 +795,9 @@ impl Shared {
                 "SSRF guard refused delivery URL: {reason}"
             )));
         }
-        let request = self.build_request(config, payload, event_id, sequence)?;
+        let request = self
+            .build_request(config, payload, event_id, sequence)
+            .await?;
         let resp = request.send().await.map_err(|e| {
             // Network / timeout / serialization — treat as transient.
             DeliveryError::Transient(e.to_string())
@@ -803,7 +818,7 @@ impl Shared {
         }
     }
 
-    fn build_request(
+    async fn build_request(
         &self,
         config: &TaskPushNotificationConfig,
         payload: &serde_json::Value,
@@ -820,20 +835,69 @@ impl Shared {
             .header("x-acteon-delivery-id", event_id)
             .header("x-acteon-delivery-sequence", sequence.to_string())
             .json(payload);
-        if let Some(token) = &config.token {
-            request = request.header("x-a2a-notification-token", token);
-        }
-        if let Some(authentication) = &config.authentication
-            && let ([scheme], Some(credentials)) = (
-                authentication.schemes.as_slice(),
-                &authentication.credentials,
+        let token = self
+            .resolve_optional_secret(
+                config.token.as_deref(),
+                config.token_ref.as_ref(),
+                config,
+                "a2a.callback.token",
             )
-        {
-            let value = reqwest::header::HeaderValue::from_str(&format!("{scheme} {credentials}"))
-                .map_err(|_| DeliveryError::Terminal("invalid push authentication".into()))?;
-            request = request.header(reqwest::header::AUTHORIZATION, value);
+            .await?;
+        if let Some(token) = &token {
+            let mut value = reqwest::header::HeaderValue::from_str(token.expose_secret())
+                .map_err(|_| DeliveryError::Terminal("invalid push token".into()))?;
+            value.set_sensitive(true);
+            request = request.header("x-a2a-notification-token", value);
+        }
+        if let Some(authentication) = &config.authentication {
+            let credentials = self
+                .resolve_optional_secret(
+                    authentication.credentials.as_deref(),
+                    authentication.credentials_ref.as_ref(),
+                    config,
+                    "a2a.callback.authorization",
+                )
+                .await?;
+            if let ([scheme], Some(credentials)) =
+                (authentication.schemes.as_slice(), credentials.as_ref())
+            {
+                let encoded =
+                    zeroize::Zeroizing::new(format!("{scheme} {}", credentials.expose_secret()));
+                let mut value = reqwest::header::HeaderValue::from_str(&encoded)
+                    .map_err(|_| DeliveryError::Terminal("invalid push authentication".into()))?;
+                value.set_sensitive(true);
+                request = request.header(reqwest::header::AUTHORIZATION, value);
+            }
         }
         Ok(request)
+    }
+
+    async fn resolve_optional_secret(
+        &self,
+        inline: Option<&str>,
+        reference: Option<&SecretRef>,
+        config: &TaskPushNotificationConfig,
+        purpose: &str,
+    ) -> Result<Option<SecretString>, DeliveryError> {
+        if let Some(reference) = reference {
+            let usage = SecretUsage::new(&config.namespace, &config.tenant, purpose, &config.url);
+            return self
+                .secret_resolver
+                .resolve(reference, &usage)
+                .await
+                .map(Some)
+                .map_err(|error| match error {
+                    SecretError::Unavailable => {
+                        DeliveryError::Transient("referenced secret unavailable".into())
+                    }
+                    SecretError::InvalidReference(_)
+                    | SecretError::ProviderNotInstalled
+                    | SecretError::Refused => {
+                        DeliveryError::Terminal("referenced secret refused".into())
+                    }
+                });
+        }
+        Ok(inline.map(|value| SecretString::new(value.to_owned().into())))
     }
 }
 
@@ -859,6 +923,7 @@ fn backoff(attempt: usize) -> Duration {
 mod tests {
     use super::*;
     use acteon_core::{PushAuthentication, StreamEventType, Task, TaskState};
+    use acteon_secrets::{EnvironmentBinding, EnvironmentSecretProvider};
     use acteon_state::{
         StateKey, StateStore,
         testing::faults::{FaultStore, FaultTiming, WriteOperation},
@@ -1258,6 +1323,7 @@ mod tests {
         cfg.authentication = Some(PushAuthentication {
             schemes: vec!["Bearer".into()],
             credentials: Some("callback-credential-v1".into()),
+            credentials_ref: None,
         });
         save_config(&store, &cfg).await;
         persist_transition(&store, "task-rotation").await;
@@ -1286,6 +1352,7 @@ mod tests {
         cfg.authentication = Some(PushAuthentication {
             schemes: vec!["Bearer".into()],
             credentials: Some("callback-credential-v2".into()),
+            credentials_ref: None,
         });
         cfg.updated_at += chrono::Duration::seconds(1);
         let scope = TaskScope::new("agents", "demo");
@@ -1325,8 +1392,8 @@ mod tests {
         assert_ne!(captures[0].delivery_id, captures[1].delivery_id);
     }
 
-    #[test]
-    fn delivery_request_carries_stable_identity_headers() {
+    #[tokio::test]
+    async fn delivery_request_carries_stable_identity_headers() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         let http = acteon_http::GuardedClient::new(
             acteon_http::OutboundPolicy::default(),
@@ -1350,6 +1417,7 @@ mod tests {
                 "0199d789-6900-7e03-8b2d-211e0bcbe296",
                 7,
             )
+            .await
             .unwrap()
             .build()
             .unwrap();
@@ -1358,6 +1426,69 @@ mod tests {
             "0199d789-6900-7e03-8b2d-211e0bcbe296"
         );
         assert_eq!(request.headers()["x-acteon-delivery-sequence"], "7");
+    }
+
+    #[tokio::test]
+    async fn delivery_resolves_host_owned_references_only_at_request_build() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy::default(),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let provider = EnvironmentSecretProvider::new([EnvironmentBinding {
+            key: "callbacks/test".into(),
+            variable: "PATH".into(),
+            version: Some("v1".into()),
+            namespace: "agents".into(),
+            tenant: "demo".into(),
+            purposes: vec![
+                "a2a.callback.token".into(),
+                "a2a.callback.authorization".into(),
+            ],
+            audiences: vec!["https://callbacks.example/hook".into()],
+        }])
+        .unwrap();
+        let mut resolver = SecretResolver::new();
+        resolver
+            .register("environment", Arc::new(provider))
+            .unwrap();
+        let worker =
+            PushDeliveryWorker::new(store, http, rx).with_secret_resolver(Arc::new(resolver));
+        let mut config = TaskPushNotificationConfig::new(
+            "cfg-1",
+            "task-1",
+            "agents",
+            "demo",
+            "https://callbacks.example/hook",
+        );
+        config.token_ref = Some(SecretRef::new("environment", "callbacks/test").with_version("v1"));
+        config.authentication = Some(acteon_core::PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: None,
+            credentials_ref: Some(
+                SecretRef::new("environment", "callbacks/test").with_version("v1"),
+            ),
+        });
+        let request = worker
+            .shared
+            .build_request(&config, &serde_json::json!({}), "event-1", 1)
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers()["x-a2a-notification-token"],
+            std::env::var("PATH").unwrap()
+        );
+        assert!(request.headers()["x-a2a-notification-token"].is_sensitive());
+        assert!(request.headers()[reqwest::header::AUTHORIZATION].is_sensitive());
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains(&std::env::var("PATH").unwrap())
+        );
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = false)]

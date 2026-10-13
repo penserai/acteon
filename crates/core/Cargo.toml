@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = []
-openapi = ["utoipa"]
+openapi = ["utoipa", "acteon-secrets/openapi"]
 
 [dependencies]
 serde = { workspace = true }
@@ -22,6 +22,7 @@ hex = { workspace = true }
 croner = { workspace = true }
 regex = { workspace = true }
 utoipa = { workspace = true, optional = true }
+acteon-secrets.workspace = true
 
 [lints]
 workspace = true

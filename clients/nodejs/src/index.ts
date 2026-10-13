@@ -225,6 +225,7 @@ export {
   makePushConfig,
   type MakeMessageOptions,
   type MakePushConfigOptions,
+  type A2APushAuthentication,
 } from "./a2a.js";
 
 export * from "./platform.js";
@@ -235,4 +236,4 @@ export * from "./governance.js";
 
 export * from "./workforce.js";
 
-export { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, type AgentPeerAuthorizationReceipt, type AgentPeerAuthorizationStatus, type AgentPeerCancelReceipt, type AgentPeerCancelStatus, type AgentPeerContinuationReceipt, type AgentPeerContinuationStatus, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentPeerSendStatus, type AgentServiceA2aFrame, type AgentServiceListOptions, type AgentServiceProviderAbort, type AgentServicePushAuthentication, type AgentServicePushConfig, type AgentServicePushConfigInput, type AgentServicePushConfigPage, type AgentServiceReceipt, type AgentServiceStopReceipt, type AgentServiceTaskPage, type AgentServiceTaskState } from "./agent_services.js";
+export { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, type AgentPeerAuthorizationReceipt, type AgentPeerAuthorizationStatus, type AgentPeerCancelReceipt, type AgentPeerCancelStatus, type AgentPeerContinuationReceipt, type AgentPeerContinuationStatus, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentPeerSendStatus, type AgentServiceA2aFrame, type AgentServiceListOptions, type AgentServiceProviderAbort, type AgentServicePushAuthentication, type AgentServicePushConfig, type AgentServicePushConfigInput, type AgentServicePushConfigPage, type AgentServiceReceipt, type AgentServiceStopReceipt, type AgentServiceTaskPage, type AgentServiceTaskState, type SecretRef } from "./agent_services.js";

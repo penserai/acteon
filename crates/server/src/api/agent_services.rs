@@ -254,6 +254,8 @@ struct GovernedPushAuthentication {
     scheme: String,
     #[serde(default)]
     credentials: Option<String>,
+    #[serde(default)]
+    credentials_ref: Option<acteon_core::SecretRef>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -267,6 +269,8 @@ struct GovernedPushConfigInput {
     url: String,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    token_ref: Option<acteon_core::SecretRef>,
     #[serde(default)]
     authentication: Option<GovernedPushAuthentication>,
 }
@@ -283,6 +287,8 @@ struct GovernedInlinePushConfig {
     url: String,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    token_ref: Option<acteon_core::SecretRef>,
     #[serde(default)]
     authentication: Option<GovernedPushAuthentication>,
 }
@@ -408,6 +414,7 @@ fn governed_push_input(
     id: Option<String>,
     url: String,
     token: Option<String>,
+    token_ref: Option<acteon_core::SecretRef>,
     authentication: Option<GovernedPushAuthentication>,
 ) -> Result<super::a2a_push::SetPushConfigInput, AgentRpcFailure> {
     if authentication
@@ -422,9 +429,11 @@ fn governed_push_input(
         id: id.filter(|id| !id.is_empty()),
         url,
         token,
+        token_ref,
         authentication: authentication.map(|authentication| PushAuthentication {
             schemes: vec![authentication.scheme],
             credentials: authentication.credentials,
+            credentials_ref: authentication.credentials_ref,
         }),
     })
 }
@@ -440,6 +449,10 @@ fn project_governed_push_config(
     if let Some(token) = &config.token {
         value["token"] = Value::String(token.clone());
     }
+    if let Some(token_ref) = &config.token_ref {
+        value["tokenRef"] =
+            serde_json::to_value(token_ref).map_err(|_| AgentRpcFailure::internal())?;
+    }
     if let Some(authentication) = &config.authentication {
         let [scheme] = authentication.schemes.as_slice() else {
             return Err(AgentRpcFailure::internal());
@@ -447,6 +460,10 @@ fn project_governed_push_config(
         let mut authentication_value = serde_json::json!({"scheme": scheme});
         if let Some(credentials) = &authentication.credentials {
             authentication_value["credentials"] = Value::String(credentials.clone());
+        }
+        if let Some(credentials_ref) = &authentication.credentials_ref {
+            authentication_value["credentialsRef"] =
+                serde_json::to_value(credentials_ref).map_err(|_| AgentRpcFailure::internal())?;
         }
         value["authentication"] = authentication_value;
     }
@@ -534,7 +551,13 @@ fn governed_inline_push_input(
             "an inline push configuration taskId must be empty",
         ));
     }
-    let converted = governed_push_input(input.id, input.url, input.token, input.authentication)?;
+    let converted = governed_push_input(
+        input.id,
+        input.url,
+        input.token,
+        input.token_ref,
+        input.authentication,
+    )?;
     let mut candidate = TaskPushNotificationConfig::new(
         converted.id.as_deref().unwrap_or("pending-config"),
         "pending-task",
@@ -543,6 +566,7 @@ fn governed_inline_push_input(
         &converted.url,
     );
     candidate.token.clone_from(&converted.token);
+    candidate.token_ref.clone_from(&converted.token_ref);
     candidate
         .authentication
         .clone_from(&converted.authentication);
@@ -771,6 +795,7 @@ async fn submit_agent_rpc(
                 id: input.id,
                 url: input.url,
                 token: input.token,
+                token_ref: input.token_ref,
                 authentication: input.authentication,
             })
             .collect();
@@ -1304,7 +1329,13 @@ async fn create_governed_push_config_rpc(
         return Err(AgentRpcFailure::invalid("taskId must not be empty"));
     }
     authorize_governed_push_task(context, &params.task_id).await?;
-    let input = governed_push_input(params.id, params.url, params.token, params.authentication)?;
+    let input = governed_push_input(
+        params.id,
+        params.url,
+        params.token,
+        params.token_ref,
+        params.authentication,
+    )?;
     let scope = TaskScope::new(context.namespace, context.tenant);
     let config =
         super::a2a_push::save_authorized_config(context.state, &scope, &params.task_id, input)

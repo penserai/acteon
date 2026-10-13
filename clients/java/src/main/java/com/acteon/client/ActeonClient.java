@@ -231,8 +231,10 @@ public class ActeonClient implements AutoCloseable {
         if (input.authentication() != null) {
             var auth = new HashMap<String, Object>(); auth.put("scheme", input.authentication().scheme());
             if (input.authentication().credentials() != null) auth.put("credentials", input.authentication().credentials());
+            if (input.authentication().credentialsRef() != null) auth.put("credentialsRef", input.authentication().credentialsRef());
             params.put("authentication", auth);
         }
+        if (input.tokenRef() != null) params.put("tokenRef", input.tokenRef());
         return params;
     }
     private com.fasterxml.jackson.databind.JsonNode agentServicePushRpc(

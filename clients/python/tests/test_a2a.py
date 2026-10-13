@@ -12,6 +12,8 @@ from typing import Any
 
 from acteon_client import (
     A2A_PROTOCOL_VERSION,
+    A2APushAuthentication,
+    SecretRef,
     make_input_response,
     make_message,
     make_part_data,
@@ -140,16 +142,28 @@ class TestFactories(unittest.TestCase):
         cfg = make_push_config("https://hook/x")
         self.assertEqual(cfg, {"url": "https://hook/x"})
 
-    def test_make_push_config_full(self):
+    def test_make_push_config_supports_host_owned_secret_references(self):
         cfg = make_push_config(
             "https://hook/x",
             id="cfg-1",
-            token="t",
-            authentication={"schemes": ["api-key"]},
+            token_ref=SecretRef("environment", "callbacks/token", "v2"),
+            authentication=A2APushAuthentication(
+                ("Bearer",),
+                credentials_ref=SecretRef("environment", "callbacks/auth", "v2"),
+            ),
         )
         self.assertEqual(cfg["id"], "cfg-1")
-        self.assertEqual(cfg["token"], "t")
-        self.assertEqual(cfg["authentication"], {"schemes": ["api-key"]})
+        self.assertEqual(cfg["tokenRef"]["key"], "callbacks/token")
+        self.assertEqual(cfg["authentication"]["schemes"], ["Bearer"])
+        self.assertEqual(cfg["authentication"]["credentialsRef"]["key"], "callbacks/auth")
+
+    def test_make_push_config_rejects_inline_and_referenced_token(self):
+        with self.assertRaises(ValueError):
+            make_push_config(
+                "https://hook/x",
+                token="inline",
+                token_ref=SecretRef("environment", "callbacks/token"),
+            )
 
 
 # ---------------------------------------------------------------------

@@ -12,6 +12,7 @@ mod federation_finality;
 mod llm;
 mod providers;
 mod reconciliation;
+mod secrets;
 mod server;
 mod signing;
 mod snapshot;
@@ -36,6 +37,7 @@ pub use federation_finality::*;
 pub use llm::*;
 pub use providers::*;
 pub use reconciliation::*;
+pub use secrets::*;
 pub use server::*;
 pub use signing::*;
 pub use snapshot::*;
@@ -48,6 +50,9 @@ use serde::Deserialize;
 /// Top-level configuration for the Acteon server, loaded from a TOML file.
 #[derive(Debug, Deserialize)]
 pub struct ActeonConfig {
+    /// Host-owned secret references resolved only at effect boundaries.
+    #[serde(default)]
+    pub secret_custody: SecretCustodyConfig,
     /// State backend configuration.
     #[serde(default)]
     pub state: StateConfig,

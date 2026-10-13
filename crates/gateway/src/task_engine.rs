@@ -6436,6 +6436,7 @@ mod tests {
         config.authentication = Some(acteon_core::PushAuthentication {
             schemes: vec!["Bearer".into()],
             credentials: Some("credential-secret".into()),
+            credentials_ref: None,
         });
         e.upsert_push_config(&scope(), "t1", config).await.unwrap();
         e.delete_push_config(&scope(), "t1", "callback-1")

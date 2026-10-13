@@ -63,6 +63,12 @@ pub struct AgentServicePushAuthentication {
     pub scheme: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "credentialsRef"
+    )]
+    pub credentials_ref: Option<acteon_core::SecretRef>,
 }
 
 impl std::fmt::Debug for AgentServicePushAuthentication {
@@ -74,6 +80,7 @@ impl std::fmt::Debug for AgentServicePushAuthentication {
                 "credentials",
                 &self.credentials.as_ref().map(|_| "<redacted>"),
             )
+            .field("credentials_ref", &self.credentials_ref)
             .finish()
     }
 }
@@ -87,6 +94,8 @@ pub struct AgentServicePushConfigInput {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "tokenRef")]
+    pub token_ref: Option<acteon_core::SecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authentication: Option<AgentServicePushAuthentication>,
 }
@@ -98,6 +107,7 @@ impl std::fmt::Debug for AgentServicePushConfigInput {
             .field("id", &self.id)
             .field("url", &self.url)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("token_ref", &self.token_ref)
             .field("authentication", &self.authentication)
             .finish()
     }
@@ -113,6 +123,8 @@ pub struct AgentServicePushConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<acteon_core::SecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authentication: Option<AgentServicePushAuthentication>,
 }
 
@@ -124,6 +136,7 @@ impl std::fmt::Debug for AgentServicePushConfig {
             .field("task_id", &self.task_id)
             .field("url", &self.url)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("token_ref", &self.token_ref)
             .field("authentication", &self.authentication)
             .finish()
     }
@@ -2068,6 +2081,30 @@ impl ActeonClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_config_secret_references_round_trip_without_inline_material() {
+        let reference = acteon_core::SecretRef::new("vault", "callbacks/main").with_version("v2");
+        let input = AgentServicePushConfigInput {
+            id: Some("cfg-1".into()),
+            url: "https://callback.example/a2a".into(),
+            token: None,
+            token_ref: Some(reference.clone()),
+            authentication: Some(AgentServicePushAuthentication {
+                scheme: "Bearer".into(),
+                credentials: None,
+                credentials_ref: Some(reference),
+            }),
+        };
+        let wire = serde_json::to_value(input).unwrap();
+        assert_eq!(wire["tokenRef"]["version"], "v2");
+        assert_eq!(
+            wire["authentication"]["credentialsRef"]["key"],
+            "callbacks/main"
+        );
+        assert!(wire.get("token").is_none());
+        assert!(wire["authentication"].get("credentials").is_none());
+    }
     use axum::{
         Json, Router, body::to_bytes, extract::Request, response::IntoResponse, routing::any,
     };

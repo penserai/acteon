@@ -648,6 +648,7 @@ fn materialize_inline_push_config(
         tenant: scope.tenant.clone(),
         url: input.url,
         token: input.token,
+        token_ref: input.token_ref,
         authentication: input.authentication,
         created_at: now,
         updated_at: now,
@@ -848,6 +849,8 @@ struct V1PushAuthentication {
     scheme: String,
     #[serde(default)]
     credentials: Option<String>,
+    #[serde(default)]
+    credentials_ref: Option<acteon_core::SecretRef>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -861,6 +864,8 @@ struct V1PushConfigInput {
     url: String,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    token_ref: Option<acteon_core::SecretRef>,
     #[serde(default)]
     authentication: Option<V1PushAuthentication>,
 }
@@ -877,6 +882,8 @@ struct V1InlinePushConfig {
     url: String,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    token_ref: Option<acteon_core::SecretRef>,
     #[serde(default)]
     authentication: Option<V1PushAuthentication>,
 }
@@ -938,6 +945,10 @@ fn project_v1_push_config(
             if let Some(credentials) = &authentication.credentials {
                 value["credentials"] = Value::String(credentials.clone());
             }
+            if let Some(credentials_ref) = &authentication.credentials_ref {
+                value["credentialsRef"] = serde_json::to_value(credentials_ref)
+                    .map_err(|_| A2aError::internal("internal error"))?;
+            }
             Some(value)
         }
         Some(_) => return Err(A2aError::internal("internal error")),
@@ -950,6 +961,10 @@ fn project_v1_push_config(
     if let Some(token) = &config.token {
         value["token"] = Value::String(token.clone());
     }
+    if let Some(token_ref) = &config.token_ref {
+        value["tokenRef"] =
+            serde_json::to_value(token_ref).map_err(|_| A2aError::internal("internal error"))?;
+    }
     if let Some(authentication) = authentication {
         value["authentication"] = authentication;
     }
@@ -961,10 +976,12 @@ fn v1_push_input(input: V1PushConfigInput) -> super::a2a_push::SetPushConfigInpu
         id: input.id.filter(|id| !id.is_empty()),
         url: input.url,
         token: input.token,
+        token_ref: input.token_ref,
         authentication: input.authentication.map(|authentication| {
             acteon_core::PushAuthentication {
                 schemes: vec![authentication.scheme],
                 credentials: authentication.credentials,
+                credentials_ref: authentication.credentials_ref,
             }
         }),
     }
@@ -1002,10 +1019,12 @@ fn v1_inline_push_input(
         id: input.id.filter(|id| !id.is_empty()),
         url: input.url,
         token: input.token,
+        token_ref: input.token_ref,
         authentication: input.authentication.map(|authentication| {
             acteon_core::PushAuthentication {
                 schemes: vec![authentication.scheme],
                 credentials: authentication.credentials,
+                credentials_ref: authentication.credentials_ref,
             }
         }),
     }))
@@ -2985,6 +3004,7 @@ mod tests {
                 id: Some("must-not-exist".into()),
                 url: "https://callbacks.example/a2a".into(),
                 token: None,
+                token_ref: None,
                 authentication: None,
             }),
         )
@@ -3437,6 +3457,7 @@ mod tests {
         config.authentication = Some(acteon_core::PushAuthentication {
             schemes: vec!["Bearer".into()],
             credentials: Some("push-secret".into()),
+            credentials_ref: None,
         });
         let value = project_v1_push_config(&config).unwrap();
         assert_eq!(value["id"], "config-1");
@@ -3473,6 +3494,7 @@ mod tests {
             id: None,
             url: "http://127.0.0.1/push".into(),
             token: None,
+            token_ref: None,
             authentication: None,
         };
         assert_eq!(

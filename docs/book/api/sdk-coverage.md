@@ -348,6 +348,13 @@ the task became final before cancellation took effect. When the original target
 acknowledgment was lost, a nonterminal observation keeps the cancellation
 `uncertain`; the repeat does not send another stop request.
 
+All five SDKs expose typed A2A callback secret references. Rust uses
+`acteon_core::SecretRef`; Python and TypeScript export `SecretRef`; Go and Java
+provide the same named type. Callback inputs accept `tokenRef` and
+`authentication.credentialsRef`, reject a simultaneous inline value, and
+preserve provider, key, and optional version on management reads. See [secret
+custody](../features/secret-custody.md).
+
 Accepted peer tasks in `InputRequired` can be continued through
 `agent_service_continue_peer`, `agentServiceContinuePeer`, or
 `AgentServiceContinuePeer`. Supply an unbound role-`user` message: the SDK

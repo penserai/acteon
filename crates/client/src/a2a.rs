@@ -48,7 +48,7 @@ pub fn a2a_input_response(
 /// Re-exported core types so callers can construct messages /
 /// configs without depending on `acteon_core` directly.
 pub use acteon_core::{
-    AgentCard, Artifact, PauseKind, PushAuthentication, TASK_CHALLENGE_ID_METADATA_KEY,
+    AgentCard, Artifact, PauseKind, PushAuthentication, SecretRef, TASK_CHALLENGE_ID_METADATA_KEY,
     TaskArtifactUpdateEvent, TaskPart, TaskRole, TaskState, TaskStatus,
 };
 
@@ -381,6 +381,9 @@ pub struct PushConfigInput {
     /// Optional callback token sent in `X-A2A-Notification-Token`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Optional host-owned callback-token reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<SecretRef>,
     /// Optional richer authentication metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<PushAuthentication>,
@@ -428,6 +431,7 @@ mod tests {
             id: None,
             url: "https://x.example.com/hook".to_string(),
             token: None,
+            token_ref: None,
             authentication: None,
         };
         let json = serde_json::to_value(&input).unwrap();
@@ -435,6 +439,29 @@ mod tests {
         assert!(json.get("id").is_none());
         assert!(json.get("token").is_none());
         assert!(json.get("authentication").is_none());
+    }
+
+    #[test]
+    fn push_config_input_serializes_secret_references() {
+        let input = PushConfigInput {
+            id: Some("cfg-1".into()),
+            url: "https://x.example.com/hook".into(),
+            token: None,
+            token_ref: Some(SecretRef::new("environment", "callbacks/token").with_version("v2")),
+            authentication: Some(PushAuthentication {
+                schemes: vec!["Bearer".into()],
+                credentials: None,
+                credentials_ref: Some(
+                    SecretRef::new("environment", "callbacks/auth").with_version("v2"),
+                ),
+            }),
+        };
+        let json = serde_json::to_value(input).unwrap();
+        assert_eq!(json["tokenRef"]["key"], "callbacks/token");
+        assert_eq!(
+            json["authentication"]["credentialsRef"]["key"],
+            "callbacks/auth"
+        );
     }
 
     #[test]

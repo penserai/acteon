@@ -142,6 +142,8 @@ public final class A2A {
          *  {@code X-A2A-Notification-Token} on every push
          *  POST. */
         public String token;
+        /** Host-owned token reference, mutually exclusive with token. */
+        public SecretRef tokenRef;
         /** Optional richer authentication metadata. */
         public Map<String, Object> authentication;
 
@@ -155,9 +157,36 @@ public final class A2A {
             return this;
         }
 
+        public PushConfigOptions tokenRef(SecretRef value) {
+            this.tokenRef = value;
+            return this;
+        }
+
         public PushConfigOptions authentication(Map<String, Object> value) {
             this.authentication = value;
             return this;
+        }
+
+        public PushConfigOptions authentication(PushAuthenticationOptions value) {
+            Map<String, Object> mapped = new LinkedHashMap<>();
+            if (!value.schemes().isEmpty()) mapped.put("schemes", value.schemes());
+            if (value.credentials() != null && value.credentialsRef() != null)
+                throw new IllegalArgumentException("authentication credentials and credentialsRef are mutually exclusive");
+            if (value.credentials() != null) mapped.put("credentials", value.credentials());
+            if (value.credentialsRef() != null) mapped.put("credentialsRef", value.credentialsRef());
+            this.authentication = mapped;
+            return this;
+        }
+    }
+
+    /** Typed standard-A2A callback authentication metadata. */
+    public record PushAuthenticationOptions(
+        List<String> schemes, String credentials, SecretRef credentialsRef
+    ) {
+        public PushAuthenticationOptions {
+            schemes = schemes == null ? List.of() : List.copyOf(schemes);
+            if (credentials != null && credentialsRef != null)
+                throw new IllegalArgumentException("authentication credentials and credentialsRef are mutually exclusive");
         }
     }
 
@@ -170,6 +199,9 @@ public final class A2A {
         if (opts != null) {
             if (opts.id != null) body.put("id", opts.id);
             if (opts.token != null) body.put("token", opts.token);
+            if (opts.token != null && opts.tokenRef != null)
+                throw new IllegalArgumentException("token and tokenRef are mutually exclusive");
+            if (opts.tokenRef != null) body.put("tokenRef", opts.tokenRef);
             if (opts.authentication != null) body.put("authentication", opts.authentication);
         }
         return body;

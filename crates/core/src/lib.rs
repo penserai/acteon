@@ -34,6 +34,7 @@ pub mod quota;
 pub mod recurring;
 pub mod resource;
 
+pub use acteon_secrets::SecretRef;
 pub use execution_context::{ExecutionContextReference, ExecutionContextReferenceError};
 pub mod retention;
 pub mod silence;

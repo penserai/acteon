@@ -56,14 +56,22 @@ type AgentServiceTaskPage struct {
 }
 
 type AgentServicePushAuthentication struct {
-	Scheme      string
-	Credentials *string
+	Scheme         string
+	Credentials    *string
+	CredentialsRef *SecretRef
+}
+
+type SecretRef struct {
+	Provider string `json:"provider"`
+	Key      string `json:"key"`
+	Version  string `json:"version,omitempty"`
 }
 
 type AgentServicePushConfigInput struct {
 	ID             string
 	URL            string
 	Token          *string
+	TokenRef       *SecretRef
 	Authentication *AgentServicePushAuthentication
 }
 
@@ -72,6 +80,7 @@ type AgentServicePushConfig struct {
 	TaskID         string
 	URL            string
 	Token          *string
+	TokenRef       *SecretRef
 	Authentication *AgentServicePushAuthentication
 }
 
@@ -536,6 +545,9 @@ func pushConfigInput(taskID string, input AgentServicePushConfigInput) (map[stri
 	if input.Token != nil && len(*input.Token) > 4096 {
 		return nil, fmt.Errorf("push token is too large")
 	}
+	if input.Token != nil && input.TokenRef != nil || input.TokenRef != nil && !validSecretRef(input.TokenRef) {
+		return nil, fmt.Errorf("push token reference is invalid")
+	}
 	params := map[string]any{"taskId": taskID, "url": input.URL}
 	if input.ID != "" {
 		params["id"] = input.ID
@@ -543,14 +555,20 @@ func pushConfigInput(taskID string, input AgentServicePushConfigInput) (map[stri
 	if input.Token != nil {
 		params["token"] = *input.Token
 	}
+	if input.TokenRef != nil {
+		params["tokenRef"] = input.TokenRef
+	}
 	if input.Authentication != nil {
 		auth := input.Authentication
-		if strings.TrimSpace(auth.Scheme) == "" || len(auth.Scheme) > 256 || auth.Credentials != nil && len(*auth.Credentials) > 4096 {
+		if strings.TrimSpace(auth.Scheme) == "" || len(auth.Scheme) > 256 || auth.Credentials != nil && len(*auth.Credentials) > 4096 || auth.Credentials != nil && auth.CredentialsRef != nil || auth.CredentialsRef != nil && !validSecretRef(auth.CredentialsRef) {
 			return nil, fmt.Errorf("push authentication is invalid")
 		}
 		value := map[string]any{"scheme": auth.Scheme}
 		if auth.Credentials != nil {
 			value["credentials"] = *auth.Credentials
+		}
+		if auth.CredentialsRef != nil {
+			value["credentialsRef"] = auth.CredentialsRef
 		}
 		params["authentication"] = value
 	}
@@ -558,11 +576,11 @@ func pushConfigInput(taskID string, input AgentServicePushConfigInput) (map[stri
 }
 
 func parsePushConfig(value map[string]any, taskID, expectedID string) (*AgentServicePushConfig, error) {
-	if len(value) < 3 || len(value) > 5 {
+	if len(value) < 3 || len(value) > 6 {
 		return nil, fmt.Errorf("agent service A2A push configuration is invalid")
 	}
 	for key := range value {
-		if key != "id" && key != "taskId" && key != "url" && key != "token" && key != "authentication" {
+		if key != "id" && key != "taskId" && key != "url" && key != "token" && key != "tokenRef" && key != "authentication" {
 			return nil, fmt.Errorf("agent service A2A push configuration fields are invalid")
 		}
 	}
@@ -579,13 +597,20 @@ func parsePushConfig(value map[string]any, taskID, expectedID string) (*AgentSer
 		}
 		config.Token = &text
 	}
+	if raw, present := value["tokenRef"]; present {
+		ref, err := parseSecretRef(raw)
+		if err != nil || config.Token != nil {
+			return nil, fmt.Errorf("agent service A2A push token reference is invalid")
+		}
+		config.TokenRef = ref
+	}
 	if raw, present := value["authentication"]; present {
 		auth, ok := raw.(map[string]any)
-		if !ok || len(auth) < 1 || len(auth) > 2 {
+		if !ok || len(auth) < 1 || len(auth) > 3 {
 			return nil, fmt.Errorf("agent service A2A push authentication is invalid")
 		}
 		for key := range auth {
-			if key != "scheme" && key != "credentials" {
+			if key != "scheme" && key != "credentials" && key != "credentialsRef" {
 				return nil, fmt.Errorf("agent service A2A push authentication is invalid")
 			}
 		}
@@ -601,9 +626,60 @@ func parsePushConfig(value map[string]any, taskID, expectedID string) (*AgentSer
 			}
 			parsed.Credentials = &text
 		}
+		if raw, present := auth["credentialsRef"]; present {
+			ref, err := parseSecretRef(raw)
+			if err != nil || parsed.Credentials != nil {
+				return nil, fmt.Errorf("agent service A2A push credential reference is invalid")
+			}
+			parsed.CredentialsRef = ref
+		}
 		config.Authentication = parsed
 	}
 	return config, nil
+}
+
+func parseSecretRef(value any) (*SecretRef, error) {
+	object, ok := value.(map[string]any)
+	if !ok || len(object) < 2 || len(object) > 3 {
+		return nil, fmt.Errorf("secret reference is invalid")
+	}
+	for key := range object {
+		if key != "provider" && key != "key" && key != "version" {
+			return nil, fmt.Errorf("secret reference is invalid")
+		}
+	}
+	provider, providerOK := object["provider"].(string)
+	key, keyOK := object["key"].(string)
+	ref := &SecretRef{Provider: provider, Key: key}
+	if version, present := object["version"]; present {
+		text, ok := version.(string)
+		if !ok {
+			return nil, fmt.Errorf("secret reference is invalid")
+		}
+		ref.Version = text
+	}
+	if !providerOK || !keyOK || !validSecretRef(ref) {
+		return nil, fmt.Errorf("secret reference is invalid")
+	}
+	return ref, nil
+}
+
+func validSecretRef(ref *SecretRef) bool {
+	valid := func(value string, optional bool) bool {
+		if value == "" {
+			return optional
+		}
+		if len(value) > 256 {
+			return false
+		}
+		for _, character := range value {
+			if !(character >= 'A' && character <= 'Z') && !(character >= 'a' && character <= 'z') && !(character >= '0' && character <= '9') && !strings.ContainsRune("._-/", character) {
+				return false
+			}
+		}
+		return true
+	}
+	return ref != nil && valid(ref.Provider, false) && valid(ref.Key, false) && valid(ref.Version, true)
 }
 
 func (c *Client) agentServicePushRPC(ctx context.Context, namespace, tenant, agent, taskID, method string, params map[string]any, source *AgentServiceReceipt) (map[string]any, error) {

@@ -103,17 +103,27 @@ class A2ATest {
     }
 
     @Test
-    void makePushConfigFull() {
+    void makePushConfigSupportsHostOwnedSecretReferences() {
         Map<String, Object> cfg = A2A.makePushConfig(
             "https://hook/x",
             new A2A.PushConfigOptions()
                 .id("cfg-1")
-                .token("t")
-                .authentication(Map.of("schemes", List.of("api-key")))
+                .tokenRef(new SecretRef("environment", "callbacks/token", "v2"))
+                .authentication(new A2A.PushAuthenticationOptions(
+                    List.of("Bearer"), null, new SecretRef("environment", "callbacks/auth", "v2")))
         );
         assertEquals("cfg-1", cfg.get("id"));
-        assertEquals("t", cfg.get("token"));
-        assertNotNull(cfg.get("authentication"));
+        assertEquals("callbacks/token", ((SecretRef) cfg.get("tokenRef")).key());
+        assertEquals(List.of("Bearer"), ((Map<?, ?>) cfg.get("authentication")).get("schemes"));
+        assertEquals("callbacks/auth", ((SecretRef) ((Map<?, ?>) cfg.get("authentication")).get("credentialsRef")).key());
+    }
+
+    @Test
+    void makePushConfigRejectsInlineAndReferencedToken() {
+        var opts = new A2A.PushConfigOptions()
+            .token("inline")
+            .tokenRef(new SecretRef("environment", "callbacks/token", null));
+        assertThrows(IllegalArgumentException.class, () -> A2A.makePushConfig("https://hook/x", opts));
     }
 
     // ----------------------------------------------------------------

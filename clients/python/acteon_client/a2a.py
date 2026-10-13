@@ -22,7 +22,11 @@ API-key header — the A2A spec requires it to be unauthenticated.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .agent_services import SecretRef
 from urllib.parse import quote
 
 from ._json import json_object, json_objects
@@ -42,6 +46,15 @@ A2A_CHALLENGE_ID_METADATA_KEY = "acteon.challengeId"
 
 _A2A_VERSION_HEADER = "A2A-Version"
 _A2A_HEADERS = {_A2A_VERSION_HEADER: A2A_PROTOCOL_VERSION}
+
+
+@dataclass(frozen=True)
+class A2APushAuthentication:
+    """Typed standard-A2A callback authentication metadata."""
+
+    schemes: tuple[str, ...] = ()
+    credentials: str | None = field(default=None, repr=False)
+    credentials_ref: SecretRef | None = None
 
 
 def _seg(s: str) -> str:
@@ -163,7 +176,8 @@ def make_push_config(
     *,
     id: str | None = None,  # noqa: A002 - mirrors the spec field
     token: str | None = None,
-    authentication: dict[str, Any] | None = None,
+    token_ref: SecretRef | None = None,
+    authentication: dict[str, Any] | A2APushAuthentication | None = None,
 ) -> dict[str, Any]:
     """Build a ``PushNotificationConfig`` body.
 
@@ -177,9 +191,32 @@ def make_push_config(
         body["id"] = id
     if token is not None:
         body["token"] = token
+    if token is not None and token_ref is not None:
+        raise ValueError("token and token_ref are mutually exclusive")
+    if token_ref is not None:
+        body["tokenRef"] = _secret_ref_payload(token_ref)
     if authentication is not None:
-        body["authentication"] = authentication
+        if isinstance(authentication, dict):
+            body["authentication"] = authentication
+        else:
+            if authentication.credentials is not None and authentication.credentials_ref is not None:
+                raise ValueError("authentication credentials and credentials_ref are mutually exclusive")
+            auth: dict[str, Any] = {}
+            if authentication.schemes:
+                auth["schemes"] = list(authentication.schemes)
+            if authentication.credentials is not None:
+                auth["credentials"] = authentication.credentials
+            if authentication.credentials_ref is not None:
+                auth["credentialsRef"] = _secret_ref_payload(authentication.credentials_ref)
+            body["authentication"] = auth
     return body
+
+
+def _secret_ref_payload(reference: SecretRef) -> dict[str, str]:
+    payload = {"provider": reference.provider, "key": reference.key}
+    if reference.version is not None:
+        payload["version"] = reference.version
+    return payload
 
 
 # ---------------------------------------------------------------------
