@@ -885,7 +885,14 @@ def _secret_ref(value: Any) -> SecretRef:
             )
         )
 
-    if not valid(provider) or not valid(key) or (version is not None and not valid(version)):
+    if (
+        not isinstance(provider, str)
+        or not isinstance(key, str)
+        or (version is not None and not isinstance(version, str))
+        or not valid(provider)
+        or not valid(key)
+        or (version is not None and not valid(version))
+    ):
         raise ValueError("secret reference is invalid")
     return SecretRef(provider, key, version)
 
