@@ -18,6 +18,13 @@ audited stage halt/resume, and delivery recovery, with measured results.
 Register and discover agents, follow interoperable tasks, and connect agent
 communication to Acteon's scoped operational interfaces.
 
+### [Federate independently operated agent domains](federated-agent-mesh.md)
+
+Connect two Acteon deployments through signed, audience-bound delegation.
+Follow capability negotiation, durable export, response-loss recovery, backend
+independence, and trust revocation through the production qualification
+contract.
+
 ### [Agent swarm coordination](agent-swarm-coordination.md)
 
 Coordinate specialist agents with identity, permissions, approvals, and usage

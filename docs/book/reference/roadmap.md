@@ -8,7 +8,7 @@ separates shipped milestones from possible extensions; it is not a delivery comm
 ## Available today
 
 - [Durable executions](../features/durable-executions.md), [worker queues](../features/task-queues.md), and [code workflows](../features/workflows.md).
-- [A2A tasks](../features/a2a.md), the [Agentic Bus](../concepts/agentic-bus.md), and [swarm orchestration](../features/agent-swarm.md).
+- [A2A tasks](../features/a2a.md), the [Agentic Bus](../concepts/agentic-bus.md), [swarm orchestration](../features/agent-swarm.md), and [mixed-backend federation qualification](../guides/federated-agent-mesh.md).
 - [Governed model inference](../features/governed-model-provider.md) with locked contracts and response validation.
 - [Managed stream stages](../features/managed-stream-stages.md), [quarantine repair](../features/stream-input-contracts.md), audited halt/resume, and [outbox delivery](../features/managed-stream-outbox.md).
 - [Secret custody](../features/secret-custody.md) with versioned, host-owned references resolved at the effect boundary.

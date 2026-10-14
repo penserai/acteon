@@ -369,8 +369,13 @@ evidence before the import call. A card outage is safely retryable because no
 effect endpoint was called; a signed downgrade or mismatch is a terminal local
 import-stage refusal.
 
-Production qualification still requires two-server failure testing on each
-supported production state backend.
+The production qualification contract runs two real Acteon processes, loses an
+accepted invocation response, restarts both domains, and recovers the exact
+remote task without repeating the provider effect. It runs once with isolated
+Redis domains and again with a Redis source plus PostgreSQL destination. The
+mixed-backend run also revokes destination trust and proves a later export is
+rejected without another provider call. See the
+[federated agent mesh guide](../guides/federated-agent-mesh.md).
 
 ### Discovery (unauthenticated)
 
