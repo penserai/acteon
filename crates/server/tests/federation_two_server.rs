@@ -977,6 +977,11 @@ async fn two_server_federation_contract(
     let rejected_export: Value = rejected_export.json().await.unwrap();
     assert_eq!(rejected_export["attempt_status"], "settled");
     assert_eq!(rejected_export["delivery"]["status"], "rejected");
+    assert_eq!(rejected_export["delivery"]["stage"], "import");
+    assert_eq!(
+        rejected_export["delivery"]["code"],
+        "governance_authority_denied"
+    );
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
     println!(
         "federation qualification: initial=invoke_uncertain restart=accepted provider_effects=1 post_revocation=rejected"
