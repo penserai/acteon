@@ -191,6 +191,7 @@ nav:
     - Agent workforce: guides/agent-workforce.md
     - Neural observability: guides/neural-observability-detector.md
     - A2A and agent registry: guides/a2a-agent-registry-tutorial.md
+    - Federated agent mesh: guides/federated-agent-mesh.md
     - Agent swarm coordination: guides/agent-swarm-coordination.md
     - Incident response: guides/incident-response-pipeline.md
     - E-commerce orders: guides/ecommerce-order-pipeline.md

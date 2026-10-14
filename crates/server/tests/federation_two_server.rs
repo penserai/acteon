@@ -48,7 +48,8 @@ const NAMESPACE: &str = "prod";
 const TENANT: &str = "acme";
 const SOURCE_DOMAIN: &str = "acteon://source/prod";
 const DESTINATION_DOMAIN: &str = "acteon://destination/prod";
-const EXECUTION_AUTHORITY_KEY: &str = "federation-test-execution-authority-key";
+const SOURCE_EXECUTION_AUTHORITY_KEY: &str = "federation-source-execution-authority-key";
+const DESTINATION_EXECUTION_AUTHORITY_KEY: &str = "federation-destination-execution-authority-key";
 
 struct BinaryServer {
     process: Child,
@@ -90,12 +91,6 @@ impl BinaryServer {
         command
             .arg("-c")
             .arg(directory.join("acteon.toml"))
-            .env("ACTEON_AUTH_KEY", "11".repeat(32))
-            .env(
-                "ACTEON_AUTH_AUTHORITY_KEY",
-                "federation-test-auth-authority-key",
-            )
-            .env("ACTEON_EXECUTION_AUTHORITY_KEY", EXECUTION_AUTHORITY_KEY)
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
         for (name, value) in environment {
@@ -299,7 +294,7 @@ fn destination_execution(
         .prepare(
             &execution,
             ("auth-control", "deployment"),
-            EXECUTION_AUTHORITY_KEY.as_bytes(),
+            DESTINATION_EXECUTION_AUTHORITY_KEY.as_bytes(),
         )
         .unwrap();
     let shape = destination_shape(&prepared[0]);
@@ -370,7 +365,7 @@ fn destination_execution(
         .prepare(
             &execution,
             ("auth-control", "deployment"),
-            EXECUTION_AUTHORITY_KEY.as_bytes(),
+            DESTINATION_EXECUTION_AUTHORITY_KEY.as_bytes(),
         )
         .unwrap();
     (execution, trust)
@@ -492,18 +487,18 @@ fn source_execution(
 
 fn server_configuration(
     port: u16,
-    redis_url: &str,
-    prefix: &str,
+    state: &Value,
+    deployment_id: &str,
     webhook: &str,
     execution: &ExecutionAuthorityConfig,
 ) -> Value {
     json!({
         "server": {"host": "127.0.0.1", "port": port},
-        "state": {"backend": "redis", "url": redis_url, "prefix": prefix},
+        "state": state,
         "ui": {"enabled": false},
         "auth": {"enabled": true, "config_path": "auth.toml", "watch": false,
             "authority": {"namespace": "auth-control", "tenant": "deployment",
-                "source_id": format!("federation-{prefix}"), "bootstrap": true}},
+                "source_id": format!("federation-{deployment_id}"), "bootstrap": true}},
         "providers": [{"name": "incident", "type": "webhook", "url": webhook,
             "internal_hosts": ["127.0.0.1"]}],
         "execution_authority": execution
@@ -570,7 +565,7 @@ fn source_and_destination_declarations_prepare_as_one_exact_contract() {
         .prepare(
             &source,
             ("auth-control", "deployment"),
-            EXECUTION_AUTHORITY_KEY.as_bytes(),
+            SOURCE_EXECUTION_AUTHORITY_KEY.as_bytes(),
         )
         .unwrap();
     let export = &source.scopes[0].federation.as_ref().unwrap().exports[0];
@@ -647,13 +642,7 @@ actions = ["rpc"]
     )
 }
 
-async fn publish_official_v1_card(redis_url: &str, prefix: &str, server_url: &str) {
-    let config = acteon_state_redis::RedisConfig {
-        url: redis_url.to_string(),
-        prefix: prefix.to_string(),
-        ..Default::default()
-    };
-    let store = acteon_state_redis::RedisStateStore::new(&config).unwrap();
+async fn publish_official_v1_card(store: &dyn StateStore, server_url: &str) {
     let mut card = AgentCard::new(
         "official-worker",
         NAMESPACE,
@@ -706,18 +695,19 @@ async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
     .unwrap();
 }
 
-#[tokio::test]
-#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL and socket-enabled process execution"]
-async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
-    let redis_url = std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap();
+async fn two_server_federation_contract(
+    source_state: Value,
+    destination_state: Value,
+    source_card_store: Arc<dyn StateStore>,
+    run_external_a2a_conformance: bool,
+) {
     let (webhook, provider_calls, webhook_task) = counted_webhook().await;
     let registry = provider_registry(&webhook);
     let (destination_execution, trust) = destination_execution(&registry);
-    let destination_prefix = format!("federation-destination-{}", uuid::Uuid::new_v4());
     let destination_config = server_configuration(
         free_port(),
-        &redis_url,
-        &destination_prefix,
+        &destination_state,
+        "destination",
         &webhook,
         &destination_execution,
     );
@@ -725,6 +715,15 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         &destination_config,
         &destination_authentication(),
         vec![
+            ("ACTEON_AUTH_KEY".into(), "22".repeat(32)),
+            (
+                "ACTEON_AUTH_AUTHORITY_KEY".into(),
+                "federation-destination-auth-authority-key".into(),
+            ),
+            (
+                "ACTEON_EXECUTION_AUTHORITY_KEY".into(),
+                DESTINATION_EXECUTION_AUTHORITY_KEY.into(),
+            ),
             (
                 "ACTEON_DESTINATION_RECIPIENT".into(),
                 "worker-secret".into(),
@@ -766,14 +765,13 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         .prepare(
             &source_execution,
             ("auth-control", "deployment"),
-            EXECUTION_AUTHORITY_KEY.as_bytes(),
+            SOURCE_EXECUTION_AUTHORITY_KEY.as_bytes(),
         )
         .unwrap();
-    let source_prefix = format!("federation-source-{}", uuid::Uuid::new_v4());
     let source_config = server_configuration(
         free_port(),
-        &redis_url,
-        &source_prefix,
+        &source_state,
+        "source",
         &webhook,
         &source_execution,
     );
@@ -781,6 +779,15 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         &source_config,
         &source_authentication(),
         vec![
+            ("ACTEON_AUTH_KEY".into(), "33".repeat(32)),
+            (
+                "ACTEON_AUTH_AUTHORITY_KEY".into(),
+                "federation-source-auth-authority-key".into(),
+            ),
+            (
+                "ACTEON_EXECUTION_AUTHORITY_KEY".into(),
+                SOURCE_EXECUTION_AUTHORITY_KEY.into(),
+            ),
             ("ACTEON_SOURCE_RECIPIENT".into(), "source-secret".into()),
             ("ACTEON_SOURCE_FEDERATION_SIGNER".into(), "29".repeat(32)),
             (
@@ -790,8 +797,10 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         ],
     );
     source.ready(&client).await;
-    publish_official_v1_card(&redis_url, &source_prefix, &source.url).await;
-    run_official_a2a_client(&source.url);
+    publish_official_v1_card(source_card_store.as_ref(), &source.url).await;
+    if run_external_a2a_conformance {
+        run_official_a2a_client(&source.url);
+    }
 
     let accepted = client
         .post(format!(
@@ -903,6 +912,123 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
     assert_eq!(remote_status, 404, "{remote_body}");
     assert_eq!(remote_body, r#"{"error":"service_task_unavailable"}"#);
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+
+    let revoked = client
+        .post(format!(
+            "{}/v1/governance/federation/trusts/revoke",
+            destination.url
+        ))
+        .bearer_auth("operator-secret")
+        .json(&json!({
+            "namespace": NAMESPACE,
+            "tenant": TENANT,
+            "change_id": "revoke-source-prod-v1",
+            "trust_id": "source-prod",
+            "expected_revision": 1,
+            "reason": "two-server conformance revocation"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), 200, "{}", revoked.text().await.unwrap());
+
+    let accepted_after_revocation = client
+        .post(format!(
+            "{}/a2a/{NAMESPACE}/{TENANT}/agents/source/v1/message:send",
+            source.url
+        ))
+        .bearer_auth("controller-secret")
+        .json(
+            &json!({"message": {"role": "user", "messageId": "source-task-after-revocation",
+            "parts": [{"kind": "text", "text": "attempt triage after peer revocation"}]}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted_after_revocation.status(),
+        200,
+        "{}",
+        accepted_after_revocation.text().await.unwrap()
+    );
+    let source_task_after_revocation: Value = accepted_after_revocation.json().await.unwrap();
+    let rejected_export = client
+        .post(format!(
+            "{}/a2a/{NAMESPACE}/{TENANT}/agents/source/v1/tasks/{}/federation/exports/remote-worker/message:send",
+            source.url,
+            source_task_after_revocation["id"].as_str().unwrap()
+        ))
+        .bearer_auth("source-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({"message": TaskMessage::text(
+            "federation-message-after-revocation",
+            TaskRole::User,
+            "this must not reach the incident provider",
+        )}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        rejected_export.status(),
+        200,
+        "{}",
+        rejected_export.text().await.unwrap()
+    );
+    let rejected_export: Value = rejected_export.json().await.unwrap();
+    assert_eq!(rejected_export["attempt_status"], "settled");
+    assert_eq!(rejected_export["delivery"]["status"], "rejected");
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    println!(
+        "federation qualification: initial=invoke_uncertain restart=accepted provider_effects=1 post_revocation=rejected"
+    );
     proxy_task.abort();
     webhook_task.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL and socket-enabled process execution"]
+async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
+    let redis_url = std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap();
+    let source_prefix = format!("federation-source-{}", uuid::Uuid::new_v4());
+    let destination_prefix = format!("federation-destination-{}", uuid::Uuid::new_v4());
+    let source_store = Arc::new(
+        acteon_state_redis::RedisStateStore::new(&acteon_state_redis::RedisConfig {
+            url: redis_url.clone(),
+            prefix: source_prefix.clone(),
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    two_server_federation_contract(
+        json!({"backend": "redis", "url": redis_url.clone(), "prefix": source_prefix}),
+        json!({"backend": "redis", "url": redis_url, "prefix": destination_prefix}),
+        source_store,
+        true,
+    )
+    .await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL, DATABASE_URL and socket-enabled process execution"]
+async fn independent_domains_recover_across_redis_and_postgres() {
+    let redis_url = std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap();
+    let database_url = std::env::var("DATABASE_URL").unwrap();
+    let source_prefix = format!("federation-source-{}", uuid::Uuid::new_v4());
+    let destination_prefix = format!("federation_destination_{}_", uuid::Uuid::new_v4().simple());
+    let source_store = Arc::new(
+        acteon_state_redis::RedisStateStore::new(&acteon_state_redis::RedisConfig {
+            url: redis_url.clone(),
+            prefix: source_prefix.clone(),
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    two_server_federation_contract(
+        json!({"backend": "redis", "url": redis_url, "prefix": source_prefix}),
+        json!({"backend": "postgres", "url": database_url, "prefix": destination_prefix}),
+        source_store,
+        false,
+    )
+    .await;
 }

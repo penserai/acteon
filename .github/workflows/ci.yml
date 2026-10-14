@@ -381,14 +381,14 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-executor --test federation_transport redis_backend_restart_and_finality_contract -- --ignored
-      - name: Two-server governed federation export contract
+      - name: Two-domain federation qualification across Redis and PostgreSQL
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
           ACTEON_A2A_PYTHON: /tmp/acteon-a2a-sdk/bin/python
         run: |
           python3 -m venv /tmp/acteon-a2a-sdk
           /tmp/acteon-a2a-sdk/bin/pip install a2a-sdk==1.2.2
-          cargo test --locked -p acteon-server --test federation_two_server two_acteon_servers_negotiate_export_restart_and_deliver_one_effect -- --ignored
+          cargo test --locked -p acteon-server --features postgres --test federation_two_server -- --ignored
       - name: Durable individual-agent runtime multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

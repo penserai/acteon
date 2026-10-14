@@ -46,7 +46,7 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, authenticated remote auth handoff, and inbound federated execution implemented | Broader recovery and cross-domain qualification proof |
-| 5: Production/federation | Signed capability negotiation, durable outbound transport, OAuth credential exchange, governed export authority, exact task lifecycle controls, and host-owned callback secret references are implemented | External secret-manager adapters, two-domain deployment qualification, and fleet-scale due-time indexing |
+| 5: Production/federation | Signed capability negotiation, durable outbound transport, OAuth credential exchange, governed export authority, exact task lifecycle controls, host-owned callback secret references, and mixed-backend two-domain qualification are implemented | External secret-manager adapters, named external-peer TCK qualification, and fleet-scale due-time indexing |
 
 Next work should integrate trusted execution context into deferred paths and
 complete coordinator/accounting prerequisites before per-effect enforcement. Do
@@ -2332,3 +2332,22 @@ unknown, revoked, cross-tenant, wrong-purpose, and version-mismatched references
 fail closed. Rust, Python, TypeScript, Go, and Java expose the same typed
 reference shape. The executable secret-custody simulation proves state
 redaction, restart resolution, pinned rotation, and revocation.
+
+### Mixed-backend two-domain federation qualification
+
+The production federation contract now runs independently configured source
+and destination Acteon processes through capability negotiation, signed export,
+durable import, real provider execution, response loss, dual restart, explicit
+replay and observation. One run uses separately prefixed Redis domains and also
+drives the public A2A surface through the official Python `a2a-sdk` 1.2.2. A
+second run places the source on Redis and the destination on PostgreSQL, proving
+that delivery recovery does not rely on shared storage technology or a shared
+database.
+
+The destination then terminally revokes the imported trust. A fresh source
+task can still be admitted locally, but its export settles as rejected at the
+federation boundary and the provider call count remains one. The public
+[federated agent mesh guide](../book/guides/federated-agent-mesh.md) describes
+the deployment contract and reproducer. Named external-peer TCK qualification,
+fleet-scale scheduling indexes and deployment-specific secret-manager adapters
+remain separate Phase 5 work.
