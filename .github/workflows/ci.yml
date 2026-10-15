@@ -113,6 +113,9 @@ jobs:
         run: |
           cargo test --locked -p acteon-simulation --features bus,redis --example neural_observability_simulation
           cargo test --locked -p acteon-client --features stream-processing --lib
+      - name: Run ads measurement pipeline simulation
+        if: matrix.rust == 'stable'
+        run: cargo run --locked -p acteon-simulation --example ads_measurement_pipeline
       - name: Test AWS providers
         run: cargo nextest run --locked -p acteon-aws --features full --lib --tests
       - name: Test Azure providers

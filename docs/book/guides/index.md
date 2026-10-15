@@ -35,6 +35,7 @@ a multi-agent execution loop.
 
 | Guide | Build |
 |---|---|
+| [Ads measurement pipeline](ads-measurement-pipeline.md) | Billing-grade ad events, event-time processing, retry deduplication, attribution, reconciliation, privacy, and governed alerts |
 | [Incident response](incident-response-pipeline.md) | Alert triage, deduplication, escalation chains, war-room sub-chains, and event lifecycle tracking |
 | [E-commerce orders](ecommerce-order-pipeline.md) | Fraud screening, approval gates, scheduled work, fulfillment chains, and payment-field redaction |
 | [Healthcare notifications](healthcare-notification-pipeline.md) | Notification policy, sensitive-data routing, approval workflows, and tamper-evident audit configuration |
