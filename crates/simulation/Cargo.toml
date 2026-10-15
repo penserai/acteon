@@ -131,6 +131,10 @@ name = "neural_observability_simulation"
 required-features = ["bus", "redis"]
 
 [[example]]
+name = "ads_measurement_pipeline"
+# No required features - uses in-memory backends and recording providers.
+
+[[example]]
 name = "scheduled_actions_simulation"
 # No required-features - uses in-memory backends
 

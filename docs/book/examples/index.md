@@ -13,6 +13,12 @@ simulation framework with recording providers and fault injection.
 
 ## A complete, measurable example
 
+The [ads measurement pipeline](../guides/ads-measurement-pipeline.md) turns a
+synthetic CTV live-event workload into billing-grade measurements and operational
+alerts. It exercises schema validation, two-layer deduplication, event-time
+ordering, click attribution, idempotent ledger writes, reconciliation, severity
+routing, and cross-node alert suppression in one local command.
+
 The [cascading observability detector](../guides/neural-observability-detector.md)
 uses real Kafka, Redis, and local Laya inference. Four scenarios cover normal
 traffic, isolated noise, correlated failure, and incomplete evidence. Its output
