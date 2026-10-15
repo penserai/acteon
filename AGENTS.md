@@ -1,4 +1,4 @@
-# Claude Code Instructions for Acteon
+# Repository Instructions for Coding Agents
 
 ## Pre-commit Checks
 

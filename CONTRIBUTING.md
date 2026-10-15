@@ -2,7 +2,7 @@
 
 Use an isolated branch and keep changes focused on an observable behavior.
 Describe the problem, resulting behavior, compatibility effects, and verification.
-Follow the repository conventions in [CLAUDE.md](CLAUDE.md).
+Follow the repository conventions in [AGENTS.md](AGENTS.md).
 
 Before proposing a change, run:
 
