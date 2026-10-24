@@ -5,7 +5,7 @@ use crate::{
     ledger::{LedgerArchiveSink, LedgerEntry},
 };
 use async_trait::async_trait;
-use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path};
+use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path};
 use parquet::{
     basic::{Compression, ZstdLevel},
     data_type::ByteArray,

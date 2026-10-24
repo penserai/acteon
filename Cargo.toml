@@ -262,7 +262,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 
 # OpenAPI / Swagger
 utoipa = { version = "5", features = ["chrono"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa-swagger-ui = { version = "10.0.2", features = ["axum"] }
 utoipa-axum = "0.2"
 
 # File watching
@@ -310,7 +310,7 @@ webpki-roots = "0.26"
 tokio-rustls = "0.26"
 
 # WASM
-wasmtime = { version = "36.0.18", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
+wasmtime = { version = "36.0.19", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }

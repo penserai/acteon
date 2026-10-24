@@ -1,4 +1,4 @@
-//! PostgreSQL Debezium JSON adapter. Ordering uses a stable Kafka lane, never wall-clock time.
+//! `PostgreSQL` Debezium JSON adapter. Ordering uses a stable Kafka lane, never wall-clock time.
 use crate::{ChangeOperation, Error, EventBody, Result, TimelineChange};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

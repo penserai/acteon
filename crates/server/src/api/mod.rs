@@ -847,7 +847,12 @@ pub fn router(state: AppState) -> Router {
         .merge(protected)
         // Swagger UI must be merged BEFORE the UI fallback, otherwise the fallback
         // will swallow /swagger-ui requests.
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()));
+        // Pass the generated document as JSON so the UI and schema generator
+        // can be upgraded independently.
+        .merge(SwaggerUi::new("/swagger-ui").external_url_unchecked(
+            "/api-doc/openapi.json",
+            serde_json::json!(ApiDoc::openapi()),
+        ));
 
     // Serve Admin UI static files if enabled and path is provided.
     if let Some(path_str) = state.ui_path.as_ref().filter(|_| state.ui_enabled) {
