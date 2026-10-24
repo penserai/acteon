@@ -473,3 +473,22 @@ a no-op. See [chain-to-task projection recovery](https://github.com/penserai/act
 audit store to exercise retention before, at, and after an expiry boundary.
 Cleanup removes only expired records and keeps the secondary action index
 consistent. See [audit retention recovery](https://github.com/penserai/acteon/blob/main/docs/audit-retention-recovery.md).
+
+## Bank transaction pipeline
+
+Run a synthetic transaction source through a managed suspicious-activity filter,
+checkpoint outbox, and event timeline:
+
+```bash
+cargo run -p acteon-simulation --features bus --example bank_transaction_pipeline
+```
+
+The example requires no external services. It detects large transfers to new
+payees, unknown devices used from another country, and rapid transfer bursts.
+It prints six flagged transactions from paginated timeline queries, then executes
+CEL searches for exact UUIDs, shared counterparties, severity/device combinations,
+full text, and time ranges. It also verifies account grouping, duplicate handling,
+and tenant isolation.
+
+See the [bank transaction pipeline guide](../guides/bank-transaction-pipeline.md)
+for the rules, expected results, query examples, and deployment boundaries.

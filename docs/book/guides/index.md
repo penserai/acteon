@@ -40,6 +40,7 @@ a multi-agent execution loop.
 | [E-commerce orders](ecommerce-order-pipeline.md) | Fraud screening, approval gates, scheduled work, fulfillment chains, and payment-field redaction |
 | [Healthcare notifications](healthcare-notification-pipeline.md) | Notification policy, sensitive-data routing, approval workflows, and tamper-evident audit configuration |
 | [AWS event pipeline](aws-event-pipeline.md) | Sensor-event routing to cloud services, chains, fallbacks, and event grouping with a LocalStack setup |
+| [Bank transaction pipeline](bank-transaction-pipeline.md) | Synthetic transactions, suspicious-activity filtering, timeline events, pagination, and CEL investigation searches |
 
 ## Bring an existing system
 
