@@ -195,6 +195,7 @@ nav:
     - Agent swarm coordination: guides/agent-swarm-coordination.md
     - Incident response: guides/incident-response-pipeline.md
     - Ads measurement pipeline: guides/ads-measurement-pipeline.md
+    - Bank transaction pipeline: guides/bank-transaction-pipeline.md
     - E-commerce orders: guides/ecommerce-order-pipeline.md
     - Healthcare notifications: guides/healthcare-notification-pipeline.md
     - AWS event pipeline: guides/aws-event-pipeline.md

@@ -338,3 +338,11 @@ cost must be measured for the intended retention volume. ClickHouse's latest-row
 resolution and attribute filtering also require workload-specific qualification.
 Prometheus exports aggregate timeline ingestion/query counters and accumulated
 operation durations without tenant IDs or payloads in labels.
+
+## Bank transaction simulation
+
+Run `cargo run -p acteon-simulation --features bus --example bank_transaction_pipeline`
+for a source → suspicious-activity filter → outbox → timeline example. It prints
+six suspicious transactions, verifies source/output deduplication, and executes
+CEL searches with asserted results. See the [bank transaction pipeline guide](../guides/bank-transaction-pipeline.md)
+for the fixture, rules, expected output, and query examples.

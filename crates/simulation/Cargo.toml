@@ -274,3 +274,7 @@ workspace = true
 name = "acteon-scenario"
 path = "src/bin/scenario.rs"
 required-features = ["swarm"]
+
+[[example]]
+name = "bank_transaction_pipeline"
+required-features = ["bus"]
