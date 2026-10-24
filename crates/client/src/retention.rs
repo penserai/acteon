@@ -18,6 +18,15 @@ pub struct CreateRetentionRequest {
     /// TTL for resolved event state records (seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// When `true`, audit records never expire (compliance hold).
     #[serde(default)]
     pub compliance_hold: bool,
@@ -44,6 +53,15 @@ pub struct UpdateRetentionRequest {
     /// Updated event TTL (seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// Updated compliance hold flag.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compliance_hold: Option<bool>,
@@ -75,6 +93,15 @@ pub struct RetentionPolicy {
     /// Event TTL (seconds).
     #[serde(default)]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent timeline retention override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// Compliance hold flag.
     #[serde(default)]
     pub compliance_hold: bool,

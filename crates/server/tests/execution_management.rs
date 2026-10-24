@@ -1288,6 +1288,7 @@ fn history_router_with_runtime(
         .unwrap();
     let metrics = gateway.metrics_arc();
     acteon_server::api::router(acteon_server::api::AppState {
+        timeline: None,
         gateway: Arc::new(tokio::sync::RwLock::new(gateway)),
         metrics,
         audit: None,

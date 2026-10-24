@@ -46,6 +46,7 @@ const Workforce = lazyPage(() => import('./pages/Workforce'), 'Workforce')
 const Governance = lazyPage(() => import('./pages/Governance'), 'Governance')
 const Dispatch = lazyPage(() => import('./pages/Dispatch'), 'Dispatch')
 const Rules = lazyPage(() => import('./pages/Rules'), 'Rules')
+const Timeline = lazyPage(() => import('./pages/Timeline'), 'Timeline')
 const Actions = lazyPage(() => import('./pages/Actions'), 'Actions')
 const Events = lazyPage(() => import('./pages/Events'), 'Events')
 const Groups = lazyPage(() => import('./pages/Groups'), 'Groups')
@@ -104,6 +105,7 @@ function App() {
           <Route path="dispatch" element={<Dispatch />} />
           <Route path="rules" element={<Rules />} />
           <Route path="playground" element={<RulePlayground />} />
+          <Route path="timeline" element={<Timeline />} />
           <Route path="audit" element={<Actions />} />
           <Route path="events" element={<Events />} />
           <Route path="groups" element={<Groups />} />

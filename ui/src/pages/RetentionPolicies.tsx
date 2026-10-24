@@ -223,6 +223,9 @@ export function RetentionPolicies() {
             audit_ttl_seconds: req.audit_ttl_seconds,
             state_ttl_seconds: req.state_ttl_seconds,
             event_ttl_seconds: req.event_ttl_seconds,
+            timeline_ttl_seconds: req.timeline_ttl_seconds,
+            cdc_ledger_ttl_seconds: req.cdc_ledger_ttl_seconds,
+            cdc_archive_ttl_seconds: req.cdc_archive_ttl_seconds,
             compliance_hold: req.compliance_hold,
             enabled: req.enabled,
             description: req.description,
@@ -290,6 +293,9 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
   const [formTenant, setFormTenant] = useState(initial?.tenant ?? '')
   const [auditTtl, setAuditTtl] = useState(initial?.audit_ttl_seconds?.toString() ?? '')
   const [stateTtl, setStateTtl] = useState(initial?.state_ttl_seconds?.toString() ?? '')
+  const [timelineTtl, setTimelineTtl] = useState(initial?.timeline_ttl_seconds?.toString() ?? '')
+  const [cdcLedgerTtl, setCdcLedgerTtl] = useState(initial?.cdc_ledger_ttl_seconds?.toString() ?? '')
+  const [cdcArchiveTtl, setCdcArchiveTtl] = useState(initial?.cdc_archive_ttl_seconds?.toString() ?? '')
   const [eventTtl, setEventTtl] = useState(initial?.event_ttl_seconds?.toString() ?? '')
   const [complianceHold, setComplianceHold] = useState(initial?.compliance_hold ?? false)
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
@@ -308,6 +314,9 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
       tenant: formTenant,
       audit_ttl_seconds: auditTtl ? parseInt(auditTtl, 10) : null,
       state_ttl_seconds: stateTtl ? parseInt(stateTtl, 10) : null,
+      timeline_ttl_seconds: timelineTtl ? parseInt(timelineTtl, 10) : null,
+      cdc_ledger_ttl_seconds: cdcLedgerTtl ? parseInt(cdcLedgerTtl, 10) : null,
+      cdc_archive_ttl_seconds: cdcArchiveTtl ? parseInt(cdcArchiveTtl, 10) : null,
       event_ttl_seconds: eventTtl ? parseInt(eventTtl, 10) : null,
       compliance_hold: complianceHold,
       enabled,
@@ -386,6 +395,9 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
             placeholder="86400 (1 day)"
             min="0"
           />
+          <Input label="Timeline events TTL (seconds)" type="number" min="1" value={timelineTtl} onChange={(e) => setTimelineTtl(e.target.value)} placeholder="604800" />
+          <Input label="Local CDC ledger TTL (seconds)" type="number" min="1" value={cdcLedgerTtl} onChange={(e) => setCdcLedgerTtl(e.target.value)} placeholder="86400" />
+          <Input label="CDC archive TTL (seconds)" type="number" min="1" value={cdcArchiveTtl} onChange={(e) => setCdcArchiveTtl(e.target.value)} placeholder="2592000" />
           <Select
             label="Compliance Hold"
             options={[
@@ -460,6 +472,9 @@ function RetentionDetailView({ policy, tab, onTabChange, onEdit, onDelete }: {
             'Audit TTL': formatDurationSeconds(policy.audit_ttl_seconds),
             'State TTL': formatDurationSeconds(policy.state_ttl_seconds),
             'Event TTL': formatDurationSeconds(policy.event_ttl_seconds),
+            'Timeline events TTL': formatDurationSeconds(policy.timeline_ttl_seconds ?? 604800),
+            'Local CDC ledger TTL': formatDurationSeconds(policy.cdc_ledger_ttl_seconds ?? 86400),
+            'CDC archive TTL': formatDurationSeconds(policy.cdc_archive_ttl_seconds ?? 2592000),
             'Compliance Hold': policy.compliance_hold ? 'Enabled' : 'Disabled',
             'Status': policy.enabled ? 'Enabled' : 'Disabled',
             'Description': policy.description ?? '-',

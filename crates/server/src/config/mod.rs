@@ -50,6 +50,9 @@ use serde::Deserialize;
 /// Top-level configuration for the Acteon server, loaded from a TOML file.
 #[derive(Debug, Deserialize)]
 pub struct ActeonConfig {
+    /// Independent current-event storage and CDC ledger.
+    #[serde(default)]
+    pub timeline: acteon_timeline::config::TimelineConfig,
     /// Host-owned secret references resolved only at effect boundaries.
     #[serde(default)]
     pub secret_custody: SecretCustodyConfig,

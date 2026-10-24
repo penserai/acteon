@@ -62,6 +62,9 @@ pub async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoRespo
     let snap = gw.metrics().snapshot();
 
     let mut buf = render_snapshot(&snap);
+    if let Some(timeline) = &state.timeline {
+        buf.push_str(&timeline.metrics.render());
+    }
     write_counter(
         &mut buf,
         "acteon_dlq_failures_total",

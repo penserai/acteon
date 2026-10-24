@@ -216,6 +216,13 @@ class PlatformOperation(StrEnum):
     TIME_INTERVALS_GET_TIME_INTERVAL = "time_intervals_get_time_interval"
     TIME_INTERVALS_LIST_TIME_INTERVALS = "time_intervals_list_time_intervals"
     TIME_INTERVALS_UPDATE_TIME_INTERVAL = "time_intervals_update_time_interval"
+    TIMELINE_BATCH = "timeline_batch"
+    TIMELINE_GET = "timeline_get"
+    TIMELINE_INGEST = "timeline_ingest"
+    TIMELINE_QUERY = "timeline_query"
+    TIMELINE_REPLAY = "timeline_replay"
+    TIMELINE_REPLAY_STATUS = "timeline_replay_status"
+    TIMELINE_STATUS = "timeline_status"
     VERIFY_VERIFY_ACTION = "verify_verify_action"
     WORKFLOWS_CANCEL_WORKFLOW = "workflows_cancel_workflow"
     WORKFLOWS_GET_WORKFLOW = "workflows_get_workflow"
@@ -1529,6 +1536,48 @@ OPERATIONS = {
         "PUT",
         "/v1/time-intervals/{namespace}/{tenant}/{name}",
         ("namespace", "tenant", "name"),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_BATCH: (
+        "POST",
+        "/v1/timeline/changes/batch",
+        (),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_GET: (
+        "GET",
+        "/v1/timeline/events/{source}/{eventId}",
+        ("source", "eventId"),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_INGEST: (
+        "POST",
+        "/v1/timeline/changes",
+        (),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_QUERY: (
+        "POST",
+        "/v1/timeline/query",
+        (),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_REPLAY: (
+        "POST",
+        "/v1/timeline/replays",
+        (),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_REPLAY_STATUS: (
+        "GET",
+        "/v1/timeline/replays/{id}",
+        ("id",),
+        "json",
+    ),
+    PlatformOperation.TIMELINE_STATUS: (
+        "GET",
+        "/v1/timeline/ledger/status",
+        (),
         "json",
     ),
     PlatformOperation.VERIFY_VERIFY_ACTION: (

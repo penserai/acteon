@@ -35,6 +35,7 @@ async fn ui_serves_index_html() {
     };
 
     let state = AppState {
+        timeline: None,
         gateway: Arc::new(RwLock::new(gw)),
         metrics,
         audit: None,

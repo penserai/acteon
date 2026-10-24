@@ -20,7 +20,7 @@ test.describe('Navigation', () => {
     await expect(nav).toBeVisible()
 
     const navLabels = [
-      'Dashboard', 'Dispatch', 'Rules', 'Audit Trail', 'Events', 'Groups',
+      'Dashboard', 'Dispatch', 'Rules', 'Audit Trail', 'Event Timeline', 'Events', 'Groups',
       'Chains', 'Approvals', 'Circuit Breakers', 'Dead-Letter Queue', 'Stream', 'Embeddings',
     ]
     for (const label of navLabels) {
@@ -39,6 +39,7 @@ test.describe('Navigation', () => {
       ['Rules', /\/rules/],
       ['Dispatch', /\/dispatch/],
       ['Audit Trail', /\/audit/],
+      ['Event Timeline', /\/timeline/],
       ['Chains', /\/chains/],
       ['Approvals', /\/approvals/],
       ['Stream', /\/stream/],

@@ -217,6 +217,13 @@ const (
 	OpTimeIntervalsGetTimeInterval PlatformOperation = "time_intervals_get_time_interval"
 	OpTimeIntervalsListTimeIntervals PlatformOperation = "time_intervals_list_time_intervals"
 	OpTimeIntervalsUpdateTimeInterval PlatformOperation = "time_intervals_update_time_interval"
+	OpTimelineBatch PlatformOperation = "timeline_batch"
+	OpTimelineGet PlatformOperation = "timeline_get"
+	OpTimelineIngest PlatformOperation = "timeline_ingest"
+	OpTimelineQuery PlatformOperation = "timeline_query"
+	OpTimelineReplay PlatformOperation = "timeline_replay"
+	OpTimelineReplayStatus PlatformOperation = "timeline_replay_status"
+	OpTimelineStatus PlatformOperation = "timeline_status"
 	OpVerifyVerifyAction PlatformOperation = "verify_verify_action"
 	OpWorkflowsCancelWorkflow PlatformOperation = "workflows_cancel_workflow"
 	OpWorkflowsGetWorkflow PlatformOperation = "workflows_get_workflow"
@@ -443,6 +450,13 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpTimeIntervalsGetTimeInterval: {"GET", "/v1/time-intervals/{namespace}/{tenant}/{name}", []string{"namespace", "tenant", "name"}, false},
 	OpTimeIntervalsListTimeIntervals: {"GET", "/v1/time-intervals", []string{}, false},
 	OpTimeIntervalsUpdateTimeInterval: {"PUT", "/v1/time-intervals/{namespace}/{tenant}/{name}", []string{"namespace", "tenant", "name"}, false},
+	OpTimelineBatch: {"POST", "/v1/timeline/changes/batch", []string{}, false},
+	OpTimelineGet: {"GET", "/v1/timeline/events/{source}/{eventId}", []string{"source", "eventId"}, false},
+	OpTimelineIngest: {"POST", "/v1/timeline/changes", []string{}, false},
+	OpTimelineQuery: {"POST", "/v1/timeline/query", []string{}, false},
+	OpTimelineReplay: {"POST", "/v1/timeline/replays", []string{}, false},
+	OpTimelineReplayStatus: {"GET", "/v1/timeline/replays/{id}", []string{"id"}, false},
+	OpTimelineStatus: {"GET", "/v1/timeline/ledger/status", []string{}, false},
 	OpVerifyVerifyAction: {"GET", "/v1/actions/{id}/verify", []string{"id"}, false},
 	OpWorkflowsCancelWorkflow: {"POST", "/v1/workflows/executions/{execution_id}/cancel", []string{"execution_id"}, false},
 	OpWorkflowsGetWorkflow: {"GET", "/v1/workflows/executions/{execution_id}", []string{"execution_id"}, false},

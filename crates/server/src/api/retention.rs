@@ -41,6 +41,15 @@ pub struct CreateRetentionRequest {
     /// TTL for resolved event state records (seconds).
     #[serde(default)]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// When `true`, audit records never expire (compliance hold).
     #[serde(default)]
     pub compliance_hold: bool,
@@ -67,6 +76,15 @@ pub struct UpdateRetentionRequest {
     /// Updated event TTL (seconds).
     #[serde(default)]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// Updated compliance hold flag.
     #[serde(default)]
     pub compliance_hold: Option<bool>,
@@ -98,6 +116,15 @@ pub struct RetentionResponse {
     /// Event TTL (seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent timeline subsystem retention in seconds.
+    #[serde(default)]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// Compliance hold flag.
     pub compliance_hold: bool,
     /// When the policy was created.
@@ -156,6 +183,9 @@ fn policy_to_response(policy: &RetentionPolicy) -> RetentionResponse {
         audit_ttl_seconds: policy.audit_ttl_seconds,
         state_ttl_seconds: policy.state_ttl_seconds,
         event_ttl_seconds: policy.event_ttl_seconds,
+        timeline_ttl_seconds: policy.timeline_ttl_seconds,
+        cdc_ledger_ttl_seconds: policy.cdc_ledger_ttl_seconds,
+        cdc_archive_ttl_seconds: policy.cdc_archive_ttl_seconds,
         compliance_hold: policy.compliance_hold,
         created_at: policy.created_at,
         updated_at: policy.updated_at,
@@ -253,6 +283,20 @@ pub async fn create_retention(
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
     }
+    if [
+        req.timeline_ttl_seconds,
+        req.cdc_ledger_ttl_seconds,
+        req.cdc_archive_ttl_seconds,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|ttl| ttl == 0 || ttl > 315_576_000)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "timeline retention must be between one second and ten years",
+        );
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -278,6 +322,9 @@ pub async fn create_retention(
     let id = uuid::Uuid::new_v4().to_string();
 
     let policy = RetentionPolicy {
+        timeline_ttl_seconds: req.timeline_ttl_seconds,
+        cdc_ledger_ttl_seconds: req.cdc_ledger_ttl_seconds,
+        cdc_archive_ttl_seconds: req.cdc_archive_ttl_seconds,
         id: id.clone(),
         namespace: req.namespace.clone(),
         tenant: req.tenant.clone(),
@@ -460,6 +507,20 @@ pub async fn update_retention(
     Path(id): Path<String>,
     Json(req): Json<UpdateRetentionRequest>,
 ) -> impl IntoResponse {
+    if [
+        req.timeline_ttl_seconds,
+        req.cdc_ledger_ttl_seconds,
+        req.cdc_archive_ttl_seconds,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|ttl| ttl == 0 || ttl > 315_576_000)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "timeline retention must be between one second and ten years",
+        );
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -487,6 +548,15 @@ pub async fn update_retention(
     }
     if req.state_ttl_seconds.is_some() {
         policy.state_ttl_seconds = req.state_ttl_seconds;
+    }
+    if req.timeline_ttl_seconds.is_some() {
+        policy.timeline_ttl_seconds = req.timeline_ttl_seconds;
+    }
+    if req.cdc_ledger_ttl_seconds.is_some() {
+        policy.cdc_ledger_ttl_seconds = req.cdc_ledger_ttl_seconds;
+    }
+    if req.cdc_archive_ttl_seconds.is_some() {
+        policy.cdc_archive_ttl_seconds = req.cdc_archive_ttl_seconds;
     }
     if req.event_ttl_seconds.is_some() {
         policy.event_ttl_seconds = req.event_ttl_seconds;

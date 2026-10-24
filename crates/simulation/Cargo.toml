@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Simulation and testing framework for Acteon"
 
 [dependencies]
+acteon-timeline.workspace = true
 acteon-time.workspace = true
 acteon-http.workspace = true
 clap.workspace = true

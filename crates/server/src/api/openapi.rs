@@ -93,6 +93,7 @@ use acteon_core::{
         (name = "bus", description = "Agentic message bus (Kafka-backed topics, publish, subscribe)")
     ),
     paths(
+        super::timeline::ingest, super::timeline::batch, super::timeline::query, super::timeline::get, super::timeline::status, super::timeline::replay, super::timeline::replay_status,
         super::agent_services::message_send,
         super::agent_services::peer_send,
         super::agent_services::peer_discover,

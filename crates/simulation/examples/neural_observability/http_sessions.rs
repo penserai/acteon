@@ -30,6 +30,7 @@ impl HttpServer {
         let metrics = gateway.metrics_arc();
         let registry = Arc::new(BusSessionRegistry::default());
         let state = AppState {
+            timeline: None,
             gateway: Arc::new(RwLock::new(gateway)),
             metrics,
             audit: None,

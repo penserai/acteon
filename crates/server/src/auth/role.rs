@@ -28,7 +28,10 @@ impl Role {
     /// Check whether this role has a given permission.
     pub fn has_permission(self, perm: Permission) -> bool {
         match perm {
-            Permission::Dispatch => matches!(self, Self::Admin | Self::Operator | Self::Executor),
+            Permission::TimelineLedgerManage => matches!(self, Self::Admin | Self::Operator),
+            Permission::TimelineIngest | Permission::Dispatch => {
+                matches!(self, Self::Admin | Self::Operator | Self::Executor)
+            }
             Permission::OperationsManage
             | Permission::RulesManage
             | Permission::CircuitBreakerManage
@@ -36,7 +39,8 @@ impl Role {
             | Permission::SilencesManage
             | Permission::TimeIntervalsManage
             | Permission::TemplatesManage => matches!(self, Self::Admin | Self::Operator),
-            Permission::AuditRead
+            Permission::TimelineRead
+            | Permission::AuditRead
             | Permission::RulesRead
             | Permission::RulesTest
             | Permission::StreamSubscribe
@@ -59,6 +63,9 @@ impl fmt::Display for Role {
 /// Permissions that map to endpoint groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Permission {
+    TimelineRead,
+    TimelineIngest,
+    TimelineLedgerManage,
     Dispatch,
     /// Administer registries, policy, schedules, and recovery. Never implied by dispatch.
     OperationsManage,

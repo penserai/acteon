@@ -238,6 +238,7 @@ nav:
       - DynamoDB audit: backends/dynamodb-audit.md
     - Evidence and observability:
       - Audit trail: features/audit-trail.md
+      - Event timeline: features/event-timeline.md
       - Analytics: features/analytics.md
       - Event streaming: features/event-streaming.md
       - Distributed tracing: features/distributed-tracing.md

@@ -24,6 +24,7 @@ export const MAIN_NAV_ITEMS: NavItem[] = [
   { to: '/dispatch', icon: Send, label: 'Dispatch' },
   { to: '/rules', icon: BookOpen, label: 'Rules', shortcut: '2' },
   { to: '/playground', icon: FlaskConical, label: 'Rule Playground' },
+  { to: '/timeline', icon: Clock, label: 'Event Timeline' },
   { to: '/audit', icon: ScrollText, label: 'Audit Trail', shortcut: '4' },
   { to: '/events', icon: Radio, label: 'Events' },
   { to: '/groups', icon: Layers, label: 'Groups' },

@@ -59,6 +59,7 @@ impl TestServer {
 
         // Create app state
         let app_state = acteon_server::api::AppState {
+            timeline: None,
             gateway,
             metrics,
             audit: Some(audit),

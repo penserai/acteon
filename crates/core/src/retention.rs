@@ -35,6 +35,15 @@ pub struct RetentionPolicy {
     /// Resolved events older than this are deleted by the background reaper.
     #[serde(default)]
     pub event_ttl_seconds: Option<u64>,
+    /// Independent retention override for the timeline subsystem.
+    #[serde(default)]
+    pub timeline_ttl_seconds: Option<u64>,
+    /// Independent retention override for the timeline subsystem.
+    #[serde(default)]
+    pub cdc_ledger_ttl_seconds: Option<u64>,
+    /// Independent retention override for the timeline subsystem.
+    #[serde(default)]
+    pub cdc_archive_ttl_seconds: Option<u64>,
     /// When `true`, audit records for this tenant never expire (compliance hold).
     ///
     /// Overrides `audit_ttl_seconds` and the global audit TTL. Useful for
@@ -64,6 +73,9 @@ mod tests {
     #[test]
     fn retention_policy_serde_roundtrip() {
         let policy = RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-001".into(),
             namespace: "notifications".into(),
             tenant: "tenant-1".into(),
@@ -111,6 +123,9 @@ mod tests {
     #[test]
     fn retention_policy_compliance_hold() {
         let policy = RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-003".into(),
             namespace: "ns".into(),
             tenant: "t".into(),
@@ -137,6 +152,9 @@ mod tests {
         labels.insert("region".into(), "us-east-1".into());
 
         let policy = RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-004".into(),
             namespace: "ns".into(),
             tenant: "t".into(),
@@ -160,6 +178,9 @@ mod tests {
     #[test]
     fn retention_policy_disabled() {
         let policy = RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-dis".into(),
             namespace: "ns".into(),
             tenant: "t".into(),

@@ -45,6 +45,17 @@ import javax.net.ssl.X509TrustManager;
  */
 public class ActeonClient implements AutoCloseable {
     /** Complete finite HTTP API. Uses server wire names and never auto-retries. */
+    /** Preserve changeId and revision when retrying CDC ingestion. */
+    public com.fasterxml.jackson.databind.JsonNode ingestTimelineChange(String namespace, String tenant, java.util.Map<String, Object> change) throws ActeonException {
+        return platformRequest(PlatformOperation.TIMELINE_INGEST, null, null, java.util.Map.of("scope", java.util.Map.of("namespace", namespace, "tenant", tenant), "change", change));
+    }
+    /** Search current events; the query map may contain a CEL "filter" string. */
+    public com.fasterxml.jackson.databind.JsonNode queryTimeline(String namespace, String tenant, java.util.Map<String, Object> query) throws ActeonException {
+        return platformRequest(PlatformOperation.TIMELINE_QUERY, null, null, java.util.Map.of("scope", java.util.Map.of("namespace", namespace, "tenant", tenant), "query", query));
+    }
+    public com.fasterxml.jackson.databind.JsonNode getTimelineEvent(String namespace, String tenant, String source, String eventId) throws ActeonException {
+        return platformRequest(PlatformOperation.TIMELINE_GET, java.util.Map.of("source", source, "eventId", eventId), java.util.Map.of("namespace", java.util.List.of(namespace), "tenant", java.util.List.of(tenant)), null);
+    }
     public com.fasterxml.jackson.databind.JsonNode platformRequest(
         PlatformOperation operation, Map<String, String> pathParameters,
         Map<String, List<String>> query, Object body) throws ActeonException {

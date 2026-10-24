@@ -45,6 +45,7 @@ pub mod subscribe;
 pub mod swarm;
 pub mod templates;
 pub mod time_intervals;
+pub mod timeline;
 pub mod trace_context;
 pub mod verify;
 pub mod workflows;
@@ -86,6 +87,8 @@ use self::openapi::ApiDoc;
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
+    /// Independent tenant timeline subsystem.
+    pub timeline: Option<Arc<acteon_timeline::TimelineService>>,
     /// The gateway instance.
     pub gateway: Arc<RwLock<Gateway>>,
     /// Shared handle to the gateway's metric counters. Lets hot-path
@@ -380,6 +383,13 @@ pub fn router(state: AppState) -> Router {
         // Analytics
         .route("/v1/analytics", get(analytics::query_analytics))
         // Audit
+        .route("/v1/timeline/changes", post(timeline::ingest))
+        .route("/v1/timeline/changes/batch", post(timeline::batch))
+        .route("/v1/timeline/query", post(timeline::query))
+        .route("/v1/timeline/events/{source}/{eventId}", get(timeline::get))
+        .route("/v1/timeline/ledger/status", get(timeline::status))
+        .route("/v1/timeline/replays", post(timeline::replay))
+        .route("/v1/timeline/replays/{id}", get(timeline::replay_status))
         .route("/v1/audit", get(audit::query_audit))
         .route("/v1/audit/replay", post(replay::replay_audit))
         .route("/v1/audit/{action_id}", get(audit::get_audit_by_action))

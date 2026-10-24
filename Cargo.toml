@@ -5,6 +5,7 @@ members = [
     # Core components
     "crates/core",
     "crates/time",
+    "crates/timeline",
     "crates/client",
     "crates/server",
     "crates/gateway",
@@ -92,6 +93,7 @@ url = "2.5"
 # Internal crates - Core
 acteon-core = { path = "crates/core" }
 acteon-time = { path = "crates/time" }
+acteon-timeline = { path = "crates/timeline" }
 acteon-client = { path = "crates/client" }
 acteon-server = { path = "crates/server" }
 acteon-gateway = { path = "crates/gateway" }

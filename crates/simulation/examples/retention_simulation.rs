@@ -149,6 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(Arc::new(MockProvider::new("email")))
         .audit_ttl_seconds(86_400) // Gateway default: 24 hours
         .retention_policy(RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-tenant-a".into(),
             namespace: "notifications".into(),
             tenant: "tenant-a".into(),
@@ -220,6 +223,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(Arc::new(MockProvider::new("email")))
         .audit_ttl_seconds(86_400) // Gateway default: 24 hours
         .retention_policy(RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-tenant-b".into(),
             namespace: "notifications".into(),
             tenant: "tenant-b".into(),
@@ -289,6 +295,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(Arc::new(MockProvider::new("email")))
         .audit_ttl_seconds(86_400) // Gateway default
         .retention_policy(RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-tenant-c".into(),
             namespace: "notifications".into(),
             tenant: "tenant-c".into(),
@@ -352,6 +361,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(Arc::new(MockProvider::new("email")))
         .audit_ttl_seconds(86_400) // 24 hours default
         .retention_policy(RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-pro".into(),
             namespace: "notifications".into(),
             tenant: "pro-tier".into(),
@@ -370,6 +382,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         })
         .retention_policy(RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-enterprise".into(),
             namespace: "notifications".into(),
             tenant: "enterprise".into(),
@@ -472,6 +487,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add a policy at runtime.
     gateway.set_retention_policy(RetentionPolicy {
+        timeline_ttl_seconds: None,
+        cdc_ledger_ttl_seconds: None,
+        cdc_archive_ttl_seconds: None,
         id: "ret-runtime".into(),
         namespace: "analytics".into(),
         tenant: "dynamic-tenant".into(),
@@ -491,6 +509,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Update the policy.
     gateway.set_retention_policy(RetentionPolicy {
+        timeline_ttl_seconds: None,
+        cdc_ledger_ttl_seconds: None,
+        cdc_archive_ttl_seconds: None,
         id: "ret-runtime".into(),
         namespace: "analytics".into(),
         tenant: "dynamic-tenant".into(),

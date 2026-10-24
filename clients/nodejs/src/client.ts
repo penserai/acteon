@@ -388,6 +388,18 @@ function extractErrorMessage(data: string): string {
 }
 
 export class ActeonClient {
+  /** Persist a CDC change. Preserve changeId and revision across retries. */
+  async ingestTimelineChange(namespace: string, tenant: string, change: Record<string, unknown>): Promise<unknown> {
+    return this.platformRequest("timeline_ingest", { body: { scope: { namespace, tenant }, change } });
+  }
+  /** Search current event versions; query.filter accepts the timeline CEL subset. */
+  async queryTimeline(namespace: string, tenant: string, query: Record<string, unknown> = {}): Promise<unknown> {
+    return this.platformRequest("timeline_query", { body: { scope: { namespace, tenant }, query } });
+  }
+  async getTimelineEvent(namespace: string, tenant: string, source: string, eventId: string): Promise<unknown> {
+    return this.platformRequest("timeline_get", { path: { source, eventId }, query: { namespace, tenant } });
+  }
+
   /** Complete finite HTTP API, using wire field names. Never automatically retries. */
   async platformRequest(operation: PlatformOperation, options: PlatformRequestOptions = {}): Promise<unknown> {
     const parts = platformRequestParts(operation, options);

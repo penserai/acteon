@@ -23,7 +23,7 @@ def main():
     expected = [{k: op[k] for k in ("name", "method", "path")} for op in rows]
     assert actual == expected, "Registered routes and permission inventory differ"
     assert len({(r["method"], r["path"]) for r in rows}) == len(rows)
-    valid = {None, "Dispatch", "Session", "OperationsManage", "AuditRead", "StreamSubscribe", "RulesTest"}
+    valid = {"TimelineRead", "TimelineIngest", "TimelineLedgerManage", None, "Dispatch", "Session", "OperationsManage", "AuditRead", "StreamSubscribe", "RulesTest"}
     assert all(row["permission"] in valid for row in rows)
     # Public must match the public router, not merely an inventory label.
     source = (ROOT / "crates/server/src/api/mod.rs").read_text()

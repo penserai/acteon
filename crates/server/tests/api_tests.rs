@@ -102,6 +102,7 @@ fn build_test_state_with_audit_and_analytics(
     };
 
     AppState {
+        timeline: None,
         gateway: Arc::new(RwLock::new(gw)),
         metrics,
         audit,
@@ -1244,6 +1245,7 @@ fn build_approval_state_with_providers(
     let metrics = gw.metrics_arc();
 
     AppState {
+        timeline: None,
         gateway: Arc::new(RwLock::new(gw)),
         metrics,
         audit: None,
@@ -4828,4 +4830,98 @@ async fn provider_history_route_requires_private_authentication_even_without_aut
         .unwrap();
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(error["code"], "private_authentication_required");
+}
+
+#[tokio::test]
+async fn timeline_api_tenant_scope_and_revision_contract() {
+    use acteon_timeline::{
+        TimelineService, config::TimelineConfig, ledger::DiskLedger, memory::MemoryTimelineStore,
+    };
+    let directory =
+        std::env::temp_dir().join(format!("acteon-timeline-api-{}", uuid::Uuid::new_v4()));
+    let mut state = build_test_state_with_auth_role(
+        "operator",
+        vec![Grant {
+            tenants: vec!["acme".into()],
+            namespaces: vec!["deployments".into()],
+            providers: vec!["*".into()],
+            actions: vec!["*".into()],
+            agent_id: None,
+        }],
+    );
+    state.timeline = Some(Arc::new(
+        TimelineService::new(
+            Arc::new(MemoryTimelineStore::default()),
+            Arc::new(DiskLedger::open(&directory, 10_000_000).unwrap()),
+            state.gateway.read().await.state_store().clone(),
+            TimelineConfig::default(),
+            None,
+        )
+        .unwrap(),
+    ));
+    // Use authenticated middleware conventions from this integration suite.
+    let app = acteon_server::api::router(state);
+    let request = serde_json::json!({"scope":{"namespace":"deployments","tenant":"acme"},"change":{"schemaVersion":1,"changeId":"one","source":"test","eventId":"a","revision":1,"operation":"create","after":{"eventGroup":"cluster","occurredAt":"2026-01-01T00:00:00Z","eventType":"ready","attributes":{"id":"literal-uuid"}}}});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/timeline/changes")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-raw-key")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let request =
+        serde_json::json!({"scope":{"namespace":"deployments","tenant":"other"},"query":{}});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/timeline/query")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-raw-key")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    for (filter, expected) in [
+        (
+            r#"attributes.id == "literal-uuid" || eventId == "missing""#,
+            StatusCode::OK,
+        ),
+        ("attributes.attempt > 3", StatusCode::BAD_REQUEST),
+    ] {
+        let request = serde_json::json!({"scope":{"namespace":"deployments","tenant":"acme"},"query":{"filter":filter}});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/timeline/query")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer test-raw-key")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(page["events"][0]["eventId"], "a");
+        }
+    }
+    drop(app);
+    std::fs::remove_dir_all(directory).unwrap();
 }
