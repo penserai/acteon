@@ -88,6 +88,7 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
         .unwrap();
     let metrics = gateway.metrics_arc();
     let state = AppState {
+        timeline: None,
         gateway: Arc::new(RwLock::new(gateway)),
         metrics,
         audit: None,

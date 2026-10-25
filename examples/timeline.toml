@@ -1,0 +1,44 @@
+# Run: cargo run -p acteon-server --features clickhouse -- --config examples/timeline.toml
+[state]
+backend = "redis"
+url = "redis://localhost:6379"
+
+[audit]
+enabled = true
+backend = "clickhouse"
+url = "http://localhost:8123"
+
+[timeline]
+enabled = true
+backend = "elasticsearch"
+url = "http://localhost:9200"
+collection = "acteon_timeline"
+ttl_seconds = 604800
+
+[timeline.ledger]
+directory = "data/timeline-ledger"
+ttl_seconds = 86400
+max_bytes = 10737418240
+
+# Optional; build with --features timeline-archive.
+# Credentials use the standard AWS environment/credential chain.
+# [timeline.archive]
+# bucket = "acteon-cdc"
+# prefix = "timeline"
+# region = "us-east-1"
+# ttl_seconds = 2592000
+
+# Optional; also enable --features bus and configure [bus].
+# [[timeline.sources]]
+# namespace = "deployments"
+# tenant = "acme"
+# source = "postgres-deployments"
+# topic = "db.public.deployment_events"
+# consumer_group = "acteon-timeline-deployments-v1"
+# poison_policy = "halt" # or "quarantine"
+# [timeline.sources.debezium]
+# generation = "v1"
+# event_group = "/deployment_id"
+# occurred_at = "/occurred_at"
+# event_type = "/event_type"
+# message = "/message"

@@ -1626,6 +1626,9 @@ export interface CreateRetentionRequest {
   auditTtlSeconds: number;
   stateTtlSeconds: number;
   eventTtlSeconds: number;
+  timelineTtlSeconds?: number;
+  cdcLedgerTtlSeconds?: number;
+  cdcArchiveTtlSeconds?: number;
   complianceHold?: boolean;
   description?: string;
   labels?: Record<string, string>;
@@ -1639,6 +1642,9 @@ export function createRetentionRequestToApi(req: CreateRetentionRequest): Record
     audit_ttl_seconds: req.auditTtlSeconds,
     state_ttl_seconds: req.stateTtlSeconds,
     event_ttl_seconds: req.eventTtlSeconds,
+    timeline_ttl_seconds: req.timelineTtlSeconds,
+    cdc_ledger_ttl_seconds: req.cdcLedgerTtlSeconds,
+    cdc_archive_ttl_seconds: req.cdcArchiveTtlSeconds,
   };
   if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
   if (req.description !== undefined) result.description = req.description;
@@ -1652,6 +1658,9 @@ export interface UpdateRetentionRequest {
   auditTtlSeconds?: number;
   stateTtlSeconds?: number;
   eventTtlSeconds?: number;
+  timelineTtlSeconds?: number;
+  cdcLedgerTtlSeconds?: number;
+  cdcArchiveTtlSeconds?: number;
   complianceHold?: boolean;
   description?: string;
   labels?: Record<string, string>;
@@ -1664,6 +1673,9 @@ export function updateRetentionRequestToApi(req: UpdateRetentionRequest): Record
   if (req.auditTtlSeconds !== undefined) result.audit_ttl_seconds = req.auditTtlSeconds;
   if (req.stateTtlSeconds !== undefined) result.state_ttl_seconds = req.stateTtlSeconds;
   if (req.eventTtlSeconds !== undefined) result.event_ttl_seconds = req.eventTtlSeconds;
+  if (req.timelineTtlSeconds !== undefined) result.timeline_ttl_seconds = req.timelineTtlSeconds;
+  if (req.cdcLedgerTtlSeconds !== undefined) result.cdc_ledger_ttl_seconds = req.cdcLedgerTtlSeconds;
+  if (req.cdcArchiveTtlSeconds !== undefined) result.cdc_archive_ttl_seconds = req.cdcArchiveTtlSeconds;
   if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
   if (req.description !== undefined) result.description = req.description;
   if (req.labels !== undefined) result.labels = req.labels;
@@ -1679,6 +1691,9 @@ export interface RetentionPolicy {
   auditTtlSeconds: number;
   stateTtlSeconds: number;
   eventTtlSeconds: number;
+  timelineTtlSeconds?: number;
+  cdcLedgerTtlSeconds?: number;
+  cdcArchiveTtlSeconds?: number;
   complianceHold: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1696,6 +1711,9 @@ export function parseRetentionPolicy(data: Record<string, unknown>): RetentionPo
     auditTtlSeconds: data.audit_ttl_seconds as number,
     stateTtlSeconds: data.state_ttl_seconds as number,
     eventTtlSeconds: data.event_ttl_seconds as number,
+    timelineTtlSeconds: data.timeline_ttl_seconds as number | undefined,
+    cdcLedgerTtlSeconds: data.cdc_ledger_ttl_seconds as number | undefined,
+    cdcArchiveTtlSeconds: data.cdc_archive_ttl_seconds as number | undefined,
     complianceHold: data.compliance_hold as boolean,
     createdAt: data.created_at as string,
     updatedAt: data.updated_at as string,

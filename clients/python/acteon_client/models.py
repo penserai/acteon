@@ -1878,6 +1878,9 @@ class CreateRetentionRequest:
     compliance_hold: bool = False
     description: str | None = None
     labels: dict[str, str] | None = None
+    timeline_ttl_seconds: int | None = None
+    cdc_ledger_ttl_seconds: int | None = None
+    cdc_archive_ttl_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1893,6 +1896,12 @@ class CreateRetentionRequest:
             result["description"] = self.description
         if self.labels is not None:
             result["labels"] = self.labels
+        if self.timeline_ttl_seconds is not None:
+            result["timeline_ttl_seconds"] = self.timeline_ttl_seconds
+        if self.cdc_ledger_ttl_seconds is not None:
+            result["cdc_ledger_ttl_seconds"] = self.cdc_ledger_ttl_seconds
+        if self.cdc_archive_ttl_seconds is not None:
+            result["cdc_archive_ttl_seconds"] = self.cdc_archive_ttl_seconds
         return result
 
 
@@ -1907,6 +1916,9 @@ class UpdateRetentionRequest:
     compliance_hold: bool | None = None
     description: str | None = None
     labels: dict[str, str] | None = None
+    timeline_ttl_seconds: int | None = None
+    cdc_ledger_ttl_seconds: int | None = None
+    cdc_archive_ttl_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1925,6 +1937,12 @@ class UpdateRetentionRequest:
             result["description"] = self.description
         if self.labels is not None:
             result["labels"] = self.labels
+        if self.timeline_ttl_seconds is not None:
+            result["timeline_ttl_seconds"] = self.timeline_ttl_seconds
+        if self.cdc_ledger_ttl_seconds is not None:
+            result["cdc_ledger_ttl_seconds"] = self.cdc_ledger_ttl_seconds
+        if self.cdc_archive_ttl_seconds is not None:
+            result["cdc_archive_ttl_seconds"] = self.cdc_archive_ttl_seconds
         return result
 
 
@@ -1944,6 +1962,9 @@ class RetentionPolicy:
     updated_at: str
     description: str | None = None
     labels: dict[str, str] | None = None
+    timeline_ttl_seconds: int | None = None
+    cdc_ledger_ttl_seconds: int | None = None
+    cdc_archive_ttl_seconds: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RetentionPolicy":
@@ -1955,6 +1976,9 @@ class RetentionPolicy:
             audit_ttl_seconds=data["audit_ttl_seconds"],
             state_ttl_seconds=data["state_ttl_seconds"],
             event_ttl_seconds=data["event_ttl_seconds"],
+            timeline_ttl_seconds=data.get("timeline_ttl_seconds"),
+            cdc_ledger_ttl_seconds=data.get("cdc_ledger_ttl_seconds"),
+            cdc_archive_ttl_seconds=data.get("cdc_archive_ttl_seconds"),
             compliance_hold=data["compliance_hold"],
             created_at=data["created_at"],
             updated_at=data["updated_at"],

@@ -935,6 +935,9 @@ export interface RetentionPolicy {
   audit_ttl_seconds: number | null
   state_ttl_seconds: number | null
   event_ttl_seconds: number | null
+  timeline_ttl_seconds?: number | null
+  cdc_ledger_ttl_seconds?: number | null
+  cdc_archive_ttl_seconds?: number | null
   compliance_hold: boolean
   created_at: string
   updated_at: string
@@ -953,6 +956,9 @@ export interface CreateRetentionRequest {
   audit_ttl_seconds?: number | null
   state_ttl_seconds?: number | null
   event_ttl_seconds?: number | null
+  timeline_ttl_seconds?: number | null
+  cdc_ledger_ttl_seconds?: number | null
+  cdc_archive_ttl_seconds?: number | null
   compliance_hold?: boolean
   enabled?: boolean
   description?: string | null
@@ -963,6 +969,9 @@ export interface UpdateRetentionRequest {
   audit_ttl_seconds?: number | null
   state_ttl_seconds?: number | null
   event_ttl_seconds?: number | null
+  timeline_ttl_seconds?: number | null
+  cdc_ledger_ttl_seconds?: number | null
+  cdc_archive_ttl_seconds?: number | null
   compliance_hold?: boolean
   enabled?: boolean
   description?: string | null

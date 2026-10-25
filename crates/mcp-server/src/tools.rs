@@ -183,6 +183,9 @@ fn build_update_quota(v: &serde_json::Value) -> Result<UpdateQuotaRequest, McpEr
 
 fn build_create_retention(v: &serde_json::Value) -> Result<CreateRetentionRequest, McpError> {
     Ok(CreateRetentionRequest {
+        timeline_ttl_seconds: val_opt_u64(v, "timeline_ttl_seconds"),
+        cdc_ledger_ttl_seconds: val_opt_u64(v, "cdc_ledger_ttl_seconds"),
+        cdc_archive_ttl_seconds: val_opt_u64(v, "cdc_archive_ttl_seconds"),
         namespace: val_str(v, "namespace")?,
         tenant: val_str(v, "tenant")?,
         audit_ttl_seconds: val_opt_u64(v, "audit_ttl_seconds"),
@@ -196,6 +199,9 @@ fn build_create_retention(v: &serde_json::Value) -> Result<CreateRetentionReques
 
 fn build_update_retention(v: &serde_json::Value) -> UpdateRetentionRequest {
     UpdateRetentionRequest {
+        timeline_ttl_seconds: val_opt_u64(v, "timeline_ttl_seconds"),
+        cdc_ledger_ttl_seconds: val_opt_u64(v, "cdc_ledger_ttl_seconds"),
+        cdc_archive_ttl_seconds: val_opt_u64(v, "cdc_archive_ttl_seconds"),
         enabled: val_opt_bool(v, "enabled"),
         audit_ttl_seconds: val_opt_u64(v, "audit_ttl_seconds"),
         state_ttl_seconds: val_opt_u64(v, "state_ttl_seconds"),

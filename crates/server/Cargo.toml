@@ -54,9 +54,11 @@ extras-alerting = ["opsgenie", "victorops", "pushover", "telegram", "wechat", "d
 # Ambient agent-swarm provider — long-running goal-driven runs dispatched as Actions.
 swarm = ["dep:acteon-swarm", "dep:acteon-swarm-provider"]
 # Agentic message bus (Kafka-backed). Phase 1: topics + publish + subscribe.
-bus = ["dep:acteon-bus"]
+bus = ["dep:acteon-bus", "acteon-timeline/bus"]
+timeline-archive = ["acteon-timeline/archive"]
 
 [dependencies]
+acteon-timeline.workspace = true
 acteon-http.workspace = true
 acteon-audit = { workspace = true, features = ["openapi"] }
 acteon-audit-memory = { workspace = true }

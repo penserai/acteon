@@ -1714,6 +1714,9 @@ mod tests {
 
         // 1. Create a retention policy.
         let policy = acteon_core::RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-001".into(),
             namespace: namespace.into(),
             tenant: tenant.into(),
@@ -1852,6 +1855,9 @@ mod tests {
 
         // 1. Create a retention policy with compliance_hold = true.
         let policy = acteon_core::RetentionPolicy {
+            timeline_ttl_seconds: None,
+            cdc_ledger_ttl_seconds: None,
+            cdc_archive_ttl_seconds: None,
             id: "ret-compliance".into(),
             namespace: namespace.into(),
             tenant: tenant.into(),

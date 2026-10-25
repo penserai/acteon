@@ -2060,6 +2060,60 @@
       "response": "json"
     },
     {
+      "name": "timeline_batch",
+      "method": "POST",
+      "path": "/v1/timeline/changes/batch",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "timeline_get",
+      "method": "GET",
+      "path": "/v1/timeline/events/{source}/{eventId}",
+      "parameters": [
+        "source",
+        "eventId"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "timeline_ingest",
+      "method": "POST",
+      "path": "/v1/timeline/changes",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "timeline_query",
+      "method": "POST",
+      "path": "/v1/timeline/query",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "timeline_replay",
+      "method": "POST",
+      "path": "/v1/timeline/replays",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "timeline_replay_status",
+      "method": "GET",
+      "path": "/v1/timeline/replays/{id}",
+      "parameters": [
+        "id"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "timeline_status",
+      "method": "GET",
+      "path": "/v1/timeline/ledger/status",
+      "parameters": [],
+      "response": "json"
+    },
+    {
       "name": "verify_verify_action",
       "method": "GET",
       "path": "/v1/actions/{id}/verify",

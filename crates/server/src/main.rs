@@ -2949,7 +2949,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.bus.sessions.clone(),
     )?);
     let agent_driver_runtime = execution_runtime.clone();
+    let timeline = acteon_server::timeline_factory::create(
+        &config,
+        gateway.read().await.state_store().clone(),
+        shared_http_client.clone(),
+    )
+    .await?;
+    let _timeline_maintenance = timeline
+        .clone()
+        .map(acteon_server::timeline_factory::spawn_maintenance);
+    #[cfg(feature = "bus")]
+    if let Some(service) = &timeline {
+        for source in &service.config.sources {
+            let backend = bus_backend
+                .clone()
+                .ok_or("timeline sources require an enabled bus backend")?;
+            let service = Arc::clone(service);
+            let source = source.clone();
+            tokio::spawn(async move {
+                loop {
+                    match acteon_timeline::bus::consume(
+                        Arc::clone(&service),
+                        backend.as_ref(),
+                        &source,
+                    )
+                    .await
+                    {
+                        Err(
+                            error @ (acteon_timeline::Error::Invalid(_)
+                            | acteon_timeline::Error::Conflict
+                            | acteon_timeline::Error::Json(_)),
+                        ) => {
+                            tracing::error!(%error, source=%source.source, "timeline source halted on invalid input");
+                            break;
+                        }
+                        Err(error) => tracing::error!(%error, "timeline source restarting"),
+                        Ok(()) => (),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            });
+        }
+    }
     let state = AppState {
+        timeline,
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,
         audit: audit_store,

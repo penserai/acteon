@@ -29,6 +29,12 @@ Operational effects are recorded by the example's providers so you can inspect
 them locally. The model requests and transport recovery are real. See the guide
 for the exact setup and the scope of each measurement.
 
+The [bank transaction pipeline](../guides/bank-transaction-pipeline.md) sends
+synthetic transactions through a suspicious-activity filter and records each
+flagged transaction in the event timeline. It prints the results with cursor
+pagination and demonstrates CEL searches for exact UUIDs, full text, and combined
+attributes, plus account-group queries. It runs locally without external services.
+
 ## Test the boundary that matters
 
 Use [rule tests](../features/rule-testing-cli.md) for deterministic policy,

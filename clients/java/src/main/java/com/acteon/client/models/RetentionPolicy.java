@@ -8,6 +8,18 @@ import java.util.Map;
  * A data retention policy.
  */
 public class RetentionPolicy {
+    @JsonProperty("timeline_ttl_seconds")
+    private Long timelineTtlSeconds;
+    public Long getTimelineTtlSeconds() { return timelineTtlSeconds; }
+    public void setTimelineTtlSeconds(Long value) { this.timelineTtlSeconds = value; }
+    @JsonProperty("cdc_ledger_ttl_seconds")
+    private Long cdcLedgerTtlSeconds;
+    public Long getCdcLedgerTtlSeconds() { return cdcLedgerTtlSeconds; }
+    public void setCdcLedgerTtlSeconds(Long value) { this.cdcLedgerTtlSeconds = value; }
+    @JsonProperty("cdc_archive_ttl_seconds")
+    private Long cdcArchiveTtlSeconds;
+    public Long getCdcArchiveTtlSeconds() { return cdcArchiveTtlSeconds; }
+    public void setCdcArchiveTtlSeconds(Long value) { this.cdcArchiveTtlSeconds = value; }
     @JsonProperty("id")
     private String id;
 

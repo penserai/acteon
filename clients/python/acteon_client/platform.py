@@ -6,7 +6,7 @@ request IDs for session opens, stage controls, and quarantine repair retries.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
 from .errors import HttpError
@@ -39,6 +39,42 @@ def platform_response(response: httpx.Response, kind: str) -> Any:
 
 
 class _PlatformMixin:
+    def ingest_timeline_change(
+        self, namespace: str, tenant: str, change: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist one CDC change. Preserve changeId and revision when retrying."""
+        return cast(
+            dict[str, Any],
+            self.platform_request(
+                PlatformOperation.TIMELINE_INGEST,
+                body={"scope": {"namespace": namespace, "tenant": tenant}, "change": change},
+            ),
+        )
+
+    def query_timeline(
+        self, namespace: str, tenant: str, query: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Search current events; query["filter"] accepts the timeline CEL subset."""
+        return cast(
+            dict[str, Any],
+            self.platform_request(
+                PlatformOperation.TIMELINE_QUERY,
+                body={"scope": {"namespace": namespace, "tenant": tenant}, "query": query or {}},
+            ),
+        )
+
+    def get_timeline_event(
+        self, namespace: str, tenant: str, source: str, event_id: str
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            self.platform_request(
+                PlatformOperation.TIMELINE_GET,
+                path={"source": source, "eventId": event_id},
+                query={"namespace": namespace, "tenant": tenant},
+            ),
+        )
+
     if TYPE_CHECKING:
 
         def _request(
@@ -65,6 +101,42 @@ class _PlatformMixin:
 
 
 class _AsyncPlatformMixin:
+    async def ingest_timeline_change(
+        self, namespace: str, tenant: str, change: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist one CDC change. Preserve changeId and revision when retrying."""
+        return cast(
+            dict[str, Any],
+            await self.platform_request(
+                PlatformOperation.TIMELINE_INGEST,
+                body={"scope": {"namespace": namespace, "tenant": tenant}, "change": change},
+            ),
+        )
+
+    async def query_timeline(
+        self, namespace: str, tenant: str, query: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Search current events; query["filter"] accepts the timeline CEL subset."""
+        return cast(
+            dict[str, Any],
+            await self.platform_request(
+                PlatformOperation.TIMELINE_QUERY,
+                body={"scope": {"namespace": namespace, "tenant": tenant}, "query": query or {}},
+            ),
+        )
+
+    async def get_timeline_event(
+        self, namespace: str, tenant: str, source: str, event_id: str
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self.platform_request(
+                PlatformOperation.TIMELINE_GET,
+                path={"source": source, "eventId": event_id},
+                query={"namespace": namespace, "tenant": tenant},
+            ),
+        )
+
     if TYPE_CHECKING:
 
         async def _request(
