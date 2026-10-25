@@ -22,4 +22,4 @@ Retention never drains a live entry early. A2A callback failures are bounded in
 the durable Task envelope and require an explicit retry or discard so age-based
 cleanup cannot violate callback ordering. Operators can inspect or drain action
 entries through `/v1/dlq/*` and inspect or discard A2A push entries through
-`/v1/a2a/{namespace}/{tenant}/push-dlq`.
+`/v1/a2a/push-dlq`.

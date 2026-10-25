@@ -32,7 +32,7 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "Exact SHA-256 of the documented public local policy-demo key"
+description = "Exact SHA-256 values of documented public local policy-demo keys"
 targetRules = ["generic-api-key"]
 condition = "AND"
 paths = [
@@ -40,7 +40,10 @@ paths = [
     '''examples/agent-swarm-coordination/policy-demo/auth\.toml$''',
 ]
 regexTarget = "match"
-regexes = ['''key_hash\s*=\s*"e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"''']
+regexes = [
+    '''key_hash\s*=\s*"e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"''',
+    '''key_hash\s*=\s*"0fa3224d953b8c388813d848520791100f5b2f2c0d78f0ba798bf9c3ca1a0b42"''',
+]
 
 [[allowlists]]
 description = "Environment variable references for receipt keys; no credential values"

@@ -574,7 +574,7 @@ fn render_rest_error(err: &PushConfigError) -> Response {
 // Dead-Letter Queue (operator surface)
 //
 // The DLQ is *not* part of the A2A protocol — it lives at
-// `/v1/a2a/{ns}/{tenant}/push-dlq[/{id}]` under Acteon's operator
+// `/v1/a2a/push-dlq[/{id}]` under Acteon's operator
 // namespace and uses the same Dispatch-permission + `(ns, tenant,
 // a2a, dlq)` grant check as the rest of the operator surface. The
 // REST list returns the most recent entries sorted descending by

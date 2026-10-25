@@ -98,7 +98,7 @@ Important implementation details constrain the plan:
 
 - The inspected checkout contains Admin, Operator, Executor, and Viewer. Executor separates dispatch from the OperationsManage ceiling. Existing action grants already constrain namespace, tenant, provider, and action type. Stable principal metadata is retained through admission receipts and chains on this branch; complete durable per-effect authority is still proposed.
 - `CallerIdentity` is server-local. Its conversion to the core `Caller` is an audit identity, not a complete authorization context suitable for deferred execution.
-- Tenant-level A2A `SendMessage` remains a general Task-ledger operation. Exact-agent `SendMessage` is separately addressed at `/a2a/{namespace}/{tenant}/agents/{agent}` and enters the configured agent-service runtime under current source and destination authority.
+- Tenant-level A2A `SendMessage` remains a general Task-ledger operation. Exact-agent `SendMessage` is separately addressed at `/a2a/agents/{agent}` and enters the configured agent-service runtime under current source and destination authority.
 - The exact-agent adapter covers finite send, input continuation, observation,
   extended-card retrieval, official SSE streaming and protocol cancellation.
   Stream admission and every emitted update preserve authenticated source

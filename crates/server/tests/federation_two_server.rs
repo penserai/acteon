@@ -662,7 +662,7 @@ async fn publish_official_v1_card(store: &dyn StateStore, server_url: &str) {
     card.skills.push(Skill::new("inspect-city"));
     card.interfaces.push(AgentCardInterface {
         kind: "json-rpc".into(),
-        url: format!("{server_url}/a2a/{NAMESPACE}/{TENANT}"),
+        url: format!("{server_url}/a2a"),
     });
     let key = StateKey::new(NAMESPACE, TENANT, KeyKind::BusAgentCard, "official-worker");
     store
@@ -678,7 +678,7 @@ fn run_official_a2a_client(server_url: &str) {
     let output = Command::new(python)
         .arg(script)
         .arg("--base-url")
-        .arg(format!("{server_url}/a2a/{NAMESPACE}/{TENANT}"))
+        .arg(format!("{server_url}/a2a"))
         .arg("--token")
         .arg("official-a2a-secret")
         .output()
@@ -744,8 +744,6 @@ async fn two_server_federation_contract(
     destination.ready(&client).await;
 
     let publication = json!({
-        "namespace": NAMESPACE,
-        "tenant": TENANT,
         "change_id": "publish-source-prod-v1",
         "expected_revision": 0,
         "trust": trust,
@@ -809,10 +807,7 @@ async fn two_server_federation_contract(
     }
 
     let accepted = client
-        .post(format!(
-            "{}/a2a/{NAMESPACE}/{TENANT}/agents/source/v1/message:send",
-            source.url
-        ))
+        .post(format!("{}/a2a/agents/source/v1/message:send", source.url))
         .bearer_auth("controller-secret")
         .json(
             &json!({"message": {"role": "user", "messageId": "source-task-message",
@@ -831,7 +826,7 @@ async fn two_server_federation_contract(
         "triage the shared incident",
     );
     let export_url = format!(
-        "{}/a2a/{NAMESPACE}/{TENANT}/agents/source/v1/tasks/{source_task_id}/federation/exports/remote-worker/message:send",
+        "{}/a2a/agents/source/v1/tasks/{source_task_id}/federation/exports/remote-worker/message:send",
         source.url
     );
     let first = client
@@ -906,7 +901,7 @@ async fn two_server_federation_contract(
 
     let remote = client
         .get(format!(
-            "{}/a2a/{NAMESPACE}/{TENANT}/agents/worker/v1/tasks/{remote_task_id}",
+            "{}/a2a/agents/worker/v1/tasks/{remote_task_id}",
             destination.url
         ))
         .bearer_auth("source-peer-secret")
@@ -926,8 +921,6 @@ async fn two_server_federation_contract(
         ))
         .bearer_auth("operator-secret")
         .json(&json!({
-            "namespace": NAMESPACE,
-            "tenant": TENANT,
             "change_id": "revoke-source-prod-v1",
             "trust_id": "source-prod",
             "expected_revision": 1,
@@ -939,10 +932,7 @@ async fn two_server_federation_contract(
     assert_eq!(revoked.status(), 200, "{}", revoked.text().await.unwrap());
 
     let accepted_after_revocation = client
-        .post(format!(
-            "{}/a2a/{NAMESPACE}/{TENANT}/agents/source/v1/message:send",
-            source.url
-        ))
+        .post(format!("{}/a2a/agents/source/v1/message:send", source.url))
         .bearer_auth("controller-secret")
         .json(
             &json!({"message": {"role": "user", "messageId": "source-task-after-revocation",
@@ -960,7 +950,7 @@ async fn two_server_federation_contract(
     let source_task_after_revocation: Value = accepted_after_revocation.json().await.unwrap();
     let rejected_export = client
         .post(format!(
-            "{}/a2a/{NAMESPACE}/{TENANT}/agents/source/v1/tasks/{}/federation/exports/remote-worker/message:send",
+            "{}/a2a/agents/source/v1/tasks/{}/federation/exports/remote-worker/message:send",
             source.url,
             source_task_after_revocation["id"].as_str().unwrap()
         ))
