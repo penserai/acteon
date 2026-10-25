@@ -115,27 +115,19 @@ func agentSegment(value string) (string, error) {
 	}
 	return url.PathEscape(value), nil
 }
-func agentServiceBase(namespace, tenant, agent string) (string, error) {
-	base, err := agentServiceRPCBase(namespace, tenant, agent)
+func agentServiceBase(agent string) (string, error) {
+	base, err := agentServiceRPCBase(agent)
 	if err != nil {
 		return "", err
 	}
 	return base + "/v1", nil
 }
-func agentServiceRPCBase(namespace, tenant, agent string) (string, error) {
-	n, err := agentSegment(namespace)
-	if err != nil {
-		return "", err
-	}
-	t, err := agentSegment(tenant)
-	if err != nil {
-		return "", err
-	}
+func agentServiceRPCBase(agent string) (string, error) {
 	a, err := agentSegment(agent)
 	if err != nil {
 		return "", err
 	}
-	return "/a2a/" + n + "/" + t + "/agents/" + a, nil
+	return "/a2a/agents/" + a, nil
 }
 
 type AgentServiceParent struct {
@@ -221,7 +213,7 @@ func (c *Client) AgentServiceDiscoverPeers(ctx context.Context, source *AgentSer
 	if !agentPeerTokenPattern.MatchString(skill) || skill == "*" {
 		return nil, fmt.Errorf("invalid exact peer skill")
 	}
-	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	base, err := agentServiceBase(source.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -319,13 +311,19 @@ func agentTask(task map[string]any, namespace, tenant, expected string) (string,
 }
 
 // AgentServiceSendMessage submits once. Preserve message identity after response loss.
-func (c *Client) AgentServiceSendMessage(ctx context.Context, namespace, tenant, agent string, message map[string]any) (*AgentServiceReceipt, error) {
-	return c.AgentServiceSendMessageWithParent(ctx, namespace, tenant, agent, message, nil)
+func (c *Client) AgentServiceSendMessage(ctx context.Context, agent string, message map[string]any) (*AgentServiceReceipt, error) {
+	return c.AgentServiceSendMessageWithParent(ctx, agent, message, nil)
 }
 
 // AgentServiceSendMessageWithParent carries existing verified authority into one delegated invocation.
-func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, namespace, tenant, agent string, message map[string]any, parent *AgentServiceParent) (*AgentServiceReceipt, error) {
-	path, err := agentServiceBase(namespace, tenant, agent)
+func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, agent string, message map[string]any, parent *AgentServiceParent) (*AgentServiceReceipt, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
+	path, err := agentServiceBase(agent)
 	if err != nil {
 		return nil, err
 	}
@@ -345,18 +343,18 @@ func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, namespac
 
 // AgentServiceSendStreamingMessage invokes one exact governed agent through
 // official A2A SSE. Stream errors are delivered as a final frame with Err set.
-func (c *Client) AgentServiceSendStreamingMessage(ctx context.Context, namespace, tenant, agent string, message map[string]any) (<-chan *AgentServiceA2AFrame, error) {
-	return c.AgentServiceSendStreamingMessageWithParent(ctx, namespace, tenant, agent, message, nil)
+func (c *Client) AgentServiceSendStreamingMessage(ctx context.Context, agent string, message map[string]any) (<-chan *AgentServiceA2AFrame, error) {
+	return c.AgentServiceSendStreamingMessageWithParent(ctx, agent, message, nil)
 }
 
 // AgentServiceSendStreamingMessageWithParent carries existing verified
 // authority into an official A2A streaming invocation.
-func (c *Client) AgentServiceSendStreamingMessageWithParent(ctx context.Context, namespace, tenant, agent string, message map[string]any, parent *AgentServiceParent) (<-chan *AgentServiceA2AFrame, error) {
+func (c *Client) AgentServiceSendStreamingMessageWithParent(ctx context.Context, agent string, message map[string]any, parent *AgentServiceParent) (<-chan *AgentServiceA2AFrame, error) {
 	messageID, ok := message["messageId"].(string)
 	if !ok || messageID == "" {
 		return nil, fmt.Errorf("streaming message requires messageId")
 	}
-	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	path, err := agentServiceRPCBase(agent)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +386,7 @@ func (c *Client) AgentServiceSubscribeTask(ctx context.Context, receipt *AgentSe
 	if err := agentSource(receipt.SourceContext); err != nil {
 		return nil, err
 	}
-	path, err := agentServiceRPCBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	path, err := agentServiceRPCBase(receipt.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +406,7 @@ func (c *Client) AgentServiceCancelTask(ctx context.Context, receipt *AgentServi
 	if err := agentSource(receipt.SourceContext); err != nil {
 		return nil, err
 	}
-	path, err := agentServiceRPCBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	path, err := agentServiceRPCBase(receipt.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +436,13 @@ func (c *Client) AgentServiceCancelTask(ctx context.Context, receipt *AgentServi
 
 // AgentServiceListTasks lists only tasks visible to the current authenticated
 // source. Source narrows visibility to one job and is required for agent principals.
-func (c *Client) AgentServiceListTasks(ctx context.Context, namespace, tenant, agent string, options AgentServiceListOptions) (*AgentServiceTaskPage, error) {
+func (c *Client) AgentServiceListTasks(ctx context.Context, agent string, options AgentServiceListOptions) (*AgentServiceTaskPage, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
 	if options.PageSize < 0 || options.PageSize > 100 {
 		return nil, fmt.Errorf("invalid agent service ListTasks pagination")
 	}
@@ -454,7 +458,7 @@ func (c *Client) AgentServiceListTasks(ctx context.Context, namespace, tenant, a
 	if !states[options.Status] {
 		return nil, fmt.Errorf("invalid A2A task status")
 	}
-	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	path, err := agentServiceRPCBase(agent)
 	if err != nil {
 		return nil, err
 	}
@@ -682,8 +686,14 @@ func validSecretRef(ref *SecretRef) bool {
 	return ref != nil && valid(ref.Provider, false) && valid(ref.Key, false) && valid(ref.Version, true)
 }
 
-func (c *Client) agentServicePushRPC(ctx context.Context, namespace, tenant, agent, taskID, method string, params map[string]any, source *AgentServiceReceipt) (map[string]any, error) {
-	path, err := agentServiceRPCBase(namespace, tenant, agent)
+func (c *Client) agentServicePushRPC(ctx context.Context, agent, taskID, method string, params map[string]any, source *AgentServiceReceipt) (map[string]any, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
+	path, err := agentServiceRPCBase(agent)
 	if err != nil {
 		return nil, err
 	}
@@ -715,27 +725,27 @@ func (c *Client) agentServicePushRPC(ctx context.Context, namespace, tenant, age
 	return result, nil
 }
 
-func (c *Client) AgentServiceCreatePushConfig(ctx context.Context, namespace, tenant, agent, taskID string, input AgentServicePushConfigInput, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
+func (c *Client) AgentServiceCreatePushConfig(ctx context.Context, agent, taskID string, input AgentServicePushConfigInput, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
 	params, err := pushConfigInput(taskID, input)
 	if err != nil {
 		return nil, err
 	}
-	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "CreateTaskPushNotificationConfig", params, source)
+	value, err := c.agentServicePushRPC(ctx, agent, taskID, "CreateTaskPushNotificationConfig", params, source)
 	if err != nil {
 		return nil, err
 	}
 	return parsePushConfig(value, taskID, input.ID)
 }
 
-func (c *Client) AgentServiceGetPushConfig(ctx context.Context, namespace, tenant, agent, taskID, configID string, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
-	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "GetTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
+func (c *Client) AgentServiceGetPushConfig(ctx context.Context, agent, taskID, configID string, source *AgentServiceReceipt) (*AgentServicePushConfig, error) {
+	value, err := c.agentServicePushRPC(ctx, agent, taskID, "GetTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
 	if err != nil {
 		return nil, err
 	}
 	return parsePushConfig(value, taskID, configID)
 }
 
-func (c *Client) AgentServiceListPushConfigs(ctx context.Context, namespace, tenant, agent, taskID string, options AgentServicePushConfigListOptions) (*AgentServicePushConfigPage, error) {
+func (c *Client) AgentServiceListPushConfigs(ctx context.Context, agent, taskID string, options AgentServicePushConfigListOptions) (*AgentServicePushConfigPage, error) {
 	if options.PageSize < 0 || options.PageSize > 100 || len(options.PageToken) > 8192 {
 		return nil, fmt.Errorf("invalid push configuration pagination")
 	}
@@ -746,7 +756,7 @@ func (c *Client) AgentServiceListPushConfigs(ctx context.Context, namespace, ten
 	if options.PageToken != "" {
 		params["pageToken"] = options.PageToken
 	}
-	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "ListTaskPushNotificationConfigs", params, options.Source)
+	value, err := c.agentServicePushRPC(ctx, agent, taskID, "ListTaskPushNotificationConfigs", params, options.Source)
 	if err != nil {
 		return nil, err
 	}
@@ -773,8 +783,8 @@ func (c *Client) AgentServiceListPushConfigs(ctx context.Context, namespace, ten
 	return &AgentServicePushConfigPage{Configs: configs, NextPageToken: token}, nil
 }
 
-func (c *Client) AgentServiceDeletePushConfig(ctx context.Context, namespace, tenant, agent, taskID, configID string, source *AgentServiceReceipt) error {
-	value, err := c.agentServicePushRPC(ctx, namespace, tenant, agent, taskID, "DeleteTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
+func (c *Client) AgentServiceDeletePushConfig(ctx context.Context, agent, taskID, configID string, source *AgentServiceReceipt) error {
+	value, err := c.agentServicePushRPC(ctx, agent, taskID, "DeleteTaskPushNotificationConfig", map[string]any{"taskId": taskID, "id": configID}, source)
 	if err != nil {
 		return err
 	}
@@ -910,7 +920,7 @@ func (c *Client) AgentServiceSendPeer(ctx context.Context, source *AgentServiceR
 	if source == nil {
 		return nil, fmt.Errorf("agent service source receipt required")
 	}
-	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	base, err := agentServiceBase(source.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -993,7 +1003,7 @@ func (c *Client) AgentServiceRefreshPeer(ctx context.Context, source *AgentServi
 	if _, err := agentTask(peer.Status.Task, source.Namespace, source.Tenant, ""); err != nil {
 		return nil, err
 	}
-	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	base, err := agentServiceBase(source.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,7 +1057,7 @@ func (c *Client) AgentServiceCancelPeer(ctx context.Context, source *AgentServic
 	if !agentAttemptPattern.MatchString(peer.SubmissionID) {
 		return nil, fmt.Errorf("invalid agent peer submission identity")
 	}
-	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	base, err := agentServiceBase(source.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1148,7 +1158,7 @@ func (c *Client) AgentServiceContinuePeer(ctx context.Context, source *AgentServ
 	if message["role"] != "user" || message["taskId"] != nil || message["contextId"] != nil || challengeBound {
 		return nil, fmt.Errorf("agent peer continuation requires an unbound user response")
 	}
-	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	base, err := agentServiceBase(source.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1232,7 +1242,7 @@ func (c *Client) AgentServiceAuthorizePeer(ctx context.Context, source *AgentSer
 	if err != nil {
 		return nil, err
 	}
-	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	base, err := agentServiceBase(source.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1326,7 +1336,7 @@ func (c *Client) AgentServiceGetTask(ctx context.Context, receipt *AgentServiceR
 	if err := agentSource(receipt.SourceContext); err != nil {
 		return nil, err
 	}
-	path, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	path, err := agentServiceBase(receipt.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1353,7 +1363,7 @@ func (c *Client) AgentServiceContinueTask(ctx context.Context, receipt *AgentSer
 	if err := agentSource(receipt.SourceContext); err != nil {
 		return nil, err
 	}
-	path, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	path, err := agentServiceBase(receipt.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1372,8 +1382,14 @@ func (c *Client) AgentServiceContinueTask(ctx context.Context, receipt *AgentSer
 }
 
 // AgentServiceRequestAuthorization opens the recipient's fixed authorization profile.
-func (c *Client) AgentServiceRequestAuthorization(ctx context.Context, namespace, tenant, agent, taskID, authorizationRequestID string) (map[string]any, error) {
-	base, err := agentServiceBase(namespace, tenant, agent)
+func (c *Client) AgentServiceRequestAuthorization(ctx context.Context, agent, taskID, authorizationRequestID string) (map[string]any, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
+	base, err := agentServiceBase(agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1400,7 +1416,7 @@ func (c *Client) AgentServiceResolveAuthorization(ctx context.Context, receipt *
 	if err := agentSource(receipt.SourceContext); err != nil {
 		return nil, err
 	}
-	base, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	base, err := agentServiceBase(receipt.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -1467,7 +1483,7 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if err := agentSource(receipt.SourceContext); err != nil {
 		return nil, err
 	}
-	path, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	path, err := agentServiceBase(receipt.Agent)
 	if err != nil {
 		return nil, err
 	}

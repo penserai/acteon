@@ -26,6 +26,8 @@ from acteon_client import (
 )
 from acteon_client.errors import HttpError
 
+from .mock_identity import credential_transport
+
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/governance-management.json").read_text()
 )
@@ -38,8 +40,6 @@ def requests():
     p = FIXTURE["publication"]
     permit = p["permit"]
     publication = PublishGovernancePermitRequest(
-        p["namespace"],
-        p["tenant"],
         p["change_id"],
         p["expected_revision"],
         GovernancePermitDeclaration(
@@ -54,8 +54,6 @@ def requests():
     )
     c = FIXTURE["intervention"]
     intervention = GovernanceInterventionRequest(
-        c["namespace"],
-        c["tenant"],
         c["change_id"],
         GovernanceResourceChange(
             c["change"]["kind"], GovernanceResource(**c["change"]["resource"])
@@ -77,7 +75,7 @@ def handler(seen):
 
 def assert_wire(seen):
     assert [r.method for r in seen] == ["GET", "POST", "POST"]
-    assert dict(seen[0].url.params) == {"namespace": "prod", "tenant": "acme"}
+    assert dict(seen[0].url.params) == {}
     assert json.loads(seen[1].content) == FIXTURE["publication"]
     assert json.loads(seen[2].content) == FIXTURE["intervention"]
     assert all(r.headers["authorization"] == "Bearer operator-key" for r in seen)
@@ -86,9 +84,9 @@ def assert_wire(seen):
 def test_sync_governance():
     seen = []
     client = ActeonClient("http://example.test", api_key="operator-key")
-    client._client = httpx.Client(transport=httpx.MockTransport(handler(seen)))
+    client._client = httpx.Client(transport=credential_transport(handler(seen)))
     publication, intervention = requests()
-    assert asdict(client.governance("prod", "acme")) == {
+    assert asdict(client.governance()) == {
         **FIXTURE["scope"],
         "management": {
             **FIXTURE["scope"]["management"],
@@ -109,9 +107,9 @@ async def test_async_governance():
     seen = []
     async with AsyncActeonClient("http://example.test", api_key="operator-key") as client:
         await client._client.aclose()
-        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler(seen)))
+        client._client = httpx.AsyncClient(transport=credential_transport(handler(seen)))
         publication, intervention = requests()
-        assert asdict(await client.governance("prod", "acme")) == {
+        assert asdict(await client.governance()) == {
             **FIXTURE["scope"],
             "management": {
                 **FIXTURE["scope"]["management"],
@@ -155,8 +153,6 @@ async def test_federation_management_and_inert_import_wire(async_client):
 
     wire = FEDERATION["publication"]
     publication = PublishFederationTrustRequest(
-        wire["namespace"],
-        wire["tenant"],
         wire["change_id"],
         wire["expected_revision"],
         FederationTrustDeclaration.from_dict(wire["trust"]),
@@ -167,14 +163,12 @@ async def test_federation_management_and_inert_import_wire(async_client):
     invocation = SignedFederationInvocationDeclaration("signed-payload", "a" * 128)
     message = {"messageId": "message-1", "role": "user", "parts": [{"text": "inspect"}]}
     export_args = (
-        "prod",
-        "acme",
         "maya",
         "11111111-1111-4111-8111-111111111111",
         "remote-triage",
         FEDERATION["export_message"],
     )
-    transport = httpx.MockTransport(respond)
+    transport = credential_transport(respond)
     cls = AsyncActeonClient if async_client else ActeonClient
     client = cls("https://acteon.example", api_key="federation-key")
     if async_client:
@@ -188,19 +182,19 @@ async def test_federation_management_and_inert_import_wire(async_client):
             results = [
                 await client.publish_federation_trust(publication),
                 await client.revoke_federation_trust(revocation),
-                await client.federation_capabilities("prod", "acme", "maya"),
-                await client.import_federation_envelope("prod", "acme", envelope),
-                await client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
+                await client.federation_capabilities("maya"),
+                await client.import_federation_envelope(envelope),
+                await client.invoke_federated_agent("maya", invocation, message),
                 await client.export_federated_message(*export_args),
                 await client.observe_federated_export(*export_args),
                 await client.replay_federated_export(*export_args),
-                await client.federation_delivery_evidence("prod", "acme", limit=25),
+                await client.federation_delivery_evidence(limit=25),
                 await client.abandon_federation_delivery(
                     FEDERATION["abandoned_evidence"]["delivery_id"],
                     AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
                 ),
                 await client.federation_finality_correlation(
-                    "prod", "acme", FEDERATION["finality_correlation"]["delivery_id"]
+                    FEDERATION["finality_correlation"]["delivery_id"]
                 ),
                 await client.reconcile_federation_delivery(
                     FEDERATION["reconciled_evidence"]["delivery_id"],
@@ -211,19 +205,19 @@ async def test_federation_management_and_inert_import_wire(async_client):
             results = [
                 client.publish_federation_trust(publication),
                 client.revoke_federation_trust(revocation),
-                client.federation_capabilities("prod", "acme", "maya"),
-                client.import_federation_envelope("prod", "acme", envelope),
-                client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
+                client.federation_capabilities("maya"),
+                client.import_federation_envelope(envelope),
+                client.invoke_federated_agent("maya", invocation, message),
                 client.export_federated_message(*export_args),
                 client.observe_federated_export(*export_args),
                 client.replay_federated_export(*export_args),
-                client.federation_delivery_evidence("prod", "acme", limit=25),
+                client.federation_delivery_evidence(limit=25),
                 client.abandon_federation_delivery(
                     FEDERATION["abandoned_evidence"]["delivery_id"],
                     AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
                 ),
                 client.federation_finality_correlation(
-                    "prod", "acme", FEDERATION["finality_correlation"]["delivery_id"]
+                    FEDERATION["finality_correlation"]["delivery_id"]
                 ),
                 client.reconcile_federation_delivery(
                     FEDERATION["reconciled_evidence"]["delivery_id"],
@@ -248,8 +242,8 @@ async def test_federation_management_and_inert_import_wire(async_client):
         assert json.loads(seen[1].content) == FEDERATION["revocation"]
         assert seen[2].url.path.endswith("/capabilities")
         assert json.loads(seen[3].content) == {"envelope": FEDERATION["envelope"]}
-        assert seen[3].url.path == "/a2a/prod/acme/federation/envelopes:import"
-        assert seen[4].url.path == "/a2a/prod/acme/federation/agents/maya/v1/message:send"
+        assert seen[3].url.path == "/a2a/federation/envelopes:import"
+        assert seen[4].url.path == "/a2a/federation/agents/maya/v1/message:send"
         assert json.loads(seen[4].content) == {
             "invocation": {"payload": "signed-payload", "signature": "a" * 128},
             "message": message,
@@ -263,17 +257,13 @@ async def test_federation_management_and_inert_import_wire(async_client):
             json.loads(request.content) == {"message": FEDERATION["export_message"]}
             for request in seen[5:8]
         )
-        assert dict(seen[8].url.params) == {
-            "namespace": "prod",
-            "tenant": "acme",
-            "limit": "25",
-        }
+        assert dict(seen[8].url.params) == {"limit": "25"}
         assert seen[9].url.path.endswith(
             f"/{FEDERATION['abandoned_evidence']['delivery_id']}:abandon"
         )
         assert json.loads(seen[9].content) == FEDERATION["abandon_request"]
         assert seen[10].url.path.endswith("/correlation")
-        assert dict(seen[10].url.params) == {"namespace": "prod", "tenant": "acme"}
+        assert dict(seen[10].url.params) == {}
         assert json.loads(seen[11].content) == FEDERATION["reconcile_request"]
         assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
     finally:
@@ -291,8 +281,8 @@ def test_refusal_preserves_status_without_retry(status):
         seen.append(request)
         return httpx.Response(status, json={"error": "governance_denied"})
 
-    client = ActeonClient("http://example.test")
-    client._client = httpx.Client(transport=httpx.MockTransport(fail))
+    client = ActeonClient("http://example.test", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(fail))
     with pytest.raises(HttpError) as error:
         client.intervene_governance(requests()[1])
     assert error.value.status == status
@@ -323,11 +313,11 @@ def history_transport():
             request.url.path
             == "/v1/governance/executions/" + HISTORIES[0]["receipt"]["execution_id"]
         )
-        assert dict(request.url.params) == {"namespace": "prod", "tenant": "acme"}
+        assert dict(request.url.params) == {}
         assert request.headers["authorization"] == "Bearer operator-key"
         return httpx.Response(200, json=next(remaining))
 
-    return httpx.MockTransport(handler)
+    return credential_transport(handler)
 
 
 def assert_history(history, wire):
@@ -357,10 +347,7 @@ def test_provider_history_sync():
         client._client.close()
         client._client = httpx.Client(transport=history_transport())
         for wire in HISTORIES:
-            assert_history(
-                client.provider_execution_history("prod", "acme", wire["receipt"]["execution_id"]),
-                wire,
-            )
+            assert_history(client.provider_execution_history(wire["receipt"]["execution_id"]), wire)
 
 
 @pytest.mark.asyncio
@@ -370,10 +357,7 @@ async def test_provider_history_async():
         client._client = httpx.AsyncClient(transport=history_transport())
         for wire in HISTORIES:
             assert_history(
-                await client.provider_execution_history(
-                    "prod", "acme", wire["receipt"]["execution_id"]
-                ),
-                wire,
+                await client.provider_execution_history(wire["receipt"]["execution_id"]), wire
             )
 
 
@@ -385,13 +369,11 @@ def test_history_refusal_preserves_status_without_retry(status):
         seen.append(request)
         return httpx.Response(status, json={"error": "history_denied"})
 
-    with ActeonClient("https://acteon.example") as client:
+    with ActeonClient("https://acteon.example", api_key="test-key") as client:
         client._client.close()
-        client._client = httpx.Client(transport=httpx.MockTransport(fail))
+        client._client = httpx.Client(transport=credential_transport(fail))
         with pytest.raises(HttpError) as error:
-            client.provider_execution_history(
-                "prod", "acme", HISTORIES[0]["receipt"]["execution_id"]
-            )
+            client.provider_execution_history(HISTORIES[0]["receipt"]["execution_id"])
         assert error.value.status == status
         assert len(seen) == 1
 
@@ -420,7 +402,7 @@ def finality_transport():
         suffix = "correlation" if not calls else "reconciliation"
         execution_id = FINALITY["correlation"]["context"]["execution_id"]
         assert request.url.path == f"/v1/governance/executions/{execution_id}/attempts/0/{suffix}"
-        assert dict(request.url.params) == {"namespace": "prod", "tenant": "acme"}
+        assert dict(request.url.params) == {}
         assert request.headers["authorization"] == "Bearer operator-key"
         assert request.method == ("GET" if not calls else "POST")
         if calls:
@@ -428,7 +410,7 @@ def finality_transport():
         calls.append(request)
         return httpx.Response(200, json=next(responses))
 
-    return httpx.MockTransport(handler), calls
+    return credential_transport(handler), calls
 
 
 def test_typed_reconciliation_transport_and_both_nested_outcomes():
@@ -438,11 +420,11 @@ def test_typed_reconciliation_transport_and_both_nested_outcomes():
     client = ActeonClient("https://acteon.example", api_key="operator-key")
     client._client = httpx.Client(transport=transport)
     execution_id = FINALITY["correlation"]["context"]["execution_id"]
-    result = client.provider_reconciliation_correlation("prod", "acme", execution_id, 0)
+    result = client.provider_reconciliation_correlation(execution_id, 0)
     assert asdict(result) == FINALITY["correlation"]
     request = ProviderReconciliationRequest(**FINALITY["request"])
     for expected in ["executed", "failed"]:
-        result = client.accept_provider_reconciliation("prod", "acme", execution_id, 0, request)
+        result = client.accept_provider_reconciliation(execution_id, 0, request)
         assert result.status.outcome.outcome_type == expected
     client.close()
     assert len(calls) == 3
@@ -457,13 +439,11 @@ async def test_async_typed_reconciliation_transport_and_both_nested_outcomes():
         await client._client.aclose()
         client._client = httpx.AsyncClient(transport=transport)
         execution_id = FINALITY["correlation"]["context"]["execution_id"]
-        result = await client.provider_reconciliation_correlation("prod", "acme", execution_id, 0)
+        result = await client.provider_reconciliation_correlation(execution_id, 0)
         assert asdict(result) == FINALITY["correlation"]
         request = ProviderReconciliationRequest(**FINALITY["request"])
         for expected in ["executed", "failed"]:
-            result = await client.accept_provider_reconciliation(
-                "prod", "acme", execution_id, 0, request
-            )
+            result = await client.accept_provider_reconciliation(execution_id, 0, request)
             assert result.status.outcome.outcome_type == expected
     assert len(calls) == 3
 
@@ -490,16 +470,12 @@ async def test_registry_requests_receipts_and_refusals(async_client):
         assert req.extensions.get("follow_redirects") is None
         if req.method == "GET":
             assert req.url.path == "/v1/governance/registry/maya"
-            assert dict(req.url.params) == {
-                "namespace": "prod",
-                "tenant": "acme",
-                "projection": "card",
-            }
+            assert dict(req.url.params) == {"projection": "card"}
             return httpx.Response(200, json=view_response)
         assert json.loads(req.content) == REGISTRY["request"]
         return httpx.Response(status, json=receipt)
 
-    transport = httpx.MockTransport(handler)
+    transport = credential_transport(handler)
     cls = AsyncActeonClient if async_client else ActeonClient
     client = cls("http://example.test", api_key="operator-key")
     if async_client:
@@ -509,7 +485,7 @@ async def test_registry_requests_receipts_and_refusals(async_client):
         client._client.close()
         client._client = httpx.Client(transport=transport)
     try:
-        view_call = client.registry_projection("prod", "acme", "maya", "card")
+        view_call = client.registry_projection("maya", "card")
         view = await view_call if async_client else view_call
         assert asdict(view) == REGISTRY["view"]
         for field, invalid in [
@@ -523,9 +499,9 @@ async def test_registry_requests_receipts_and_refusals(async_client):
             before = len(calls)
             with pytest.raises(ValueError):
                 if async_client:
-                    await client.registry_projection("prod", "acme", "maya", "card")
+                    await client.registry_projection("maya", "card")
                 else:
-                    client.registry_projection("prod", "acme", "maya", "card")
+                    client.registry_projection("maya", "card")
             assert len(calls) == before + 1
         for _ in range(2):
             result_call = client.mutate_registry(request)
@@ -576,12 +552,12 @@ async def test_registry_receipt_checks_sent_identity_when_caller_mutates_request
         return httpx.Response(200, json=REGISTRY["receipt"])
 
     if async_client:
-        async with AsyncActeonClient("http://example.test") as client:
+        async with AsyncActeonClient("http://example.test", api_key="test-key") as client:
             await client._client.aclose()
-            client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            client._client = httpx.AsyncClient(transport=credential_transport(handler))
             assert asdict(await client.mutate_registry(request)) == REGISTRY["receipt"]
     else:
-        with ActeonClient("http://example.test") as client:
+        with ActeonClient("http://example.test", api_key="test-key") as client:
             client._client.close()
-            client._client = httpx.Client(transport=httpx.MockTransport(handler))
+            client._client = httpx.Client(transport=credential_transport(handler))
             assert asdict(client.mutate_registry(request)) == REGISTRY["receipt"]

@@ -4,22 +4,12 @@ package com.acteon.client.models;
  * Query parameters for listing events.
  */
 public class EventQuery {
-    private final String namespace;
-    private final String tenant;
+
     private String status;
     private Integer limit;
 
-    public EventQuery(String namespace, String tenant) {
-        this.namespace = namespace;
-        this.tenant = tenant;
-    }
+    public EventQuery() {
 
-    public String getNamespace() {
-        return namespace;
-    }
-
-    public String getTenant() {
-        return tenant;
     }
 
     public String getStatus() {

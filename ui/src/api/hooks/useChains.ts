@@ -8,24 +8,22 @@ import type {
   ExecutionHistoryResponse,
 } from '../../types'
 
-export function useChains(params: { namespace?: string; tenant?: string; status?: string }) {
+export function useChains(params: { status?: string }) {
   return useQuery({
     queryKey: ['chains', params],
     queryFn: async () => {
       const resp = await apiGet<{ chains: ChainSummary[] }>('/v1/chains', params)
       return resp.chains
     },
-    enabled: !!params.namespace && !!params.tenant,
   })
 }
 
 export function useChainDetail(
   chainId: string | undefined,
-  params?: { namespace: string; tenant: string },
 ) {
   return useQuery({
-    queryKey: ['chain', chainId, params?.namespace, params?.tenant],
-    queryFn: () => apiGet<ChainDetailResponse>(`/v1/chains/${chainId}`, params),
+    queryKey: ['chain', chainId],
+    queryFn: () => apiGet<ChainDetailResponse>(`/v1/chains/${chainId}`),
     enabled: !!chainId,
     refetchInterval: (query) => {
       const data = query.state.data as ChainDetailResponse | undefined
@@ -36,16 +34,12 @@ export function useChainDetail(
 
 export function useChainDag(
   chainId: string | undefined,
-  params: { namespace: string; tenant: string },
 ) {
   return useQuery({
-    queryKey: ['chain-dag', chainId, params.namespace, params.tenant],
+    queryKey: ['chain-dag', chainId],
     queryFn: () =>
-      apiGet<DagResponse>(`/v1/chains/${chainId}/dag`, {
-        namespace: params.namespace,
-        tenant: params.tenant,
-      }),
-    enabled: !!chainId && !!params.namespace && !!params.tenant,
+      apiGet<DagResponse>(`/v1/chains/${chainId}/dag`),
+    enabled: !!chainId,
     refetchInterval: 5000,
   })
 }
@@ -60,24 +54,22 @@ export function useChainDefinitionDag(name: string | undefined) {
 
 export function useChainHistory(
   chainId: string | undefined,
-  params: { namespace: string; tenant: string },
 ) {
   return useQuery({
-    queryKey: ['chain-history', chainId, params.namespace, params.tenant],
-    queryFn: () => apiGet<ChainHistoryResponse>(`/v1/chains/${chainId}/history`, params),
+    queryKey: ['chain-history', chainId],
+    queryFn: () => apiGet<ChainHistoryResponse>(`/v1/chains/${chainId}/history`),
     enabled: !!chainId,
   })
 }
 
 export function useExecutionHistory(
   executionId: string | undefined,
-  params: { namespace: string; tenant: string },
 ) {
   return useQuery({
-    queryKey: ['execution-history', executionId, params.namespace, params.tenant],
+    queryKey: ['execution-history', executionId],
     queryFn: () =>
-      apiGet<ExecutionHistoryResponse>(`/v1/executions/${executionId}/history`, params),
-    enabled: !!executionId && !!params.namespace && !!params.tenant,
+      apiGet<ExecutionHistoryResponse>(`/v1/executions/${executionId}/history`),
+    enabled: !!executionId,
     refetchInterval: 5000,
   })
 }
@@ -85,9 +77,9 @@ export function useExecutionHistory(
 export function useSignalExecution() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ executionId, signalName, namespace, tenant, payload }: {
-      executionId: string; signalName: string; namespace: string; tenant: string; payload?: unknown
-    }) => apiPost(`/v1/executions/${executionId}/signal/${signalName}`, { namespace, tenant, payload }),
+    mutationFn: ({ executionId, signalName, payload }: {
+      executionId: string; signalName: string; payload?: unknown
+    }) => apiPost(`/v1/executions/${executionId}/signal/${signalName}`, { payload }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['chain'] })
       void qc.invalidateQueries({ queryKey: ['execution-history'] })
@@ -98,9 +90,9 @@ export function useSignalExecution() {
 export function useCancelChain() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ chainId, namespace, tenant, reason }: {
-      chainId: string; namespace: string; tenant: string; reason?: string
-    }) => apiPost(`/v1/chains/${chainId}/cancel`, { namespace, tenant, reason }),
+    mutationFn: ({ chainId, reason }: {
+      chainId: string; reason?: string
+    }) => apiPost(`/v1/chains/${chainId}/cancel`, { reason }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['chains'] })
       void qc.invalidateQueries({ queryKey: ['chain'] })

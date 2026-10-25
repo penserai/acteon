@@ -6,8 +6,9 @@
 //! `time_intervals` model so configurations imported from Alertmanager
 //! map 1:1.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::Utc;
@@ -66,9 +67,11 @@ pub struct CreateTimeIntervalRequest {
     pub name: String,
     /// Namespace this interval belongs to.
     #[schema(example = "prod")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant this interval belongs to.
     #[schema(example = "acme")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Time ranges; the interval matches if any range matches.
     #[serde(default)]
@@ -120,8 +123,10 @@ pub struct ListTimeIntervalsResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListTimeIntervalsParams {
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
 }
 
@@ -206,7 +211,7 @@ fn time_interval_to_response(interval: &TimeInterval) -> TimeIntervalResponse {
 pub async fn create_time_interval(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateTimeIntervalRequest>,
+    ScopedJson(req): ScopedJson<CreateTimeIntervalRequest>,
 ) -> impl IntoResponse {
     if !identity
         .role
@@ -304,7 +309,7 @@ pub async fn create_time_interval(
 pub async fn list_time_intervals(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListTimeIntervalsParams>,
+    ScopedQuery(params): ScopedQuery<ListTimeIntervalsParams>,
 ) -> impl IntoResponse {
     if let Some(ref requested_tenant) = params.tenant
         && let Some(allowed) = identity.allowed_tenants()
@@ -351,17 +356,15 @@ pub async fn list_time_intervals(
         .into_response()
 }
 
-/// `GET /v1/time-intervals/{namespace}/{tenant}/{name}` -- fetch one.
+/// `GET /v1/time-intervals/{name}` -- fetch one.
 #[utoipa::path(
     get,
-    path = "/v1/time-intervals/{namespace}/{tenant}/{name}",
+    path = "/v1/time-intervals/{name}",
     tag = "TimeIntervals",
     summary = "Get a time interval",
     description = "Returns the named time interval scoped to the given namespace and tenant.",
     params(
-        ("namespace" = String, Path, description = "Namespace"),
-        ("tenant" = String, Path, description = "Tenant"),
-        ("name" = String, Path, description = "Interval name"),
+        ("name" = String, description = "Interval name"),
     ),
     responses(
         (status = 200, description = "Time interval", body = TimeIntervalResponse),
@@ -372,7 +375,9 @@ pub async fn list_time_intervals(
 pub async fn get_time_interval(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, name)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, name)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let interval = match gw.get_time_interval(&namespace, &tenant, &name).await {
@@ -402,17 +407,15 @@ pub async fn get_time_interval(
         .into_response()
 }
 
-/// `PUT /v1/time-intervals/{namespace}/{tenant}/{name}` -- update.
+/// `PUT /v1/time-intervals/{name}` -- update.
 #[utoipa::path(
     put,
-    path = "/v1/time-intervals/{namespace}/{tenant}/{name}",
+    path = "/v1/time-intervals/{name}",
     tag = "TimeIntervals",
     summary = "Update a time interval",
     description = "Replaces time ranges, location, or description. The name and (namespace, tenant) tuple are immutable.",
     params(
-        ("namespace" = String, Path, description = "Namespace"),
-        ("tenant" = String, Path, description = "Tenant"),
-        ("name" = String, Path, description = "Interval name"),
+        ("name" = String, description = "Interval name"),
     ),
     request_body(content = UpdateTimeIntervalRequest, description = "Partial update"),
     responses(
@@ -425,7 +428,9 @@ pub async fn get_time_interval(
 pub async fn update_time_interval(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, name)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, name)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
     Json(req): Json<UpdateTimeIntervalRequest>,
 ) -> impl IntoResponse {
     if !identity
@@ -494,17 +499,15 @@ pub async fn update_time_interval(
         .into_response()
 }
 
-/// `DELETE /v1/time-intervals/{namespace}/{tenant}/{name}` -- delete.
+/// `DELETE /v1/time-intervals/{name}` -- delete.
 #[utoipa::path(
     delete,
-    path = "/v1/time-intervals/{namespace}/{tenant}/{name}",
+    path = "/v1/time-intervals/{name}",
     tag = "TimeIntervals",
     summary = "Delete a time interval",
     description = "Removes the time interval from both the cache and the state store. Rules that still reference the interval will treat it as 'not found' and proceed.",
     params(
-        ("namespace" = String, Path, description = "Namespace"),
-        ("tenant" = String, Path, description = "Tenant"),
-        ("name" = String, Path, description = "Interval name"),
+        ("name" = String, description = "Interval name"),
     ),
     responses(
         (status = 204, description = "Deleted"),
@@ -515,7 +518,9 @@ pub async fn update_time_interval(
 pub async fn delete_time_interval(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, name)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, name)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
 ) -> impl IntoResponse {
     if !identity
         .role
@@ -554,3 +559,5 @@ pub async fn delete_time_interval(
     info!(name = %name, "time interval deleted");
     StatusCode::NO_CONTENT.into_response()
 }
+
+crate::auth::context::scoped_body!(CreateTimeIntervalRequest);

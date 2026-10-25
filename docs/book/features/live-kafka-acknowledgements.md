@@ -151,7 +151,7 @@ legacy SSE cannot join it, and the raw-offset acknowledgement endpoint rejects
 receipt-required subscriptions on every server instance.
 
 All paths below start with
-`/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions`:
+`/v1/bus/subscriptions/{id}/sessions`:
 
 | Method and suffix | Request | Result |
 |---|---|---|

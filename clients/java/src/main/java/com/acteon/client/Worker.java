@@ -63,8 +63,7 @@ public final class Worker implements AutoCloseable {
     }
 
     private final ActeonClient client;
-    private final String namespace;
-    private final String tenant;
+
     private final String queue;
     private final String workerId;
     private final Duration pollInterval;
@@ -86,8 +85,7 @@ public final class Worker implements AutoCloseable {
 
     private Worker(Builder builder) {
         this.client = builder.client;
-        this.namespace = builder.namespace;
-        this.tenant = builder.tenant;
+
         this.queue = builder.queue;
         this.workerId = builder.workerId != null
             ? builder.workerId
@@ -118,21 +116,18 @@ public final class Worker implements AutoCloseable {
      * given scope.
      *
      * @param client the Acteon client used for every queue call
-     * @param namespace namespace scoping every queue call (required)
-     * @param tenant tenant scoping every queue call (required)
      * @param queue the queue to poll (required)
      * @throws IllegalArgumentException if a required argument is null
      *     or empty
      */
-    public static Builder builder(ActeonClient client, String namespace, String tenant, String queue) {
-        return new Builder(client, namespace, tenant, queue);
+    public static Builder builder(ActeonClient client, String queue) {
+        return new Builder(client, queue);
     }
 
     /** Builder for {@link Worker}. */
     public static final class Builder {
         private final ActeonClient client;
-        private final String namespace;
-        private final String tenant;
+
         private final String queue;
         private String workerId;
         private Duration pollInterval = Duration.ofSeconds(1);
@@ -140,18 +135,15 @@ public final class Worker implements AutoCloseable {
         private int maxConcurrent = 1;
         private Duration heartbeatInterval;
 
-        private Builder(ActeonClient client, String namespace, String tenant, String queue) {
+        private Builder(ActeonClient client, String queue) {
             if (client == null) {
                 throw new IllegalArgumentException("client is required");
             }
-            if (namespace == null || namespace.isEmpty()
-                || tenant == null || tenant.isEmpty()
-                || queue == null || queue.isEmpty()) {
-                throw new IllegalArgumentException("namespace, tenant, and queue are required");
+            if (queue == null || queue.isEmpty()) {
+                throw new IllegalArgumentException("queue is required");
             }
             this.client = client;
-            this.namespace = namespace;
-            this.tenant = tenant;
+
             this.queue = queue;
         }
 
@@ -287,7 +279,7 @@ public final class Worker implements AutoCloseable {
      */
     public int runOnce() throws ActeonException {
         java.util.List<Queues.WorkerTask> tasks = client.pollTasks(queue,
-            new Queues.PollTasksRequest(namespace, tenant, maxConcurrent, leaseSeconds, workerId));
+            new Queues.PollTasksRequest(maxConcurrent, leaseSeconds, workerId));
         if (tasks.isEmpty()) {
             return 0;
         }
@@ -365,8 +357,7 @@ public final class Worker implements AutoCloseable {
             : leaseSeconds * 1000L / 2;
         ScheduledFuture<?> heartbeat = heartbeatScheduler.scheduleAtFixedRate(() -> {
             try {
-                client.heartbeatTask(task.taskId(), new Queues.HeartbeatTaskRequest(
-                    namespace, tenant, task.leaseToken(), leaseSeconds));
+                client.heartbeatTask(task.taskId(), new Queues.HeartbeatTaskRequest(task.leaseToken(), leaseSeconds));
             } catch (ActeonException ignored) {
                 // Surfaces on the final complete/fail report.
             }
@@ -396,8 +387,7 @@ public final class Worker implements AutoCloseable {
 
     private void reportComplete(Queues.WorkerTask task, Object result) {
         try {
-            client.completeTask(task.taskId(), new Queues.CompleteTaskRequest(
-                namespace, tenant, task.leaseToken(), result));
+            client.completeTask(task.taskId(), new Queues.CompleteTaskRequest(task.leaseToken(), result));
         } catch (ActeonException ignored) {
             // Lost report: the lease lapses and the server re-queues.
         }
@@ -405,8 +395,7 @@ public final class Worker implements AutoCloseable {
 
     private void reportFail(Queues.WorkerTask task, String error, boolean retryable) {
         try {
-            client.failTask(task.taskId(), new Queues.FailTaskRequest(
-                namespace, tenant, task.leaseToken(), error, retryable));
+            client.failTask(task.taskId(), new Queues.FailTaskRequest(task.leaseToken(), error, retryable));
         } catch (ActeonException ignored) {
             // Lost report: the lease lapses and the server re-queues.
         }

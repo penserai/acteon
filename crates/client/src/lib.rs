@@ -6,7 +6,7 @@
 //!
 //! ```no_run
 //! use acteon_client::{ActeonClient, ActeonClientBuilder};
-//! use acteon_core::Action;
+//! use acteon_core::ActionRequest;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), acteon_client::Error> {
@@ -19,9 +19,7 @@
 //!     }
 //!
 //!     // Dispatch an action
-//!     let action = Action::new(
-//!         "notifications",
-//!         "tenant-1",
+//!     let action = ActionRequest::new(
 //!         "email",
 //!         "send_notification",
 //!         serde_json::json!({"to": "user@example.com", "subject": "Hello"}),
@@ -452,3 +450,6 @@ pub use stream_stage::{HttpStageSubscription, HttpStreamStageSource};
 mod permit_tests;
 
 pub mod timeline;
+
+/// Credential-scoped HTTP dispatch request.
+pub use acteon_core::ActionRequest;

@@ -75,8 +75,6 @@ function formatCompactNumber(n: number): string {
 export function Analytics() {
   const [metric, setMetric] = useState<AnalyticsMetric>('volume')
   const [interval, setInterval] = useState<AnalyticsInterval>('daily')
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
   const [provider, setProvider] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -84,13 +82,11 @@ export function Analytics() {
   const query = useMemo(() => ({
     metric,
     interval,
-    namespace: namespace || undefined,
-    tenant: tenant || undefined,
     provider: provider || undefined,
     from: from || undefined,
     to: to || undefined,
     top_n: metric === 'top_action_types' ? 10 : undefined,
-  }), [metric, interval, namespace, tenant, provider, from, to])
+  }), [metric, interval, provider, from, to])
 
   const { data, isLoading, error } = useAnalytics(query)
 
@@ -164,18 +160,6 @@ export function Analytics() {
 
         {/* Filter Bar */}
         <div className={styles.filterBar}>
-          <Input
-            label="Namespace"
-            value={namespace}
-            onChange={(e) => setNamespace(e.target.value)}
-            placeholder="All"
-          />
-          <Input
-            label="Tenant"
-            value={tenant}
-            onChange={(e) => setTenant(e.target.value)}
-            placeholder="All"
-          />
           <Input
             label="Provider"
             value={provider}

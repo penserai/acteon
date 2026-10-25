@@ -1,5 +1,8 @@
 # Rust Client
 
+Tenant context comes from the authenticated JWT or API key. Requests do not
+accept tenant selectors. See [credential-derived context](tenant-context.md).
+
 The `acteon-client` crate provides a native Rust HTTP client for the Acteon API.
 
 ## Complete platform API
@@ -9,7 +12,7 @@ The generated operation catalog exposes all 223 finite HTTP operations, includin
 ```rust
 let status = client.platform_request(
     acteon_client::PlatformOperation::BusStagesStatus,
-    &[("namespace", "observability"), ("tenant", "demo"), ("id", "log-detector")],
+    &[("id", "log-detector")],
     &[], None,
 ).await?;
 ```
@@ -20,7 +23,7 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 
 ## Typed governance management
 
-Use `governance`, `publish_governance_permit`, and `intervene_governance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+Use `governance`, `publish_governance_permit`, and `intervene_governance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the credential’s namespace and tenant; an executor credential alone does not grant management authority.
 
 Use `publish_federation_trust`, `revoke_federation_trust`,
 `federation_capabilities`, `import_federation_envelope`, and
@@ -48,7 +51,7 @@ acteon-core = { path = "crates/core" }
 
 ```rust
 use acteon_client::ActeonClient;
-use acteon_core::Action;
+use acteon_client::ActionRequest;
 
 #[tokio::main]
 async fn main() -> Result<(), acteon_client::Error> {
@@ -60,8 +63,8 @@ async fn main() -> Result<(), acteon_client::Error> {
     }
 
     // Dispatch
-    let action = Action::new(
-        "notifications", "tenant-1", "email", "send_email",
+    let action = ActionRequest::new(
+        "email", "send_email",
         serde_json::json!({"to": "user@example.com", "subject": "Hello"}),
     );
     let outcome = client.dispatch(&action).await?;
@@ -142,7 +145,6 @@ client.set_rule_enabled("block-spam", false).await?;
 use acteon_client::AuditQuery;
 
 let page = client.query_audit(&AuditQuery {
-    tenant: Some("tenant-1".into()),
     outcome: Some("executed".into()),
     limit: Some(100),
     ..Default::default()
@@ -160,26 +162,26 @@ if let Some(record) = client.get_audit_record("action-id").await? {
 let events = client.list_events(&EventQuery::default()).await?;
 
 // Get event state
-let event = client.get_event("fingerprint", "ns", "tenant").await?;
+let event = client.get_event("fingerprint").await?;
 
 // Transition event
-let result = client.transition_event("fingerprint", "acknowledged", "ns", "tenant").await?;
+let result = client.transition_event("fingerprint", "acknowledged").await?;
 ```
 
 ### Approvals
 
 ```rust
 // Approve
-client.approve("ns", "tenant-1", "approval-id", "signature", "expires").await?;
+client.approve("approval-id").await?;
 
 // Reject
-client.reject("ns", "tenant-1", "approval-id", "signature", "expires").await?;
+client.reject("approval-id").await?;
 
 // List pending
-let approvals = client.list_approvals("ns", "tenant-1").await?;
+let approvals = client.list_approvals().await?;
 
 // Get status
-let status = client.get_approval("ns", "tenant-1", "approval-id").await?;
+let status = client.get_approval("approval-id").await?;
 ```
 
 ### Event Groups
@@ -202,7 +204,6 @@ use acteon_client::{StreamFilter, StreamItem};
 use futures::StreamExt;
 
 let filter = StreamFilter::new()
-    .namespace("alerts")
     .action_type("send_email")
     .outcome("executed");
 
@@ -265,12 +266,12 @@ match client.dispatch(&action).await {
 | `query_audit(query)` | Query audit records |
 | `get_audit_record(action_id)` | Get specific audit record |
 | `list_events(query)` | List events |
-| `get_event(fp, ns, tenant)` | Get event state |
-| `transition_event(fp, state, ns, tenant)` | Transition event |
-| `approve(ns, tenant, id, sig, exp)` | Approve action |
-| `reject(ns, tenant, id, sig, exp)` | Reject action |
-| `list_approvals(ns, tenant)` | List pending approvals |
-| `get_approval(ns, tenant, id)` | Get approval status |
+| `get_event(fp)` | Get event state |
+| `transition_event(fp, state)` | Transition event |
+| `approve(id)` | Approve action |
+| `reject(id)` | Reject action |
+| `list_approvals()` | List pending approvals |
+| `get_approval(id)` | Get approval status |
 | `list_groups()` | List event groups |
 | `get_group(key)` | Get group details |
 | `flush_group(key)` | Force flush group |
@@ -294,9 +295,8 @@ Public values do not establish representation or caller authority.
 ```rust
 use acteon_client::{WorkforceChange, WorkforceChangeRequest, WorkforceTeam, TeamRef};
 
-let roster = client.workforce("prod", "acme").await?;
+let roster = client.workforce().await?;
 let receipt = client.change_workforce(&WorkforceChangeRequest {
-    namespace: "prod".into(), tenant: "acme".into(),
     change_id: "enroll-reliability-1".into(), reason: "Establish incident response".into(),
     change: WorkforceChange::PutTeam { team: WorkforceTeam {
         team: TeamRef::new("prod", "acme", "reliability")?, revision: 1, name: "Reliability".into(),

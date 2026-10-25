@@ -30,15 +30,13 @@ class _ScenarioClient:
         self._keys = keys
         self._children = 0
 
-    def record_workflow_checkpoint(self, execution_id, namespace, tenant, name, data):
+    def record_workflow_checkpoint(self, execution_id, name, data):
         if name not in self._checkpoints:
             self._keys.append(name)
             self._checkpoints[name] = data
         return WorkflowCheckpoint(seq=len(self._keys), name=name, data=data)
 
-    def start_child_workflow(
-        self, execution_id, namespace, tenant, checkpoint, workflow, input, **kwargs
-    ):
+    def start_child_workflow(self, execution_id, checkpoint, workflow, input, **kwargs):
         if checkpoint not in self._checkpoints:
             self._keys.append(checkpoint)
             self._children += 1
@@ -74,7 +72,7 @@ def _run_scenario(ops: list[dict[str, Any]]) -> list[str]:
 
     for _ in range(100):  # bounded; each round resolves one suspension
         client = _ScenarioClient(checkpoints, keys)
-        ctx = WorkflowContext(client, "ns", "t1", "ex-1", {}, dict(checkpoints))
+        ctx = WorkflowContext(client, "ex-1", {}, dict(checkpoints))
         try:
             workflow(ctx)
             return keys
@@ -89,7 +87,7 @@ def _run_scenario(ops: list[dict[str, Any]]) -> list[str]:
 
 def _suspension_directive(run) -> dict[str, Any]:
     """Capture the directive raised by a context operation."""
-    ctx = WorkflowContext(None, "ns", "t1", "ex-1", {}, {})
+    ctx = WorkflowContext(None, "ex-1", {}, {})
     try:
         run(ctx)
     except _Suspend as s:
@@ -179,14 +177,14 @@ def _settle_workflow(fn) -> dict[str, Any]:
         def heartbeat_task(self, *args, **kwargs):
             return task
 
-        def complete_task(self, task_id, namespace, tenant, lease_token, result):
+        def complete_task(self, task_id, lease_token, result):
             settled.append(result)
             return task
 
         def fail_task(self, *args, **kwargs):  # pragma: no cover - contract drift
             raise AssertionError("workflow continuation must settle via complete")
 
-    worker = Worker(_Client(), "ns", "t1", "q", lease_seconds=60)
+    worker = Worker(_Client(), "q", lease_seconds=60)
     worker.register_workflow("wf", fn)
     worker.run_once()
     assert len(settled) == 1
@@ -214,7 +212,7 @@ class TestCoercions(unittest.TestCase):
 class TestTimedOutMarker(unittest.TestCase):
     def test_timed_out_checkpoint_replays_as_none(self):
         marker = FIXTURES["constants"]["timed_out_marker"]
-        ctx = WorkflowContext(None, "ns", "t1", "ex-1", {}, {"signal:x#0": marker})
+        ctx = WorkflowContext(None, "ex-1", {}, {"signal:x#0": marker})
         self.assertIsNone(ctx.wait_for_signal("x"))
 
 

@@ -24,7 +24,7 @@ class AgentServiceTest {
         server.createContext("/",exchange -> {
             try {
                 calls.incrementAndGet();
-                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("/a2a/agents/notifier", exchange.getRequestURI().getPath());
                 assertEquals("text/event-stream", exchange.getRequestHeaders().getFirst("Accept"));
                 var request = mapper.readTree(exchange.getRequestBody());
                 if (request.path("method").asText().equals("SubscribeToTask")) {
@@ -44,9 +44,9 @@ class AgentServiceTest {
                 var body = (": keepalive\n\ndata: "+mapper.writeValueAsString(frame)+"\n\n").getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
             } catch(Throwable error) { failure.set(error); exchange.close(); }
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
-            try(var stream = client.agentServiceSendStreamingMessage("prod","acme","notifier",Map.of("messageId","m1"))) {
+            try(var stream = client.agentServiceSendStreamingMessage("notifier", Map.of("messageId","m1"))) {
                 assertEquals("host-only",stream.sourceContext());
                 assertEquals("job-1",stream.next().path("task").path("id").asText());
             }
@@ -66,7 +66,7 @@ class AgentServiceTest {
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/",exchange -> {
             try {
-                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("/a2a/agents/notifier", exchange.getRequestURI().getPath());
                 assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
                 var request = mapper.readTree(exchange.getRequestBody());
                 assertEquals("CancelTask", request.path("method").asText());
@@ -75,7 +75,7 @@ class AgentServiceTest {
                 var body = "{\"jsonrpc\":\"2.0\",\"id\":\"cancel:job-1\",\"result\":{\"id\":\"job-1\",\"status\":{\"state\":\"TASK_STATE_CANCELED\"},\"metadata\":{\"acteonCancellation\":{\"state\":\"confirmed\"}}}}".getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
             } catch(Throwable error) { failure.set(error); exchange.close(); }
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             assertEquals("job-1", client.agentServiceCancelTask(receipt).path("id").asText());
             if(failure.get()!=null) throw new AssertionError(failure.get());
@@ -90,7 +90,7 @@ class AgentServiceTest {
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/",exchange -> {
             try {
-                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("/a2a/agents/notifier", exchange.getRequestURI().getPath());
                 assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
                 var request = mapper.readTree(exchange.getRequestBody());
                 assertEquals("ListTasks", request.path("method").asText());
@@ -101,10 +101,10 @@ class AgentServiceTest {
                 var body = "{\"jsonrpc\":\"2.0\",\"id\":\"list:notifier\",\"result\":{\"tasks\":[{\"id\":\"job-1\",\"status\":{\"state\":\"TASK_STATE_WORKING\"}}],\"nextPageToken\":\"next-1\",\"pageSize\":1,\"totalSize\":2}}".getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
             } catch(Throwable error) { failure.set(error); exchange.close(); }
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             var options = new AgentServiceListOptions(receipt,null,AgentServiceTaskState.WORKING,1,null,null,null,false);
-            var page = client.agentServiceListTasks("prod","acme","notifier",options);
+            var page = client.agentServiceListTasks("notifier", options);
             assertEquals("job-1",page.tasks().get(0).path("id").asText());
             assertEquals("next-1",page.nextPageToken());
             assertEquals(2,page.totalSize());
@@ -140,18 +140,18 @@ class AgentServiceTest {
                 var body = mapper.writeValueAsBytes(envelope);
                 exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
             } catch(Throwable error) { failure.set(error); exchange.close(); }
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             var input = new AgentServicePushConfigInput("push-1", "https://hooks.example/a2a", null, new AgentServicePushAuthentication("Bearer", null, new SecretRef("vault", "callbacks/auth", "v2")), new SecretRef("vault", "callbacks/token", "v2"));
-            var created = client.agentServiceCreatePushConfig("prod","acme","notifier","job-1",input,receipt);
+            var created = client.agentServiceCreatePushConfig("notifier", "job-1", input, receipt);
             assertEquals("callbacks/auth", created.authentication().credentialsRef().key());
             assertEquals("v2", created.tokenRef().version());
-            assertEquals("push-1", client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",receipt).id());
-            assertEquals("next", client.agentServiceListPushConfigs("prod","acme","notifier","job-1",1,null,receipt).nextPageToken());
-            client.agentServiceDeletePushConfig("prod","acme","notifier","job-1","push-1",receipt);
+            assertEquals("push-1", client.agentServiceGetPushConfig("notifier", "job-1", "push-1", receipt).id());
+            assertEquals("next", client.agentServiceListPushConfigs("notifier", "job-1", 1, null, receipt).nextPageToken());
+            client.agentServiceDeletePushConfig("notifier", "job-1", "push-1", receipt);
             assertEquals(4,calls.get());
             var foreign = new AgentServiceReceipt("prod","acme","notifier","job-2","host-only",task);
-            assertThrows(IllegalArgumentException.class, () -> client.agentServiceGetPushConfig("prod","acme","notifier","job-1","push-1",foreign));
+            assertThrows(IllegalArgumentException.class, () -> client.agentServiceGetPushConfig("notifier", "job-1", "push-1", foreign));
             assertEquals(4,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }
@@ -187,7 +187,7 @@ class AgentServiceTest {
                 ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"authorization_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"resolved\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"working\"}},\"progress_cursor\":\"\\\"remote-1:2\\\"\"}}"
                 : "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             var peers = client.agentServiceDiscoverPeers(source,"diagnose");
             assertEquals("resolver",peers.get(0).agentId());
@@ -224,10 +224,10 @@ class AgentServiceTest {
             exchange.getResponseHeaders().set(AgentServiceReceipt.SOURCE_CONTEXT_HEADER,job.path("source_context").asText());
             var body = mapper.writeValueAsBytes(job.path("task"));
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             var p = fixture.path("parent").path("permits").get(0);
-            client.agentServiceSendMessage("prod","acme","notifier",Map.of(),new AgentServiceParent(
+            client.agentServiceSendMessage("notifier", Map.of(), new AgentServiceParent(
                 fixture.path("parent").path("execution_context").asText(), List.of(new PermitReference(p.path("id").asText(),p.path("accepted_revision").asLong()))));
             if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
@@ -263,10 +263,10 @@ class AgentServiceTest {
             exchange.getResponseHeaders().set(AgentServiceReceipt.SOURCE_CONTEXT_HEADER,job.path("source_context").asText());
             var body = mapper.writeValueAsBytes(job.path(exchange.getRequestURI().getPath().endsWith("/stop") ? "stop_response" : "task"));
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort(),"caller-key")) {
-            var first = client.agentServiceSendMessage("prod","acme","notifier",Map.of("messageId","m1"));
-            var second = client.agentServiceSendMessage("prod","acme","notifier",Map.of("messageId","m2"));
+            var first = client.agentServiceSendMessage("notifier", Map.of("messageId","m1"));
+            var second = client.agentServiceSendMessage("notifier", Map.of("messageId","m2"));
             ((com.fasterxml.jackson.databind.node.ObjectNode)first.task()).put("id","tampered-model-id");
             var restored = mapper.readValue(mapper.writeValueAsString(first),AgentServiceReceipt.class);
             assertEquals("job-1",client.agentServiceGetTask(restored).path("id").asText());
@@ -292,10 +292,10 @@ class AgentServiceTest {
                 exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
                 var body = "{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"metadata\":{\"source_context\":\"forged\"}}".getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(status,body.length); exchange.getResponseBody().write(body); exchange.close();
-            }); server.start();
+            }); CredentialContextFixture.install(server); server.start();
             try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
-                if(status==200) assertThrows(IllegalArgumentException.class,()->client.agentServiceSendMessage("prod","acme","notifier",Map.of()));
-                else assertEquals(status,assertThrows(HttpException.class,()->client.agentServiceSendMessage("prod","acme","notifier",Map.of())).getStatus());
+                if(status==200) assertThrows(IllegalArgumentException.class,()->client.agentServiceSendMessage("notifier", Map.of()));
+                else assertEquals(status,assertThrows(HttpException.class,()->client.agentServiceSendMessage("notifier", Map.of())).getStatus());
                 assertEquals(1,calls.get());
             } finally { server.stop(0); }
         }
@@ -311,7 +311,7 @@ class AgentServiceTest {
                 calls.incrementAndGet(); exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
                 var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",flag,"cancellation_confirmed",false));
                 exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
-            });server.start();
+            });CredentialContextFixture.install(server); server.start();
             try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
                 assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.agentServiceStopTask(receipt));
                 assertEquals(1,calls.get());
@@ -322,7 +322,7 @@ class AgentServiceTest {
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
             var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",true,"cancellation_confirmed",false,"provider_abort",Map.of("state","reconciled","proof_digest","bad")));
             exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
-        });malformedServer.start();
+        });CredentialContextFixture.install(malformedServer); malformedServer.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+malformedServer.getAddress().getPort())) {
             assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.agentServiceStopTask(receipt));
         } finally { malformedServer.stop(0); }
@@ -332,7 +332,7 @@ class AgentServiceTest {
             server.createContext("/",exchange -> {
                 calls.incrementAndGet();exchange.getResponseHeaders().set("Location","/redirected");
                 exchange.sendResponseHeaders(status,0);exchange.close();
-            });server.start();
+            });CredentialContextFixture.install(server); server.start();
             try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
                 assertEquals(status,assertThrows(HttpException.class,()->client.agentServiceStopTask(receipt)).getStatus());
                 assertEquals(1,calls.get());
@@ -351,7 +351,7 @@ class AgentServiceTest {
             calls.incrementAndGet(); exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
             var body = mapper.writeValueAsBytes(fixture.path("jobs").get(1).path("stop_response"));
             exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
-        });server.start();
+        });CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             assertThrows(IllegalArgumentException.class,()->client.agentServiceStopTask(receipt));
             assertEquals(1,calls.get());
@@ -377,9 +377,9 @@ class AgentServiceTest {
             } catch(Throwable error) { failure.set(error); }
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
             var bytes=mapper.writeValueAsBytes(task);exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
-        });server.start();
+        });CredentialContextFixture.install(server); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
-            client.agentServiceRequestAuthorization("prod","acme","notifier","job-1","opaque-flow-42");
+            client.agentServiceRequestAuthorization("notifier", "job-1", "opaque-flow-42");
             client.agentServiceResolveAuthorization(receipt,"challenge-42");
             assertEquals(2,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }

@@ -18,7 +18,7 @@ topic, not a parallel pipeline.
 | Surface | Shape |
 |---|---|
 | Core types | `acteon_core::StreamChunk`, `acteon_core::StreamEnd`, `acteon_core::StreamEndStatus ∈ {Complete, Aborted, Error}` |
-| HTTP | `POST /v1/bus/conversations/{ns}/{t}/{id}/stream-chunks`, `POST .../stream-end`, `GET /v1/bus/streams/{ns}/{t}/{conv_id}/{stream_id}` (SSE) |
+| HTTP | `POST /v1/bus/conversations/{id}/stream-chunks`, `POST .../stream-end`, `GET /v1/bus/streams/{conv_id}/{stream_id}` (SSE) |
 | Headers | Server-stamped: `acteon.envelope.kind ∈ {stream_chunk, stream_end}`, `acteon.stream.id`, `acteon.stream.seq`. Reuses Phase 5's reserved-prefix machinery. |
 | Rust client | `post_bus_stream_chunk`, `post_bus_stream_end`, `bus_stream_consume_url` |
 | Tests | 8 core unit tests covering envelope validation + serde roundtrips |
@@ -74,7 +74,7 @@ trust-the-payload-not-the-status reasoning as Phase 6a's `ToolResult`.
 
 ### SSE consume
 
-`GET /v1/bus/streams/{ns}/{t}/{conv_id}/{stream_id}` opens an SSE
+`GET /v1/bus/streams/{conv_id}/{stream_id}` opens an SSE
 connection. The handler:
 
 1. Resolves the conversation's events topic (honors a custom
@@ -116,7 +116,7 @@ capped at 8 KB.
 ### Post a stream chunk
 
 ```http
-POST /v1/bus/conversations/agents/demo/storytelling-thread/stream-chunks
+POST /v1/bus/conversations/storytelling-thread/stream-chunks
 {
   "stream_id": "story-1",
   "chunk_seq": 0,
@@ -138,7 +138,7 @@ POST /v1/bus/conversations/agents/demo/storytelling-thread/stream-chunks
 ### Post the terminator
 
 ```http
-POST /v1/bus/conversations/agents/demo/storytelling-thread/stream-end
+POST /v1/bus/conversations/storytelling-thread/stream-end
 {
   "stream_id": "story-1",
   "chunk_seq": 5,
@@ -163,7 +163,7 @@ For a failure terminator:
 ### Consume
 
 ```http
-GET /v1/bus/streams/agents/demo/storytelling-thread/story-1?cursor=eyIwIjogMTd9
+GET /v1/bus/streams/storytelling-thread/story-1?cursor=eyIwIjogMTd9
 Accept: text/event-stream
 → 200 OK
 

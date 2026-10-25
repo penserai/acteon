@@ -10,6 +10,7 @@ use super::role::Role;
 /// An entry in the API key lookup table.
 #[derive(Debug, Clone)]
 pub struct ApiKeyEntry {
+    pub scope: acteon_core::TenantContext,
     pub name: String,
     pub authority_id: Option<String>,
     pub principal: Option<acteon_core::PrincipalIdentity>,
@@ -25,6 +26,7 @@ pub fn build_api_key_table(
 ) -> Result<HashMap<String, ApiKeyEntry>, String> {
     let mut map = HashMap::new();
     for cfg in configs {
+        super::validate_tenant_context(&cfg.scope, &cfg.grants)?;
         let role = Role::from_str_loose(&cfg.role)
             .ok_or_else(|| format!("invalid role for API key '{}'", cfg.name))?;
         if map.contains_key(cfg.key_hash.expose_secret()) {
@@ -33,6 +35,7 @@ pub fn build_api_key_table(
         map.insert(
             cfg.key_hash.expose_secret().to_string(),
             ApiKeyEntry {
+                scope: cfg.scope.clone(),
                 name: cfg.name.clone(),
                 authority_id: cfg.authority_id.clone(),
                 principal: cfg.principal.clone(),
@@ -71,6 +74,7 @@ pub(super) fn authenticate_api_key_bound(
     let hash = hash_api_key(raw_key);
     let entry = table.get(&hash)?;
     let identity = CallerIdentity {
+        scope: entry.scope.clone(),
         id: entry.name.clone(),
         principal: entry.principal.clone(),
         role: entry.role,

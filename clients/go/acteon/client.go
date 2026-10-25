@@ -446,12 +446,7 @@ func (c *Client) QueryAudit(ctx context.Context, query *AuditQuery) (*AuditPage,
 	path := "/v1/audit"
 	if query != nil {
 		params := url.Values{}
-		if query.Namespace != "" {
-			params.Set("namespace", query.Namespace)
-		}
-		if query.Tenant != "" {
-			params.Set("tenant", query.Tenant)
-		}
+
 		if query.Provider != "" {
 			params.Set("provider", query.Provider)
 		}
@@ -556,12 +551,7 @@ func (c *Client) ReplayAudit(ctx context.Context, query *ReplayQuery) (*ReplaySu
 	path := "/v1/audit/replay"
 	if query != nil {
 		params := url.Values{}
-		if query.Namespace != "" {
-			params.Set("namespace", query.Namespace)
-		}
-		if query.Tenant != "" {
-			params.Set("tenant", query.Tenant)
-		}
+
 		if query.Provider != "" {
 			params.Set("provider", query.Provider)
 		}
@@ -612,13 +602,12 @@ func (c *Client) ReplayAudit(ctx context.Context, query *ReplayQuery) (*ReplaySu
 // Events (State Machine Lifecycle)
 // =============================================================================
 
-// ListEvents lists events filtered by namespace, tenant, and optionally status.
+// ListEvents lists events filtered by optional status within the credential context.
 func (c *Client) ListEvents(ctx context.Context, query *EventQuery) (*EventListResponse, error) {
 	path := "/v1/events"
 	if query != nil {
 		params := url.Values{}
-		params.Set("namespace", query.Namespace)
-		params.Set("tenant", query.Tenant)
+
 		if query.Status != "" {
 			params.Set("status", query.Status)
 		}
@@ -646,10 +635,9 @@ func (c *Client) ListEvents(ctx context.Context, query *EventQuery) (*EventListR
 }
 
 // GetEvent gets the current state of an event by fingerprint.
-func (c *Client) GetEvent(ctx context.Context, fingerprint, namespace, tenant string) (*EventState, error) {
+func (c *Client) GetEvent(ctx context.Context, fingerprint string) (*EventState, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/events/%s?%s", fingerprint, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -674,11 +662,9 @@ func (c *Client) GetEvent(ctx context.Context, fingerprint, namespace, tenant st
 }
 
 // TransitionEvent transitions an event to a new state.
-func (c *Client) TransitionEvent(ctx context.Context, fingerprint, toState, namespace, tenant string) (*TransitionResponse, error) {
+func (c *Client) TransitionEvent(ctx context.Context, fingerprint, toState string) (*TransitionResponse, error) {
 	body := map[string]string{
-		"to":        toState,
-		"namespace": namespace,
-		"tenant":    tenant,
+		"to": toState,
 	}
 	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/events/%s/transition", fingerprint), body)
 	if err != nil {
@@ -760,17 +746,11 @@ func (c *Client) GetGroup(ctx context.Context, groupKey string) (*GroupDetail, e
 // Approvals (Human-in-the-Loop)
 // =============================================================================
 
-// Approve approves a pending action by namespace, tenant, ID, and HMAC signature.
-// Does not require authentication -- the HMAC signature serves as proof of authorization.
+// Approve approves a pending action by ID in the authenticated credential context.
+// Requires an authenticated operator or admin credential.
 // Pass an empty string for kid to omit the key ID parameter.
-func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64, kid string) (*ApprovalActionResponse, error) {
-	params := url.Values{}
-	params.Set("sig", sig)
-	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
-	if kid != "" {
-		params.Set("kid", kid)
-	}
-	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/approve?%s", namespace, tenant, id, params.Encode())
+func (c *Client) Approve(ctx context.Context, id string) (*ApprovalActionResponse, error) {
+	path := fmt.Sprintf("/v1/approvals/%s/approve", url.PathEscape(id))
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
 	if err != nil {
@@ -801,17 +781,11 @@ func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string,
 	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to approve"}
 }
 
-// Reject rejects a pending action by namespace, tenant, ID, and HMAC signature.
-// Does not require authentication -- the HMAC signature serves as proof of authorization.
+// Reject rejects a pending action by ID in the authenticated credential context.
+// Requires an authenticated operator or admin credential.
 // Pass an empty string for kid to omit the key ID parameter.
-func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64, kid string) (*ApprovalActionResponse, error) {
-	params := url.Values{}
-	params.Set("sig", sig)
-	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
-	if kid != "" {
-		params.Set("kid", kid)
-	}
-	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/reject?%s", namespace, tenant, id, params.Encode())
+func (c *Client) Reject(ctx context.Context, id string) (*ApprovalActionResponse, error) {
+	path := fmt.Sprintf("/v1/approvals/%s/reject", url.PathEscape(id))
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
 	if err != nil {
@@ -842,17 +816,11 @@ func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, 
 	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to reject"}
 }
 
-// GetApproval gets the status of an approval by namespace, tenant, ID, and HMAC signature.
+// GetApproval gets the status of an approval by ID in the authenticated credential context.
 // Returns nil if not found or expired.
 // Pass an empty string for kid to omit the key ID parameter.
-func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64, kid string) (*ApprovalStatus, error) {
-	params := url.Values{}
-	params.Set("sig", sig)
-	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
-	if kid != "" {
-		params.Set("kid", kid)
-	}
-	path := fmt.Sprintf("/v1/approvals/%s/%s/%s?%s", namespace, tenant, id, params.Encode())
+func (c *Client) GetApproval(ctx context.Context, id string) (*ApprovalStatus, error) {
+	path := fmt.Sprintf("/v1/approvals/%s", url.PathEscape(id))
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -875,12 +843,11 @@ func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig str
 	return &status, nil
 }
 
-// ListApprovals lists pending approvals filtered by namespace and tenant.
+// ListApprovals lists pending approvals within the credential context.
 // Requires authentication.
-func (c *Client) ListApprovals(ctx context.Context, namespace, tenant string) (*ApprovalListResponse, error) {
+func (c *Client) ListApprovals(ctx context.Context) (*ApprovalListResponse, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := "/v1/approvals?" + params.Encode()
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -969,12 +936,7 @@ func (c *Client) ListRecurring(ctx context.Context, filter *RecurringFilter) (*L
 	path := "/v1/recurring"
 	if filter != nil {
 		params := url.Values{}
-		if filter.Namespace != "" {
-			params.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			params.Set("tenant", filter.Tenant)
-		}
+
 		if filter.Status != "" {
 			params.Set("status", filter.Status)
 		}
@@ -1007,10 +969,9 @@ func (c *Client) ListRecurring(ctx context.Context, filter *RecurringFilter) (*L
 }
 
 // GetRecurring gets details of a specific recurring action.
-func (c *Client) GetRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+func (c *Client) GetRecurring(ctx context.Context, recurringID string) (*RecurringDetail, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/recurring/%s?%s", recurringID, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -1067,10 +1028,9 @@ func (c *Client) UpdateRecurring(ctx context.Context, recurringID string, update
 }
 
 // DeleteRecurring deletes a recurring action.
-func (c *Client) DeleteRecurring(ctx context.Context, recurringID, namespace, tenant string) error {
+func (c *Client) DeleteRecurring(ctx context.Context, recurringID string) error {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/recurring/%s?%s", recurringID, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
@@ -1089,8 +1049,8 @@ func (c *Client) DeleteRecurring(ctx context.Context, recurringID, namespace, te
 }
 
 // PauseRecurring pauses a recurring action.
-func (c *Client) PauseRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
-	body := &RecurringLifecycleRequest{Namespace: namespace, Tenant: tenant}
+func (c *Client) PauseRecurring(ctx context.Context, recurringID string) (*RecurringDetail, error) {
+	body := &RecurringLifecycleRequest{}
 	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/recurring/%s/pause", recurringID), body)
 	if err != nil {
 		return nil, err
@@ -1120,8 +1080,8 @@ func (c *Client) PauseRecurring(ctx context.Context, recurringID, namespace, ten
 }
 
 // ResumeRecurring resumes a paused recurring action.
-func (c *Client) ResumeRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
-	body := &RecurringLifecycleRequest{Namespace: namespace, Tenant: tenant}
+func (c *Client) ResumeRecurring(ctx context.Context, recurringID string) (*RecurringDetail, error) {
+	body := &RecurringLifecycleRequest{}
 	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/recurring/%s/resume", recurringID), body)
 	if err != nil {
 		return nil, err
@@ -1187,14 +1147,9 @@ func (c *Client) CreateQuota(ctx context.Context, req *CreateQuotaRequest) (*Quo
 // filter to match only policies without a provider scope; pass a
 // provider name (e.g. "slack") to match only per-provider policies.
 // principal filters to policies scoped to a given caller.
-func (c *Client) ListQuotas(ctx context.Context, namespace, tenant, provider, principal *string) (*ListQuotasResponse, error) {
+func (c *Client) ListQuotas(ctx context.Context, provider, principal *string) (*ListQuotasResponse, error) {
 	params := url.Values{}
-	if namespace != nil {
-		params.Set("namespace", *namespace)
-	}
-	if tenant != nil {
-		params.Set("tenant", *tenant)
-	}
+
 	if provider != nil {
 		params.Set("provider", *provider)
 	}
@@ -1282,10 +1237,9 @@ func (c *Client) UpdateQuota(ctx context.Context, quotaID string, update *Update
 }
 
 // DeleteQuota deletes a quota policy.
-func (c *Client) DeleteQuota(ctx context.Context, quotaID, namespace, tenant string) error {
+func (c *Client) DeleteQuota(ctx context.Context, quotaID string) error {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/quotas/%s?%s", quotaID, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
@@ -1364,14 +1318,9 @@ func (c *Client) CreateSilence(ctx context.Context, req *CreateSilenceRequest) (
 // ListSilences lists silences, optionally filtered by namespace and
 // tenant. Pass includeExpired=true to include silences whose end
 // time is in the past.
-func (c *Client) ListSilences(ctx context.Context, namespace, tenant *string, includeExpired bool) (*ListSilencesResponse, error) {
+func (c *Client) ListSilences(ctx context.Context, includeExpired bool) (*ListSilencesResponse, error) {
 	params := url.Values{}
-	if namespace != nil {
-		params.Set("namespace", *namespace)
-	}
-	if tenant != nil {
-		params.Set("tenant", *tenant)
-	}
+
 	if includeExpired {
 		params.Set("include_expired", "true")
 	}
@@ -1512,14 +1461,9 @@ func (c *Client) CreateTimeInterval(ctx context.Context, req *CreateTimeInterval
 }
 
 // ListTimeIntervals lists time intervals filtered by namespace/tenant.
-func (c *Client) ListTimeIntervals(ctx context.Context, namespace, tenant *string) (*ListTimeIntervalsResponse, error) {
+func (c *Client) ListTimeIntervals(ctx context.Context) (*ListTimeIntervalsResponse, error) {
 	params := url.Values{}
-	if namespace != nil {
-		params.Set("namespace", *namespace)
-	}
-	if tenant != nil {
-		params.Set("tenant", *tenant)
-	}
+
 	path := "/v1/time-intervals"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
@@ -1543,8 +1487,8 @@ func (c *Client) ListTimeIntervals(ctx context.Context, namespace, tenant *strin
 }
 
 // GetTimeInterval fetches a single time interval. Returns (nil, nil) on 404.
-func (c *Client) GetTimeInterval(ctx context.Context, namespace, tenant, name string) (*TimeInterval, error) {
-	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+func (c *Client) GetTimeInterval(ctx context.Context, name string) (*TimeInterval, error) {
+	path := fmt.Sprintf("/v1/time-intervals/%s", name)
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -1567,8 +1511,8 @@ func (c *Client) GetTimeInterval(ctx context.Context, namespace, tenant, name st
 
 // UpdateTimeInterval updates a time interval's ranges, location, or
 // description. The name + (namespace, tenant) tuple is immutable.
-func (c *Client) UpdateTimeInterval(ctx context.Context, namespace, tenant, name string, update *UpdateTimeIntervalRequest) (*TimeInterval, error) {
-	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+func (c *Client) UpdateTimeInterval(ctx context.Context, name string, update *UpdateTimeIntervalRequest) (*TimeInterval, error) {
+	path := fmt.Sprintf("/v1/time-intervals/%s", name)
 	resp, err := c.doRequest(ctx, http.MethodPut, path, update)
 	if err != nil {
 		return nil, err
@@ -1599,8 +1543,8 @@ func (c *Client) UpdateTimeInterval(ctx context.Context, namespace, tenant, name
 }
 
 // DeleteTimeInterval deletes a time interval.
-func (c *Client) DeleteTimeInterval(ctx context.Context, namespace, tenant, name string) error {
-	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+func (c *Client) DeleteTimeInterval(ctx context.Context, name string) error {
+	path := fmt.Sprintf("/v1/time-intervals/%s", name)
 	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return err
@@ -1649,14 +1593,9 @@ func (c *Client) CreateRetention(ctx context.Context, req *CreateRetentionReques
 }
 
 // ListRetention lists retention policies with optional namespace, tenant, limit, and offset filters.
-func (c *Client) ListRetention(ctx context.Context, namespace, tenant *string, limit, offset *int) (*ListRetentionResponse, error) {
+func (c *Client) ListRetention(ctx context.Context, limit, offset *int) (*ListRetentionResponse, error) {
 	params := url.Values{}
-	if namespace != nil {
-		params.Set("namespace", *namespace)
-	}
-	if tenant != nil {
-		params.Set("tenant", *tenant)
-	}
+
 	if limit != nil {
 		params.Set("limit", strconv.Itoa(*limit))
 	}
@@ -1795,14 +1734,8 @@ func (c *Client) CreateTemplate(ctx context.Context, req *CreateTemplateRequest)
 }
 
 // ListTemplates lists payload templates with optional namespace and tenant filters.
-func (c *Client) ListTemplates(ctx context.Context, namespace, tenant *string) (*ListTemplatesResponse, error) {
+func (c *Client) ListTemplates(ctx context.Context) (*ListTemplatesResponse, error) {
 	params := url.Values{}
-	if namespace != nil {
-		params.Set("namespace", *namespace)
-	}
-	if tenant != nil {
-		params.Set("tenant", *tenant)
-	}
 
 	path := "/v1/templates"
 	if len(params) > 0 {
@@ -1931,14 +1864,8 @@ func (c *Client) CreateProfile(ctx context.Context, req *CreateProfileRequest) (
 }
 
 // ListProfiles lists template profiles with optional namespace and tenant filters.
-func (c *Client) ListProfiles(ctx context.Context, namespace, tenant *string) (*ListProfilesResponse, error) {
+func (c *Client) ListProfiles(ctx context.Context) (*ListProfilesResponse, error) {
 	params := url.Values{}
-	if namespace != nil {
-		params.Set("namespace", *namespace)
-	}
-	if tenant != nil {
-		params.Set("tenant", *tenant)
-	}
 
 	path := "/v1/templates/profiles"
 	if len(params) > 0 {
@@ -2294,11 +2221,10 @@ func (c *Client) VerifyAuditChain(ctx context.Context, req *VerifyHashChainReque
 // Chains
 // =============================================================================
 
-// ListChains lists chain executions filtered by namespace, tenant, and optional status.
-func (c *Client) ListChains(ctx context.Context, namespace, tenant string, status *string) (*ListChainsResponse, error) {
+// ListChains lists chain executions filtered by optional status within the credential context.
+func (c *Client) ListChains(ctx context.Context, status *string) (*ListChainsResponse, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	if status != nil {
 		params.Set("status", *status)
 	}
@@ -2322,10 +2248,9 @@ func (c *Client) ListChains(ctx context.Context, namespace, tenant string, statu
 }
 
 // GetChain gets the full details of a chain execution by ID.
-func (c *Client) GetChain(ctx context.Context, chainID, namespace, tenant string) (*ChainDetailResponse, error) {
+func (c *Client) GetChain(ctx context.Context, chainID string) (*ChainDetailResponse, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/chains/%s?%s", chainID, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -2385,10 +2310,8 @@ func (c *Client) CancelChain(ctx context.Context, chainID string, req *CancelCha
 }
 
 // GetChainDag returns the DAG representation for a running chain instance.
-func (c *Client) GetChainDag(ctx context.Context, chainID, namespace, tenant string) (*DagResponse, error) {
+func (c *Client) GetChainDag(ctx context.Context, chainID string) (*DagResponse, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
 
 	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/chains/%s/dag?%s", chainID, params.Encode()), nil)
 	if err != nil {
@@ -2435,10 +2358,9 @@ func (c *Client) GetChainDefinitionDag(ctx context.Context, name string) (*DagRe
 }
 
 // GetChainHistory returns the retry history for a chain execution.
-func (c *Client) GetChainHistory(ctx context.Context, chainID, namespace, tenant string) (*ChainHistoryResponse, error) {
+func (c *Client) GetChainHistory(ctx context.Context, chainID string) (*ChainHistoryResponse, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/chains/%s/history?%s", chainID, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -2524,12 +2446,7 @@ func (c *Client) QueryAnalytics(ctx context.Context, query *AnalyticsQuery) (*An
 		if query.Metric != "" {
 			params.Set("metric", query.Metric)
 		}
-		if query.Namespace != "" {
-			params.Set("namespace", query.Namespace)
-		}
-		if query.Tenant != "" {
-			params.Set("tenant", query.Tenant)
-		}
+
 		if query.Provider != "" {
 			params.Set("provider", query.Provider)
 		}
@@ -2589,12 +2506,7 @@ func (c *Client) RulesCoverage(ctx context.Context, query *CoverageQuery) (*Cove
 	path := "/v1/rules/coverage"
 	if query != nil {
 		params := url.Values{}
-		if query.Namespace != "" {
-			params.Set("namespace", query.Namespace)
-		}
-		if query.Tenant != "" {
-			params.Set("tenant", query.Tenant)
-		}
+
 		if query.From != nil {
 			params.Set("from", query.From.Format(time.RFC3339))
 		}
@@ -2633,12 +2545,7 @@ func (c *Client) RulesCoverage(ctx context.Context, query *CoverageQuery) (*Cove
 func (c *Client) Subscribe(ctx context.Context, entityType, entityID string, opts *SubscribeOptions) (<-chan *SseEvent, error) {
 	params := url.Values{}
 	if opts != nil {
-		if opts.Namespace != nil {
-			params.Set("namespace", *opts.Namespace)
-		}
-		if opts.Tenant != nil {
-			params.Set("tenant", *opts.Tenant)
-		}
+
 		if opts.IncludeHistory != nil {
 			params.Set("include_history", strconv.FormatBool(*opts.IncludeHistory))
 		}
@@ -2667,9 +2574,7 @@ func (c *Client) Stream(ctx context.Context, opts *StreamOptions) (<-chan *SseEv
 	params := url.Values{}
 	var lastEventID *string
 	if opts != nil {
-		if opts.Namespace != nil {
-			params.Set("namespace", *opts.Namespace)
-		}
+
 		if opts.ActionType != nil {
 			params.Set("action_type", *opts.ActionType)
 		}
@@ -2796,12 +2701,7 @@ func (c *Client) ListSwarmRuns(ctx context.Context, filter *SwarmRunFilter) (*Li
 	path := "/v1/swarm/runs"
 	if filter != nil {
 		q := url.Values{}
-		if filter.Namespace != "" {
-			q.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			q.Set("tenant", filter.Tenant)
-		}
+
 		if filter.Status != "" {
 			q.Set("status", filter.Status)
 		}

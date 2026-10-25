@@ -36,7 +36,7 @@ class PermitsTest {
         });
         server.start();
         try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort(), "test-key")) {
-            var action = new Action("prod", "acme", "incident", "execute", Map.of("incident", 42));
+            var action = new Action("incident", "execute", Map.of("incident", 42));
             client.dispatch(action);
             client.dispatch(action, permits);
             client.dispatchBatch(List.of(action), permits);
@@ -54,7 +54,7 @@ class PermitsTest {
             });
             server.start();
             try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort())) {
-                var action = new Action("prod", "acme", "incident", "execute", Map.of());
+                var action = new Action("incident", "execute", Map.of());
                 var error = assertThrows(com.acteon.client.exceptions.HttpException.class,
                     () -> client.dispatch(action, List.of()));
                 assertEquals(status, error.getStatus());

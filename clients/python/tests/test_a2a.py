@@ -174,11 +174,11 @@ class TestFactories(unittest.TestCase):
 class TestMixinUrlsAndHeaders(unittest.TestCase):
     def test_send_message_url_and_a2a_version_header(self):
         c = _StubClient(body={"id": "task-1", "status": {"state": "submitted"}})
-        c.a2a_send_message("ns", "tnt", make_message("m-1", "user", [make_part_text("hi")]))
+        c.a2a_send_message(make_message("m-1", "user", [make_part_text("hi")]))
         self.assertEqual(len(c.calls), 1)
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
-        self.assertEqual(call.path, "/a2a/ns/tnt/v1/message:send")
+        self.assertEqual(call.path, "/a2a/v1/message:send")
         # The send is wrapped in {"message": ...} per spec.
         self.assertIn("message", call.json)
         self.assertEqual(call.json["message"]["messageId"], "m-1")
@@ -188,35 +188,34 @@ class TestMixinUrlsAndHeaders(unittest.TestCase):
 
     def test_cancel_task_url_carries_cancel_verb_in_segment(self):
         c = _StubClient(body={"id": "task-1", "status": {"state": "canceled"}})
-        c.a2a_cancel_task("ns", "tnt", "task-1")
+        c.a2a_cancel_task("task-1")
         self.assertEqual(c.calls[0].method, "POST")
         # The :cancel verb must end up as part of the final segment,
         # not a separate path component.
         self.assertEqual(
             c.calls[0].path,
-            "/a2a/ns/tnt/v1/tasks/task-1:cancel",
+            "/a2a/v1/tasks/task-1:cancel",
         )
 
     def test_delete_push_config_url(self):
         c = _StubClient(body=None, status_code=204)
-        c.a2a_delete_push_config("ns", "tnt", "task-1", "cfg-a")
+        c.a2a_delete_push_config("task-1", "cfg-a")
         self.assertEqual(c.calls[0].method, "DELETE")
         self.assertEqual(
             c.calls[0].path,
-            "/a2a/ns/tnt/v1/tasks/task-1/pushNotificationConfigs/cfg-a",
+            "/a2a/v1/tasks/task-1/pushNotificationConfigs/cfg-a",
         )
 
-    def test_discover_agent_is_unauthenticated(self):
+    def test_discover_agent_uses_credential_context(self):
         c = _StubClient(body={"agent_id": "tenant"})
-        c.a2a_discover_agent("ns", "tnt")
+        c.a2a_discover_agent()
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
-        self.assertEqual(call.path, "/a2a/ns/tnt/.well-known/agent.json")
-        # The discovery endpoint is unauthenticated per the A2A spec
-        # — the mixin must request without the API-key header.
-        self.assertTrue(
+        self.assertEqual(call.path, "/a2a/.well-known/agent.json")
+        # Discovery is tenant-owned and needs the credential context.
+        self.assertFalse(
             call.skip_auth,
-            "discovery must skip auth headers",
+            "discovery must send auth headers",
         )
 
     def test_extended_card_uses_jsonrpc_envelope(self):
@@ -227,9 +226,9 @@ class TestMixinUrlsAndHeaders(unittest.TestCase):
                 "result": {"agent_id": "tenant", "capabilities": {}},
             }
         )
-        card = c.a2a_get_authenticated_extended_card("ns", "tnt")
+        card = c.a2a_get_authenticated_extended_card()
         call = c.calls[0]
-        self.assertEqual(call.path, "/a2a/ns/tnt")
+        self.assertEqual(call.path, "/a2a")
         self.assertEqual(call.json["jsonrpc"], "2.0")
         self.assertEqual(call.json["method"], "agent/getAuthenticatedExtendedCard")
         # The mixin unwraps the JSON-RPC envelope on the way out.
@@ -237,10 +236,10 @@ class TestMixinUrlsAndHeaders(unittest.TestCase):
 
     def test_path_segments_are_percent_encoded(self):
         c = _StubClient(body={"id": "t"})
-        # A tenant name with a slash must be percent-encoded so it
+        # A task ID with a slash must be percent-encoded so it
         # cannot leak into additional path components.
-        c.a2a_get_task("ns/escape", "tnt", "t")
-        self.assertIn("/a2a/ns%2Fescape/tnt/v1/tasks/t", c.calls[0].path)
+        c.a2a_get_task("task/escape")
+        self.assertIn("/a2a/v1/tasks/task%2Fescape", c.calls[0].path)
 
 
 # ---------------------------------------------------------------------
@@ -260,7 +259,7 @@ class TestJsonRpcErrorUnwrap(unittest.TestCase):
             }
         )
         with self.assertRaises(ApiError) as ctx:
-            c.a2a_get_authenticated_extended_card("ns", "tnt")
+            c.a2a_get_authenticated_extended_card()
         self.assertIn("task not found", ctx.exception.message)
         self.assertEqual(ctx.exception.code, "-32001")
 

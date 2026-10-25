@@ -16,7 +16,7 @@ tool envelopes ride on the existing conversation events topic.
 | Surface | Shape |
 |---|---|
 | Core types | `acteon_core::ToolCall`, `acteon_core::ToolResult`, `acteon_core::ToolResultStatus ∈ {Ok, Error, Canceled}` |
-| HTTP | `POST /v1/bus/conversations/{ns}/{t}/{id}/tool-calls`, `POST .../tool-results`, `GET /v1/bus/tool-calls/{ns}/{t}/{call_id}/result?conversation_id=&timeout_ms=` |
+| HTTP | `POST /v1/bus/conversations/{id}/tool-calls`, `POST .../tool-results`, `GET /v1/bus/tool-calls/{call_id}/result?conversation_id=&timeout_ms=` |
 | Headers | Server-stamped: `acteon.envelope.kind ∈ {tool_call, tool_result}`, `acteon.tool.call_id`, `acteon.correlation_id`, `acteon.reply_to`. Reuses Phase 5's reserved-prefix machinery. |
 | Rust client | `post_bus_tool_call`, `post_bus_tool_result`, `lookup_bus_tool_result` |
 | Tests | 9 core unit tests covering envelope validation + serde roundtrips |
@@ -59,7 +59,7 @@ so subscribers can route locally without parsing JSON:
 
 ### Wait-for-result lookup
 
-`GET /v1/bus/tool-calls/{ns}/{t}/{call_id}/result` blocks for up to
+`GET /v1/bus/tool-calls/{call_id}/result` blocks for up to
 `timeout_ms` waiting for a matching `ToolResult` to land on the
 events topic. Internally:
 
@@ -83,7 +83,7 @@ the caller routed the result to a different thread via `reply_to`.
 ### Post a tool-call
 
 ```http
-POST /v1/bus/conversations/agents/demo/planning-thread/tool-calls
+POST /v1/bus/conversations/planning-thread/tool-calls
 {
   "call_id": "call-001",
   "tool": "calendar.list_events",
@@ -104,7 +104,7 @@ POST /v1/bus/conversations/agents/demo/planning-thread/tool-calls
 ### Post a tool-result
 
 ```http
-POST /v1/bus/conversations/agents/demo/planning-thread/tool-results
+POST /v1/bus/conversations/planning-thread/tool-results
 {
   "call_id": "call-001",
   "status": "ok",
@@ -118,7 +118,7 @@ POST /v1/bus/conversations/agents/demo/planning-thread/tool-results
 ### Wait for a result
 
 ```http
-GET /v1/bus/tool-calls/agents/demo/call-001/result?timeout_ms=5000
+GET /v1/bus/tool-calls/call-001/result?timeout_ms=5000
 → 200 ToolResultLookupResponse {
   "call_id": "call-001",
   "result": {"status": "ok", "output": {...}, ...},

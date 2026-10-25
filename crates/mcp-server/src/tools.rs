@@ -10,7 +10,7 @@ use acteon_ops::acteon_client::{
     UpdateQuotaRequest, UpdateRecurringAction, UpdateRetentionRequest, UpdateSilenceRequest,
     UpdateTemplateRequest, VerifyHashChainRequest,
 };
-use acteon_ops::acteon_core::Action;
+use acteon_ops::acteon_core::ActionRequest;
 use acteon_ops::test_rules;
 use rmcp::{
     ErrorData as McpError,
@@ -116,8 +116,6 @@ fn val_hashmap_json(
 
 fn build_create_recurring(v: &serde_json::Value) -> Result<CreateRecurringAction, McpError> {
     Ok(CreateRecurringAction {
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
         provider: val_str(v, "provider")?,
         action_type: val_str(v, "action_type")?,
         payload: val_json(v, "payload")?,
@@ -132,10 +130,8 @@ fn build_create_recurring(v: &serde_json::Value) -> Result<CreateRecurringAction
     })
 }
 
-fn build_update_recurring(v: &serde_json::Value) -> Result<UpdateRecurringAction, McpError> {
-    Ok(UpdateRecurringAction {
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
+fn build_update_recurring(v: &serde_json::Value) -> UpdateRecurringAction {
+    UpdateRecurringAction {
         name: val_opt_str(v, "name"),
         payload: val_opt_json(v, "payload"),
         metadata: v.get("metadata").and_then(|v| v.as_object()).map(|obj| {
@@ -149,13 +145,11 @@ fn build_update_recurring(v: &serde_json::Value) -> Result<UpdateRecurringAction
         description: val_opt_str(v, "description"),
         dedup_key: val_opt_str(v, "dedup_key"),
         labels: val_opt_hashmap_str(v, "labels"),
-    })
+    }
 }
 
 fn build_create_quota(v: &serde_json::Value) -> Result<CreateQuotaRequest, McpError> {
     Ok(CreateQuotaRequest {
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
         provider: val_opt_str(v, "provider"),
         principal: val_opt_str(v, "principal"),
         per_principal: val_bool_or(v, "per_principal", false),
@@ -167,10 +161,8 @@ fn build_create_quota(v: &serde_json::Value) -> Result<CreateQuotaRequest, McpEr
     })
 }
 
-fn build_update_quota(v: &serde_json::Value) -> Result<UpdateQuotaRequest, McpError> {
-    Ok(UpdateQuotaRequest {
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
+fn build_update_quota(v: &serde_json::Value) -> UpdateQuotaRequest {
+    UpdateQuotaRequest {
         max_actions: val_opt_u64(v, "max_actions"),
         window: val_opt_str(v, "window"),
         overage_behavior: val_opt_str(v, "overage_behavior"),
@@ -178,23 +170,22 @@ fn build_update_quota(v: &serde_json::Value) -> Result<UpdateQuotaRequest, McpEr
         enabled: val_opt_bool(v, "enabled"),
         per_principal: val_opt_bool(v, "per_principal"),
         labels: val_opt_hashmap_str(v, "labels"),
-    })
+    }
 }
 
-fn build_create_retention(v: &serde_json::Value) -> Result<CreateRetentionRequest, McpError> {
-    Ok(CreateRetentionRequest {
+fn build_create_retention(v: &serde_json::Value) -> CreateRetentionRequest {
+    CreateRetentionRequest {
         timeline_ttl_seconds: val_opt_u64(v, "timeline_ttl_seconds"),
         cdc_ledger_ttl_seconds: val_opt_u64(v, "cdc_ledger_ttl_seconds"),
         cdc_archive_ttl_seconds: val_opt_u64(v, "cdc_archive_ttl_seconds"),
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
+
         audit_ttl_seconds: val_opt_u64(v, "audit_ttl_seconds"),
         state_ttl_seconds: val_opt_u64(v, "state_ttl_seconds"),
         event_ttl_seconds: val_opt_u64(v, "event_ttl_seconds"),
         compliance_hold: val_bool_or(v, "compliance_hold", false),
         description: val_opt_str(v, "description"),
         labels: val_opt_hashmap_str(v, "labels"),
-    })
+    }
 }
 
 fn build_update_retention(v: &serde_json::Value) -> UpdateRetentionRequest {
@@ -247,8 +238,6 @@ fn build_create_silence(v: &serde_json::Value) -> Result<CreateSilenceRequest, M
         .map_err(|e| mcp_err(format!("invalid ends_at: {e}")))?;
 
     Ok(CreateSilenceRequest {
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
         matchers,
         comment: val_str(v, "comment")?,
         starts_at,
@@ -271,8 +260,7 @@ fn build_update_silence(v: &serde_json::Value) -> Result<UpdateSilenceRequest, M
 fn build_create_template(v: &serde_json::Value) -> Result<CreateTemplateRequest, McpError> {
     Ok(CreateTemplateRequest {
         name: val_str(v, "name")?,
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
+
         content: val_str(v, "content")?,
         description: val_opt_str(v, "description"),
         labels: val_opt_hashmap_str(v, "labels"),
@@ -290,8 +278,7 @@ fn build_update_template(v: &serde_json::Value) -> UpdateTemplateRequest {
 fn build_create_profile(v: &serde_json::Value) -> Result<CreateProfileRequest, McpError> {
     Ok(CreateProfileRequest {
         name: val_str(v, "name")?,
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
+
         fields: val_hashmap_json(v, "fields")?,
         description: val_opt_str(v, "description"),
         labels: val_opt_hashmap_str(v, "labels"),
@@ -309,8 +296,7 @@ fn build_update_profile(v: &serde_json::Value) -> UpdateProfileRequest {
 fn build_render_preview(v: &serde_json::Value) -> Result<RenderPreviewRequest, McpError> {
     Ok(RenderPreviewRequest {
         profile: val_str(v, "profile")?,
-        namespace: val_str(v, "namespace")?,
-        tenant: val_str(v, "tenant")?,
+
         payload: val_json(v, "payload")?,
     })
 }
@@ -321,10 +307,6 @@ fn build_render_preview(v: &serde_json::Value) -> Result<RenderPreviewRequest, M
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DispatchParams {
-    /// Namespace for the action (e.g. "notifications").
-    pub namespace: String,
-    /// Tenant identifier.
-    pub tenant: String,
     /// Target provider name (e.g. "slack", "email", "webhook").
     pub provider: String,
     /// Action type discriminator (e.g. `send_alert`, `create_ticket`).
@@ -350,12 +332,6 @@ pub struct BatchDispatchParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct QueryAuditParams {
-    /// Filter by tenant.
-    #[serde(default)]
-    pub tenant: Option<String>,
-    /// Filter by namespace.
-    #[serde(default)]
-    pub namespace: Option<String>,
     /// Filter by provider.
     #[serde(default)]
     pub provider: Option<String>,
@@ -385,10 +361,6 @@ pub struct ReloadRulesParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EvaluateRulesParams {
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Provider.
     pub provider: String,
     /// Action type.
@@ -404,20 +376,12 @@ pub struct EvaluateRulesParams {
 pub struct ManageEventParams {
     /// Event fingerprint.
     pub fingerprint: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Target state: "acknowledged", "resolved", "investigating", etc.
     pub action: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListEventsParams {
-    /// Namespace (required).
-    pub namespace: String,
-    /// Tenant (required).
-    pub tenant: String,
     /// Filter by state (e.g. "open", "acknowledged").
     #[serde(default)]
     pub status: Option<String>,
@@ -428,10 +392,6 @@ pub struct ListEventsParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListChainsParams {
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Optional status filter (e.g. "running", "completed").
     #[serde(default)]
     pub status: Option<String>,
@@ -447,10 +407,6 @@ pub struct SetRuleEnabledParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListRecurringParams {
-    /// Namespace (required).
-    pub namespace: String,
-    /// Tenant (required).
-    pub tenant: String,
     /// Optional status filter: "active" or "paused".
     #[serde(default)]
     pub status: Option<String>,
@@ -463,12 +419,6 @@ pub struct ListGroupsParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListQuotasParams {
-    /// Filter by namespace.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Filter by provider scope: pass `"generic"` to match only
     /// policies with no provider scope, or a provider name (e.g.
     /// `"slack"`) to match only per-provider policies for that
@@ -483,14 +433,7 @@ pub struct ListQuotasParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ListRetentionParams {
-    /// Filter by namespace.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(default)]
-    pub tenant: Option<String>,
-}
+pub struct ListRetentionParams {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListCircuitBreakersParams {
@@ -501,12 +444,6 @@ pub struct ListCircuitBreakersParams {
 pub struct QueryAnalyticsParams {
     /// Metric to compute: `volume`, `outcome_breakdown`, `top_action_types`, `latency`, `error_rate`.
     pub metric: String,
-    /// Filter by namespace.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Filter by provider.
     #[serde(default)]
     pub provider: Option<String>,
@@ -564,12 +501,6 @@ pub struct ReplayActionParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReplayAuditParams {
-    /// Filter by namespace.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Filter by provider.
     #[serde(default)]
     pub provider: Option<String>,
@@ -585,30 +516,18 @@ pub struct ReplayAuditParams {
 pub struct GetChainParams {
     /// Chain instance ID.
     pub chain_id: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetChainHistoryParams {
     /// Chain instance ID.
     pub chain_id: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CancelChainParams {
     /// Chain instance ID.
     pub chain_id: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Optional cancellation reason.
     #[serde(default)]
     pub reason: Option<String>,
@@ -625,12 +544,6 @@ pub struct GetChainDagParams {
     /// Chain definition name (provide this OR `chain_id`, not both).
     #[serde(default)]
     pub name: Option<String>,
-    /// Namespace (required when using `chain_id`).
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant (required when using `chain_id`).
-    #[serde(default)]
-    pub tenant: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -652,12 +565,6 @@ pub struct ManageRecurringParams {
     /// Recurring action ID (required for get, update, delete, pause, resume).
     #[serde(default)]
     pub id: Option<String>,
-    /// Namespace (required for list, get, delete, pause, resume).
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant (required for list, get, delete, pause, resume).
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Status filter for list (e.g. "active", "paused").
     #[serde(default)]
     pub status: Option<String>,
@@ -673,12 +580,6 @@ pub struct ManageQuotasParams {
     /// Quota ID (required for get, update, delete, usage).
     #[serde(default)]
     pub id: Option<String>,
-    /// Namespace filter for list; required for delete.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant filter for list; required for delete.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Provider scope filter for list: `"generic"` matches
     /// policies without a provider scope; any other value matches
     /// only per-provider policies for that provider.
@@ -701,12 +602,6 @@ pub struct ManageRetentionParams {
     /// Retention policy ID (required for get, update, delete).
     #[serde(default)]
     pub id: Option<String>,
-    /// Namespace filter for list.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant filter for list.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// JSON data for create or update operations.
     #[serde(default)]
     pub data: Option<serde_json::Value>,
@@ -719,12 +614,6 @@ pub struct ManageTemplatesParams {
     /// Template ID (required for get, update, delete).
     #[serde(default)]
     pub id: Option<String>,
-    /// Namespace filter for list.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant filter for list.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// JSON data for create or update operations.
     #[serde(default)]
     pub data: Option<serde_json::Value>,
@@ -737,12 +626,6 @@ pub struct ManageTemplateProfilesParams {
     /// Profile ID (required for get, update, delete).
     #[serde(default)]
     pub id: Option<String>,
-    /// Namespace filter for list.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant filter for list.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// JSON data for create, update, or render operations.
     #[serde(default)]
     pub data: Option<serde_json::Value>,
@@ -773,12 +656,6 @@ pub struct ManageSilencesParams {
     /// Silence ID (required for get, update, delete).
     #[serde(default)]
     pub id: Option<String>,
-    /// Namespace filter for list.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant filter for list.
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Include expired silences in list (defaults to false).
     #[serde(default)]
     pub include_expired: Option<bool>,
@@ -813,12 +690,7 @@ pub struct ProviderHealthParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ListApprovalsParams {
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
-}
+pub struct ListApprovalsParams {}
 
 // ---------------------------------------------------------------------------
 // Agentic bus parameter types
@@ -828,12 +700,6 @@ pub struct ListApprovalsParams {
 pub struct ManageBusTopicsParams {
     /// Action: "list", "create", "delete", "publish".
     pub action: String,
-    /// Namespace filter (list) or component of new topic (create).
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Tenant filter (list) or component of new topic (create).
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Full Kafka topic name (`namespace.tenant.name`) — required for delete.
     #[serde(default)]
     pub kafka_name: Option<String>,
@@ -846,10 +712,6 @@ pub struct ManageBusTopicsParams {
 pub struct ManageBusSubscriptionsParams {
     /// Action: "list", "create", "delete", "lag", "ack".
     pub action: String,
-    #[serde(default)]
-    pub namespace: Option<String>,
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Subscription id — required for delete, lag, ack.
     #[serde(default)]
     pub id: Option<String>,
@@ -871,10 +733,6 @@ pub struct ManageBusSubscriptionsParams {
 pub struct ManageBusSchemasParams {
     /// Action: "list", "versions", "get", "register", "delete", "bind", "unbind".
     pub action: String,
-    #[serde(default)]
-    pub namespace: Option<String>,
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Schema subject — required for versions, get, delete, bind.
     #[serde(default)]
     pub subject: Option<String>,
@@ -896,10 +754,6 @@ pub struct ManageBusSchemasParams {
 pub struct ManageBusAgentsParams {
     /// Action: "list", "get", "register", "update", "delete", "heartbeat", "send".
     pub action: String,
-    #[serde(default)]
-    pub namespace: Option<String>,
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Agent id — required for get, update, delete, heartbeat, send.
     #[serde(default)]
     pub agent_id: Option<String>,
@@ -919,10 +773,6 @@ pub struct ManageBusAgentsParams {
 pub struct ManageBusConversationsParams {
     /// Action: "list", "get", "create", "update", "delete", "transition", "append", "replay".
     pub action: String,
-    #[serde(default)]
-    pub namespace: Option<String>,
-    #[serde(default)]
-    pub tenant: Option<String>,
     /// Conversation id — required for get, update, delete, transition, append, replay.
     #[serde(default)]
     pub conversation_id: Option<String>,
@@ -946,8 +796,6 @@ pub struct ManageBusConversationsParams {
 pub struct BusToolCallParams {
     /// Action: `post`, `post_result`, `lookup`.
     pub action: String,
-    pub namespace: String,
-    pub tenant: String,
     /// Conversation id — required for `post`, `post_result`, `lookup`.
     #[serde(default)]
     pub conversation_id: Option<String>,
@@ -969,8 +817,6 @@ pub struct BusToolCallParams {
 pub struct BusStreamParams {
     /// Action: `chunk`, `end`, `consume_url`.
     pub action: String,
-    pub namespace: String,
-    pub tenant: String,
     pub conversation_id: String,
     /// Stream id — required for `consume_url`; appears inside `data` for `chunk` and `end`.
     #[serde(default)]
@@ -984,8 +830,6 @@ pub struct BusStreamParams {
 pub struct ManageBusApprovalsParams {
     /// Action: "list", "get", "approve", "reject".
     pub action: String,
-    pub namespace: String,
-    pub tenant: String,
     /// Approval id — required for get, approve, reject.
     #[serde(default)]
     pub approval_id: Option<String>,
@@ -1031,14 +875,7 @@ impl ActeonMcpServer {
 
         match self
             .ops
-            .dispatch(
-                p.namespace,
-                p.tenant,
-                p.provider,
-                p.action_type,
-                p.payload,
-                options,
-            )
+            .dispatch(p.provider, p.action_type, p.payload, options)
             .await
         {
             Ok(o) => {
@@ -1057,7 +894,7 @@ impl ActeonMcpServer {
         &self,
         Parameters(p): Parameters<BatchDispatchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let actions: Vec<Action> = p
+        let actions: Vec<ActionRequest> = p
             .actions
             .into_iter()
             .map(serde_json::from_value)
@@ -1074,17 +911,15 @@ impl ActeonMcpServer {
     }
 
     /// Search the audit trail for historical events. Returns recent dispatch
-    /// records filtered by tenant, provider, action type, or outcome.
+    /// records filtered by provider, action type, or outcome.
     #[tool(
-        description = "Query the audit trail for historical dispatch records. Filter by tenant, provider, action_type, or outcome."
+        description = "Query the audit trail for historical dispatch records. Filter by provider, action_type, or outcome."
     )]
     async fn query_audit(
         &self,
         Parameters(p): Parameters<QueryAuditParams>,
     ) -> Result<CallToolResult, McpError> {
         let query = AuditQuery {
-            tenant: p.tenant,
-            namespace: p.namespace,
             provider: p.provider,
             action_type: p.action_type,
             outcome: p.outcome,
@@ -1134,15 +969,13 @@ impl ActeonMcpServer {
 
     /// Replay multiple actions matching a query filter.
     #[tool(
-        description = "Replay multiple actions from the audit trail matching optional filters (namespace, tenant, provider, action_type, limit)."
+        description = "Replay multiple actions from the audit trail matching optional filters (provider, action_type, limit)."
     )]
     async fn replay_audit(
         &self,
         Parameters(p): Parameters<ReplayAuditParams>,
     ) -> Result<CallToolResult, McpError> {
         let query = ReplayQuery {
-            namespace: p.namespace,
-            tenant: p.tenant,
             provider: p.provider,
             action_type: p.action_type,
             outcome: None,
@@ -1205,14 +1038,7 @@ impl ActeonMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self
             .ops
-            .evaluate_rules(
-                p.namespace,
-                p.tenant,
-                p.provider,
-                p.action_type,
-                p.payload,
-                p.include_disabled,
-            )
+            .evaluate_rules(p.provider, p.action_type, p.payload, p.include_disabled)
             .await
         {
             Ok(trace) => {
@@ -1232,11 +1058,7 @@ impl ActeonMcpServer {
         &self,
         Parameters(p): Parameters<ManageEventParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self
-            .ops
-            .transition_event(p.fingerprint, p.action, p.namespace, p.tenant)
-            .await
-        {
+        match self.ops.transition_event(p.fingerprint, p.action).await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1245,18 +1067,16 @@ impl ActeonMcpServer {
         }
     }
 
-    /// List stateful events for a given namespace and tenant, optionally
+    /// List stateful events in the authenticated context, optionally
     /// filtered by state.
     #[tool(
-        description = "List stateful events (open incidents, acknowledged alerts) for a namespace and tenant."
+        description = "List stateful events (open incidents, acknowledged alerts) in the authenticated context."
     )]
     async fn list_events(
         &self,
         Parameters(p): Parameters<ListEventsParams>,
     ) -> Result<CallToolResult, McpError> {
         let query = EventQuery {
-            namespace: p.namespace,
-            tenant: p.tenant,
             status: p.status,
             limit: p.limit,
         };
@@ -1272,13 +1092,13 @@ impl ActeonMcpServer {
 
     /// List action chains (multi-step workflows) for a tenant.
     #[tool(
-        description = "List action chains (multi-step workflows) for a namespace and tenant. Optionally filter by status."
+        description = "List action chains (multi-step workflows) in the authenticated context. Optionally filter by status."
     )]
     async fn list_chains(
         &self,
         Parameters(p): Parameters<ListChainsParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.ops.list_chains(p.namespace, p.tenant, p.status).await {
+        match self.ops.list_chains(p.status).await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1288,16 +1108,12 @@ impl ActeonMcpServer {
     }
 
     /// Get the full details of a chain instance.
-    #[tool(description = "Get the full details of a chain instance by ID, namespace, and tenant.")]
+    #[tool(description = "Get the full details of a chain instance by ID.")]
     async fn get_chain(
         &self,
         Parameters(p): Parameters<GetChainParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self
-            .ops
-            .get_chain(&p.chain_id, &p.namespace, &p.tenant)
-            .await
-        {
+        match self.ops.get_chain(&p.chain_id).await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1314,11 +1130,7 @@ impl ActeonMcpServer {
         &self,
         Parameters(p): Parameters<GetChainHistoryParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self
-            .ops
-            .get_chain_history(&p.chain_id, &p.namespace, &p.tenant)
-            .await
-        {
+        match self.ops.get_chain_history(&p.chain_id).await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1335,13 +1147,7 @@ impl ActeonMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self
             .ops
-            .cancel_chain(
-                &p.chain_id,
-                &p.namespace,
-                &p.tenant,
-                p.reason.as_deref(),
-                p.cancelled_by.as_deref(),
-            )
+            .cancel_chain(&p.chain_id, p.reason.as_deref(), p.cancelled_by.as_deref())
             .await
         {
             Ok(resp) => {
@@ -1354,22 +1160,14 @@ impl ActeonMcpServer {
 
     /// Get the DAG visualization for a chain instance or definition.
     #[tool(
-        description = "Get the DAG (directed acyclic graph) for a chain. Provide chain_id+namespace+tenant for an instance, or name for a definition."
+        description = "Get the DAG (directed acyclic graph) for a chain. Provide chain_id for an instance, or name for a definition."
     )]
     async fn get_chain_dag(
         &self,
         Parameters(p): Parameters<GetChainDagParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = if let Some(ref chain_id) = p.chain_id {
-            let ns = p
-                .namespace
-                .as_deref()
-                .ok_or_else(|| mcp_err("'namespace' is required when using chain_id"))?;
-            let tenant = p
-                .tenant
-                .as_deref()
-                .ok_or_else(|| mcp_err("'tenant' is required when using chain_id"))?;
-            self.ops.get_chain_dag(chain_id, ns, tenant).await
+            self.ops.get_chain_dag(chain_id).await
         } else if let Some(ref name) = p.name {
             self.ops.get_chain_definition_dag(name).await
         } else {
@@ -1490,14 +1288,12 @@ impl ActeonMcpServer {
     }
 
     /// List recurring actions for a tenant.
-    #[tool(description = "List recurring actions (scheduled jobs) for a namespace and tenant.")]
+    #[tool(description = "List recurring actions (scheduled jobs) in the authenticated context.")]
     async fn list_recurring_actions(
         &self,
         Parameters(p): Parameters<ListRecurringParams>,
     ) -> Result<CallToolResult, McpError> {
         let filter = RecurringFilter {
-            namespace: p.namespace,
-            tenant: p.tenant,
             status: p.status,
             ..Default::default()
         };
@@ -1534,12 +1330,7 @@ impl ActeonMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self
             .ops
-            .list_quotas(
-                p.namespace.as_deref(),
-                p.tenant.as_deref(),
-                p.provider.as_deref(),
-                p.principal.as_deref(),
-            )
+            .list_quotas(p.provider.as_deref(), p.principal.as_deref())
             .await
         {
             Ok(resp) => {
@@ -1554,9 +1345,9 @@ impl ActeonMcpServer {
     #[tool(description = "List data retention policies for tenants.")]
     async fn list_retention(
         &self,
-        Parameters(p): Parameters<ListRetentionParams>,
+        Parameters(_p): Parameters<ListRetentionParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.ops.list_retention(p.namespace, p.tenant).await {
+        match self.ops.list_retention().await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1639,10 +1430,9 @@ impl ActeonMcpServer {
             p.to.as_deref()
                 .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
 
-        let query = acteon_core::AnalyticsQuery {
+        let query = acteon_ops::acteon_client::AnalyticsQuery {
             metric,
-            namespace: p.namespace,
-            tenant: p.tenant,
+
             provider: p.provider,
             action_type: p.action_type,
             outcome: p.outcome,
@@ -1651,9 +1441,6 @@ impl ActeonMcpServer {
             to,
             group_by: p.group_by,
             top_n: p.top_n,
-            // Authorization scope is applied server-side from grants; clients
-            // never set it (the field is `#[serde(skip)]`).
-            tenant_scope: Vec::new(),
         };
 
         match self.ops.query_analytics(query).await {
@@ -1694,7 +1481,7 @@ impl ActeonMcpServer {
 
     /// Manage recurring actions (CRUD + pause/resume).
     #[tool(
-        description = "Manage recurring actions. Actions: list, get, create, update, delete, pause, resume. Provide namespace/tenant for list; id+namespace+tenant for get/delete/pause/resume; data JSON for create/update."
+        description = "Manage recurring actions. Actions: list, get, create, update, delete, pause, resume. id for get/delete/pause/resume; data JSON for create/update."
     )]
     async fn manage_recurring(
         &self,
@@ -1703,8 +1490,6 @@ impl ActeonMcpServer {
         match p.action.as_str() {
             "list" => {
                 let filter = RecurringFilter {
-                    namespace: p.namespace.unwrap_or_default(),
-                    tenant: p.tenant.unwrap_or_default(),
                     status: p.status,
                     ..Default::default()
                 };
@@ -1720,15 +1505,7 @@ impl ActeonMcpServer {
                 let id =
                     p.id.as_deref()
                         .ok_or_else(|| mcp_err("'id' is required for get"))?;
-                let ns = p
-                    .namespace
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'namespace' is required for get"))?;
-                let tenant = p
-                    .tenant
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'tenant' is required for get"))?;
-                match self.ops.get_recurring(id, ns, tenant).await {
+                match self.ops.get_recurring(id).await {
                     Ok(resp) => {
                         let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1756,7 +1533,7 @@ impl ActeonMcpServer {
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for update"))?;
-                let update = build_update_recurring(&data)?;
+                let update = build_update_recurring(&data);
                 match self.ops.update_recurring(id, &update).await {
                     Ok(resp) => {
                         let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
@@ -1769,15 +1546,7 @@ impl ActeonMcpServer {
                 let id =
                     p.id.as_deref()
                         .ok_or_else(|| mcp_err("'id' is required for delete"))?;
-                let ns = p
-                    .namespace
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'namespace' is required for delete"))?;
-                let tenant = p
-                    .tenant
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'tenant' is required for delete"))?;
-                match self.ops.delete_recurring(id, ns, tenant).await {
+                match self.ops.delete_recurring(id).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Recurring action '{id}' deleted."
                     ))])),
@@ -1788,15 +1557,7 @@ impl ActeonMcpServer {
                 let id =
                     p.id.as_deref()
                         .ok_or_else(|| mcp_err("'id' is required for pause"))?;
-                let ns = p
-                    .namespace
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'namespace' is required for pause"))?;
-                let tenant = p
-                    .tenant
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'tenant' is required for pause"))?;
-                match self.ops.pause_recurring(id, ns, tenant).await {
+                match self.ops.pause_recurring(id).await {
                     Ok(resp) => {
                         let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1808,15 +1569,7 @@ impl ActeonMcpServer {
                 let id =
                     p.id.as_deref()
                         .ok_or_else(|| mcp_err("'id' is required for resume"))?;
-                let ns = p
-                    .namespace
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'namespace' is required for resume"))?;
-                let tenant = p
-                    .tenant
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'tenant' is required for resume"))?;
-                match self.ops.resume_recurring(id, ns, tenant).await {
+                match self.ops.resume_recurring(id).await {
                     Ok(resp) => {
                         let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1832,7 +1585,7 @@ impl ActeonMcpServer {
 
     /// Manage quota policies (CRUD + usage).
     #[tool(
-        description = "Manage quota policies. Actions: list, get, create, update, delete, usage. Provide namespace/tenant for list/delete; id for get/update/delete/usage; data JSON for create/update."
+        description = "Manage quota policies. Actions: list, get, create, update, delete, usage. id for get/update/delete/usage; data JSON for create/update."
     )]
     async fn manage_quotas(
         &self,
@@ -1842,12 +1595,7 @@ impl ActeonMcpServer {
             "list" => {
                 match self
                     .ops
-                    .list_quotas(
-                        p.namespace.as_deref(),
-                        p.tenant.as_deref(),
-                        p.provider.as_deref(),
-                        p.principal.as_deref(),
-                    )
+                    .list_quotas(p.provider.as_deref(), p.principal.as_deref())
                     .await
                 {
                     Ok(resp) => {
@@ -1889,7 +1637,7 @@ impl ActeonMcpServer {
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for update"))?;
-                let update = build_update_quota(&data)?;
+                let update = build_update_quota(&data);
                 match self.ops.update_quota(id, &update).await {
                     Ok(resp) => {
                         let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
@@ -1902,15 +1650,7 @@ impl ActeonMcpServer {
                 let id =
                     p.id.as_deref()
                         .ok_or_else(|| mcp_err("'id' is required for delete"))?;
-                let ns = p
-                    .namespace
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'namespace' is required for delete"))?;
-                let tenant = p
-                    .tenant
-                    .as_deref()
-                    .ok_or_else(|| mcp_err("'tenant' is required for delete"))?;
-                match self.ops.delete_quota(id, ns, tenant).await {
+                match self.ops.delete_quota(id).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Quota '{id}' deleted."
                     ))])),
@@ -1937,14 +1677,14 @@ impl ActeonMcpServer {
 
     /// Manage data retention policies (CRUD).
     #[tool(
-        description = "Manage data retention policies. Actions: list, get, create, update, delete. Provide namespace/tenant for list; id for get/update/delete; data JSON for create/update."
+        description = "Manage data retention policies. Actions: list, get, create, update, delete. id for get/update/delete; data JSON for create/update."
     )]
     async fn manage_retention(
         &self,
         Parameters(p): Parameters<ManageRetentionParams>,
     ) -> Result<CallToolResult, McpError> {
         match p.action.as_str() {
-            "list" => match self.ops.list_retention(p.namespace, p.tenant).await {
+            "list" => match self.ops.list_retention().await {
                 Ok(resp) => {
                     let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                     Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -1967,7 +1707,7 @@ impl ActeonMcpServer {
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for create"))?;
-                let req = build_create_retention(&data)?;
+                let req = build_create_retention(&data);
                 match self.ops.create_retention(&req).await {
                     Ok(resp) => {
                         let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
@@ -2011,26 +1751,20 @@ impl ActeonMcpServer {
 
     /// Manage payload templates (CRUD).
     #[tool(
-        description = "Manage payload templates. Actions: list, get, create, update, delete. Provide namespace/tenant for list; id for get/update/delete; data JSON for create/update."
+        description = "Manage payload templates. Actions: list, get, create, update, delete. id for get/update/delete; data JSON for create/update."
     )]
     async fn manage_templates(
         &self,
         Parameters(p): Parameters<ManageTemplatesParams>,
     ) -> Result<CallToolResult, McpError> {
         match p.action.as_str() {
-            "list" => {
-                match self
-                    .ops
-                    .list_templates(p.namespace.as_deref(), p.tenant.as_deref())
-                    .await
-                {
-                    Ok(resp) => {
-                        let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
-                        Ok(CallToolResult::success(vec![Content::text(json)]))
-                    }
-                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            "list" => match self.ops.list_templates().await {
+                Ok(resp) => {
+                    let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                    Ok(CallToolResult::success(vec![Content::text(json)]))
                 }
-            }
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            },
             "get" => {
                 let id =
                     p.id.as_deref()
@@ -2091,26 +1825,20 @@ impl ActeonMcpServer {
 
     /// Manage template profiles (CRUD + render preview).
     #[tool(
-        description = "Manage template profiles. Actions: list, get, create, update, delete, render. Provide namespace/tenant for list; id for get/update/delete; data JSON for create/update/render."
+        description = "Manage template profiles. Actions: list, get, create, update, delete, render. id for get/update/delete; data JSON for create/update/render."
     )]
     async fn manage_template_profiles(
         &self,
         Parameters(p): Parameters<ManageTemplateProfilesParams>,
     ) -> Result<CallToolResult, McpError> {
         match p.action.as_str() {
-            "list" => {
-                match self
-                    .ops
-                    .list_profiles(p.namespace.as_deref(), p.tenant.as_deref())
-                    .await
-                {
-                    Ok(resp) => {
-                        let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
-                        Ok(CallToolResult::success(vec![Content::text(json)]))
-                    }
-                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            "list" => match self.ops.list_profiles().await {
+                Ok(resp) => {
+                    let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                    Ok(CallToolResult::success(vec![Content::text(json)]))
                 }
-            }
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            },
             "get" => {
                 let id =
                     p.id.as_deref()
@@ -2264,7 +1992,7 @@ impl ActeonMcpServer {
 
     /// Manage silences (CRUD).
     #[tool(
-        description = "Manage silences — time-bounded label-pattern mutes that suppress dispatched actions. Actions: list, get, create, update, delete. Provide namespace/tenant/include_expired for list; id for get/update/delete; data JSON for create/update. Create data must include: namespace, tenant, matchers (array of {name, value, op}), comment, and either ends_at or duration_seconds. Update data may include ends_at and comment."
+        description = "Manage silences — time-bounded label-pattern mutes that suppress dispatched actions. Actions: list, get, create, update, delete. Provide include_expired for list; id for get/update/delete; data JSON for create/update. Create data must include: matchers (array of {name, value, op}), comment, and either ends_at or duration_seconds. Update data may include ends_at and comment."
     )]
     async fn manage_silences(
         &self,
@@ -2273,8 +2001,6 @@ impl ActeonMcpServer {
         match p.action.as_str() {
             "list" => {
                 let query = ListSilencesQuery {
-                    namespace: p.namespace.clone(),
-                    tenant: p.tenant.clone(),
                     include_expired: p.include_expired.unwrap_or(false),
                 };
                 match self.ops.list_silences(&query).await {
@@ -2428,13 +2154,13 @@ impl ActeonMcpServer {
         }
     }
 
-    /// List pending approvals for a namespace and tenant.
-    #[tool(description = "List pending approval requests for a namespace and tenant.")]
+    /// List pending approvals in the authenticated context.
+    #[tool(description = "List pending approval requests in the authenticated context.")]
     async fn list_approvals(
         &self,
-        Parameters(p): Parameters<ListApprovalsParams>,
+        Parameters(_p): Parameters<ListApprovalsParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.ops.list_approvals(&p.namespace, &p.tenant).await {
+        match self.ops.list_approvals().await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -2449,7 +2175,7 @@ impl ActeonMcpServer {
 
     /// Manage bus topics (list/create/delete/publish).
     #[tool(
-        description = "Manage agentic bus topics. Actions: list (filter by namespace/tenant), create (data = CreateBusTopic), delete (kafka_name required), publish (data = PublishBusMessage)."
+        description = "Manage agentic bus topics. Actions: list (credential context), create (data = CreateBusTopic), delete (kafka_name required), publish (data = PublishBusMessage)."
     )]
     async fn manage_bus_topics(
         &self,
@@ -2459,10 +2185,7 @@ impl ActeonMcpServer {
         let client = self.ops.client();
         match p.action.as_str() {
             "list" => {
-                let filter = BusTopicFilter {
-                    namespace: p.namespace,
-                    tenant: p.tenant,
-                };
+                let filter = BusTopicFilter {};
                 ok_or_err(client.list_bus_topics(&filter).await)
             }
             "create" => {
@@ -2501,7 +2224,7 @@ impl ActeonMcpServer {
 
     /// Manage bus subscriptions (list/create/delete/lag/ack).
     #[tool(
-        description = "Manage agentic bus subscriptions. Actions: list (filter by namespace/tenant/topic), create (data = CreateSubscription), delete (namespace+tenant+id), lag (namespace+tenant+id), ack (namespace+tenant+id+partition+offset). Ack performs a full broker round-trip — use for end-of-batch checkpoints, not per-record."
+        description = "Manage agentic bus subscriptions. Actions: list (filter by topic), create (data = CreateSubscription), delete (id), lag (id), ack (id+partition+offset). Ack performs a full broker round-trip — use for end-of-batch checkpoints, not per-record."
     )]
     async fn manage_bus_subscriptions(
         &self,
@@ -2511,11 +2234,7 @@ impl ActeonMcpServer {
         let client = self.ops.client();
         match p.action.as_str() {
             "list" => {
-                let filter = BusSubscriptionFilter {
-                    namespace: p.namespace,
-                    tenant: p.tenant,
-                    topic: p.topic,
-                };
+                let filter = BusSubscriptionFilter { topic: p.topic };
                 ok_or_err(client.list_bus_subscriptions(&filter).await)
             }
             "create" => {
@@ -2527,13 +2246,8 @@ impl ActeonMcpServer {
                 ok_or_err(client.create_bus_subscription(&req).await)
             }
             "delete" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.id.as_ref(),
-                    "delete",
-                )?;
-                match client.delete_bus_subscription(ns, t, id).await {
+                let id = required_resource_id(p.id.as_ref(), "delete")?;
+                match client.delete_bus_subscription(id).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Subscription '{id}' deleted."
                     ))])),
@@ -2541,21 +2255,11 @@ impl ActeonMcpServer {
                 }
             }
             "lag" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.id.as_ref(),
-                    "lag",
-                )?;
-                ok_or_err(client.get_bus_lag(ns, t, id).await)
+                let id = required_resource_id(p.id.as_ref(), "lag")?;
+                ok_or_err(client.get_bus_lag(id).await)
             }
             "ack" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.id.as_ref(),
-                    "ack",
-                )?;
+                let id = required_resource_id(p.id.as_ref(), "ack")?;
                 let partition = p
                     .partition
                     .ok_or_else(|| mcp_err("'partition' is required for ack"))?;
@@ -2563,7 +2267,7 @@ impl ActeonMcpServer {
                     .offset
                     .ok_or_else(|| mcp_err("'offset' is required for ack"))?;
                 match client
-                    .ack_bus_subscription(ns, t, id, AckOffset { partition, offset })
+                    .ack_bus_subscription(id, AckOffset { partition, offset })
                     .await
                 {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
@@ -2580,7 +2284,7 @@ impl ActeonMcpServer {
 
     /// Manage JSON Schemas and topic-schema bindings.
     #[tool(
-        description = "Manage agentic bus JSON Schemas. Actions: list (filter by namespace/tenant/subject + latest_only), versions (namespace+tenant+subject), get (namespace+tenant+subject+version, version may be 'latest' or a number), register (data = RegisterBusSchema), delete (namespace+tenant+subject+version numeric), bind (namespace+tenant+topic+subject+version), unbind (namespace+tenant+topic)."
+        description = "Manage agentic bus JSON Schemas. Actions: list (filter by subject + latest_only), versions (subject), get (subject+version, version may be 'latest' or a number), register (data = RegisterBusSchema), delete (subject+version numeric), bind (topic+subject+version), unbind (topic)."
     )]
     async fn manage_bus_schemas(
         &self,
@@ -2591,35 +2295,23 @@ impl ActeonMcpServer {
         match p.action.as_str() {
             "list" => {
                 let filter = BusSchemaFilter {
-                    namespace: p.namespace,
-                    tenant: p.tenant,
                     subject: p.subject,
                     latest_only: p.latest_only.unwrap_or(false),
                 };
                 ok_or_err(client.list_bus_schemas(&filter).await)
             }
             "versions" => {
-                let (ns, t, subject) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.subject.as_ref(),
-                    "versions",
-                )?;
-                ok_or_err(client.get_bus_schema_versions(ns, t, subject).await)
+                let subject = required_resource_id(p.subject.as_ref(), "versions")?;
+                ok_or_err(client.get_bus_schema_versions(subject).await)
             }
             "get" => {
-                let (ns, t, subject) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.subject.as_ref(),
-                    "get",
-                )?;
+                let subject = required_resource_id(p.subject.as_ref(), "get")?;
                 let version = match p.version.as_ref() {
                     Some(serde_json::Value::String(s)) => s.clone(),
                     Some(serde_json::Value::Number(n)) => n.to_string(),
                     Some(_) | None => "latest".to_string(),
                 };
-                ok_or_err(client.get_bus_schema(ns, t, subject, &version).await)
+                ok_or_err(client.get_bus_schema(subject, &version).await)
             }
             "register" => {
                 let data = p
@@ -2630,12 +2322,7 @@ impl ActeonMcpServer {
                 ok_or_err(client.register_bus_schema(&req).await)
             }
             "delete" => {
-                let (ns, t, subject) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.subject.as_ref(),
-                    "delete",
-                )?;
+                let subject = required_resource_id(p.subject.as_ref(), "delete")?;
                 let version = p
                     .version
                     .as_ref()
@@ -2643,7 +2330,7 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("numeric 'version' is required for delete"))?;
                 let v =
                     i32::try_from(version).map_err(|_| mcp_err("'version' out of i32 range"))?;
-                match client.delete_bus_schema(ns, t, subject, v).await {
+                match client.delete_bus_schema(subject, v).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Schema '{subject}' v{v} deleted."
                     ))])),
@@ -2651,12 +2338,7 @@ impl ActeonMcpServer {
                 }
             }
             "bind" => {
-                let (ns, t, topic) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.topic.as_ref(),
-                    "bind",
-                )?;
+                let topic = required_resource_id(p.topic.as_ref(), "bind")?;
                 let subject = p
                     .subject
                     .as_deref()
@@ -2668,16 +2350,11 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("numeric 'version' is required for bind"))?;
                 let v =
                     i32::try_from(version).map_err(|_| mcp_err("'version' out of i32 range"))?;
-                ok_or_err(client.bind_topic_schema(ns, t, topic, subject, v).await)
+                ok_or_err(client.bind_topic_schema(topic, subject, v).await)
             }
             "unbind" => {
-                let (ns, t, topic) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.topic.as_ref(),
-                    "unbind",
-                )?;
-                match client.unbind_topic_schema(ns, t, topic).await {
+                let topic = required_resource_id(p.topic.as_ref(), "unbind")?;
+                match client.unbind_topic_schema(topic).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Topic '{topic}' schema binding removed."
                     ))])),
@@ -2692,7 +2369,7 @@ impl ActeonMcpServer {
 
     /// Manage agents (list/get/register/update/delete/heartbeat/send).
     #[tool(
-        description = "Manage agentic bus agents. Actions: list (filter by namespace/tenant/capability/status), get (namespace+tenant+agent_id), register (data = RegisterBusAgent), update (namespace+tenant+agent_id, data = UpdateBusAgent), delete (namespace+tenant+agent_id), heartbeat (namespace+tenant+agent_id), send (namespace+tenant+agent_id, data = SendToBusAgent)."
+        description = "Manage agentic bus agents. Actions: list (filter by capability/status), get (agent_id), register (data = RegisterBusAgent), update (agent_id, data = UpdateBusAgent), delete (agent_id), heartbeat (agent_id), send (agent_id, data = SendToBusAgent)."
     )]
     async fn manage_bus_agents(
         &self,
@@ -2705,8 +2382,6 @@ impl ActeonMcpServer {
         match p.action.as_str() {
             "list" => {
                 let filter = BusAgentFilter {
-                    namespace: p.namespace,
-                    tenant: p.tenant,
                     capability: p.capability,
                     status: p.status,
                     // MCP params don't surface admin-state yet;
@@ -2717,13 +2392,8 @@ impl ActeonMcpServer {
                 ok_or_err(client.list_bus_agents(&filter).await)
             }
             "get" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.agent_id.as_ref(),
-                    "get",
-                )?;
-                ok_or_err(client.get_bus_agent(ns, t, id).await)
+                let id = required_resource_id(p.agent_id.as_ref(), "get")?;
+                ok_or_err(client.get_bus_agent(id).await)
             }
             "register" => {
                 let data = p
@@ -2734,27 +2404,17 @@ impl ActeonMcpServer {
                 ok_or_err(client.register_bus_agent(&req).await)
             }
             "update" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.agent_id.as_ref(),
-                    "update",
-                )?;
+                let id = required_resource_id(p.agent_id.as_ref(), "update")?;
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for update"))?;
                 let req: UpdateBusAgent = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(client.update_bus_agent(ns, t, id, &req).await)
+                ok_or_err(client.update_bus_agent(id, &req).await)
             }
             "delete" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.agent_id.as_ref(),
-                    "delete",
-                )?;
-                match client.delete_bus_agent(ns, t, id).await {
+                let id = required_resource_id(p.agent_id.as_ref(), "delete")?;
+                match client.delete_bus_agent(id).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Agent '{id}' deleted."
                     ))])),
@@ -2762,27 +2422,17 @@ impl ActeonMcpServer {
                 }
             }
             "heartbeat" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.agent_id.as_ref(),
-                    "heartbeat",
-                )?;
-                ok_or_err(client.heartbeat_bus_agent(ns, t, id).await)
+                let id = required_resource_id(p.agent_id.as_ref(), "heartbeat")?;
+                ok_or_err(client.heartbeat_bus_agent(id).await)
             }
             "send" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.agent_id.as_ref(),
-                    "send",
-                )?;
+                let id = required_resource_id(p.agent_id.as_ref(), "send")?;
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for send"))?;
                 let req: SendToBusAgent = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(client.send_to_bus_agent(ns, t, id, &req).await)
+                ok_or_err(client.send_to_bus_agent(id, &req).await)
             }
             other => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown action: {other}. Valid: list, get, register, update, delete, heartbeat, send"
@@ -2792,7 +2442,7 @@ impl ActeonMcpServer {
 
     /// Manage conversations (list/get/create/update/delete/transition/append/replay).
     #[tool(
-        description = "Manage agentic bus conversations. Actions: list (filter by namespace/tenant/state/participant), get/update/delete/transition/append/replay (namespace+tenant+conversation_id), create (data = RegisterBusConversation), update (data = UpdateBusConversation), transition (transition: resolve/reopen/archive), append (data = AppendBusConversationMessage), replay (data = ReplayBusConversationParams; cursor and limit recommended)."
+        description = "Manage agentic bus conversations. Actions: list (filter by state/participant), get/update/delete/transition/append/replay (conversation_id), create (data = RegisterBusConversation), update (data = UpdateBusConversation), transition (transition: resolve/reopen/archive), append (data = AppendBusConversationMessage), replay (data = ReplayBusConversationParams; cursor and limit recommended)."
     )]
     async fn manage_bus_conversations(
         &self,
@@ -2806,21 +2456,14 @@ impl ActeonMcpServer {
         match p.action.as_str() {
             "list" => {
                 let filter = BusConversationFilter {
-                    namespace: p.namespace,
-                    tenant: p.tenant,
                     state: p.state,
                     participant: p.participant,
                 };
                 ok_or_err(client.list_bus_conversations(&filter).await)
             }
             "get" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.conversation_id.as_ref(),
-                    "get",
-                )?;
-                ok_or_err(client.get_bus_conversation(ns, t, id).await)
+                let id = required_resource_id(p.conversation_id.as_ref(), "get")?;
+                ok_or_err(client.get_bus_conversation(id).await)
             }
             "create" => {
                 let data = p
@@ -2831,27 +2474,17 @@ impl ActeonMcpServer {
                 ok_or_err(client.register_bus_conversation(&req).await)
             }
             "update" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.conversation_id.as_ref(),
-                    "update",
-                )?;
+                let id = required_resource_id(p.conversation_id.as_ref(), "update")?;
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for update"))?;
                 let req: UpdateBusConversation = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(client.update_bus_conversation(ns, t, id, &req).await)
+                ok_or_err(client.update_bus_conversation(id, &req).await)
             }
             "delete" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.conversation_id.as_ref(),
-                    "delete",
-                )?;
-                match client.delete_bus_conversation(ns, t, id).await {
+                let id = required_resource_id(p.conversation_id.as_ref(), "delete")?;
+                match client.delete_bus_conversation(id).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Conversation '{id}' deleted."
                     ))])),
@@ -2859,12 +2492,7 @@ impl ActeonMcpServer {
                 }
             }
             "transition" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.conversation_id.as_ref(),
-                    "transition",
-                )?;
+                let id = required_resource_id(p.conversation_id.as_ref(), "transition")?;
                 let transition = match p.transition.as_deref() {
                     Some("resolve") => BusConversationTransition::Resolve,
                     Some("reopen") => BusConversationTransition::Reopen,
@@ -2878,47 +2506,25 @@ impl ActeonMcpServer {
                         return Err(mcp_err("'transition' is required for transition action"));
                     }
                 };
-                ok_or_err(
-                    client
-                        .transition_bus_conversation(ns, t, id, transition)
-                        .await,
-                )
+                ok_or_err(client.transition_bus_conversation(id, transition).await)
             }
             "append" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.conversation_id.as_ref(),
-                    "append",
-                )?;
+                let id = required_resource_id(p.conversation_id.as_ref(), "append")?;
                 let data = p
                     .data
                     .ok_or_else(|| mcp_err("'data' is required for append"))?;
                 let req: AppendBusConversationMessage = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(
-                    client
-                        .append_bus_conversation_message(ns, t, id, &req)
-                        .await,
-                )
+                ok_or_err(client.append_bus_conversation_message(id, &req).await)
             }
             "replay" => {
-                let (ns, t, id) = bus_three_tuple(
-                    p.namespace.as_ref(),
-                    p.tenant.as_ref(),
-                    p.conversation_id.as_ref(),
-                    "replay",
-                )?;
+                let id = required_resource_id(p.conversation_id.as_ref(), "replay")?;
                 let params: ReplayBusConversationParams = match p.data {
                     Some(d) => serde_json::from_value(d)
                         .map_err(|e| mcp_err(format!("invalid data: {e}")))?,
                     None => ReplayBusConversationParams::default(),
                 };
-                ok_or_err(
-                    client
-                        .replay_bus_conversation_messages(ns, t, id, &params)
-                        .await,
-                )
+                ok_or_err(client.replay_bus_conversation_messages(id, &params).await)
             }
             other => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown action: {other}. Valid: list, get, create, update, delete, transition, append, replay"
@@ -2928,7 +2534,7 @@ impl ActeonMcpServer {
 
     /// Post and look up tool-call envelopes.
     #[tool(
-        description = "Post and look up agentic-bus tool-call envelopes. Actions: post (namespace+tenant+conversation_id, data = PostBusToolCall — set require_approval=true to gate behind HITL approval), post_result (namespace+tenant+conversation_id, data = PostBusToolResult), lookup (namespace+tenant+call_id+conversation_id; pass cursor from the post receipt and timeout_ms <= 30000 for reliable matches)."
+        description = "Post and look up agentic-bus tool-call envelopes. Actions: post (conversation_id, data = PostBusToolCall — set require_approval=true to gate behind HITL approval), post_result (conversation_id, data = PostBusToolResult), lookup (call_id+conversation_id; pass cursor from the post receipt and timeout_ms <= 30000 for reliable matches)."
     )]
     async fn bus_tool_call(
         &self,
@@ -2949,10 +2555,7 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("'data' is required for post"))?;
                 let req: PostBusToolCall = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                match client
-                    .post_bus_tool_call(&p.namespace, &p.tenant, conversation_id, &req)
-                    .await
-                {
+                match client.post_bus_tool_call(conversation_id, &req).await {
                     Ok(PostBusToolCallOutcome::Produced(receipt)) => {
                         let body = serde_json::json!({
                             "outcome": "produced",
@@ -2980,11 +2583,7 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("'data' is required for post_result"))?;
                 let req: PostBusToolResult = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(
-                    client
-                        .post_bus_tool_result(&p.namespace, &p.tenant, conversation_id, &req)
-                        .await,
-                )
+                ok_or_err(client.post_bus_tool_result(conversation_id, &req).await)
             }
             "lookup" => {
                 let call_id = p
@@ -2999,11 +2598,7 @@ impl ActeonMcpServer {
                     cursor: p.cursor,
                     timeout_ms: p.timeout_ms,
                 };
-                ok_or_err(
-                    client
-                        .lookup_bus_tool_result(&p.namespace, &p.tenant, call_id, &params)
-                        .await,
-                )
+                ok_or_err(client.lookup_bus_tool_result(call_id, &params).await)
             }
             other => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown action: {other}. Valid: post, post_result, lookup"
@@ -3028,11 +2623,7 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("'data' is required for chunk"))?;
                 let req: PostBusStreamChunk = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(
-                    client
-                        .post_bus_stream_chunk(&p.namespace, &p.tenant, &p.conversation_id, &req)
-                        .await,
-                )
+                ok_or_err(client.post_bus_stream_chunk(&p.conversation_id, &req).await)
             }
             "end" => {
                 let data = p
@@ -3040,23 +2631,14 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("'data' is required for end"))?;
                 let req: PostBusStreamEnd = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(
-                    client
-                        .post_bus_stream_end(&p.namespace, &p.tenant, &p.conversation_id, &req)
-                        .await,
-                )
+                ok_or_err(client.post_bus_stream_end(&p.conversation_id, &req).await)
             }
             "consume_url" => {
                 let stream_id = p
                     .stream_id
                     .as_deref()
                     .ok_or_else(|| mcp_err("'stream_id' is required for consume_url"))?;
-                let url = client.bus_stream_consume_url(
-                    &p.namespace,
-                    &p.tenant,
-                    &p.conversation_id,
-                    stream_id,
-                );
+                let url = client.bus_stream_consume_url(&p.conversation_id, stream_id);
                 Ok(CallToolResult::success(vec![Content::text(url)]))
             }
             other => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -3067,7 +2649,7 @@ impl ActeonMcpServer {
 
     /// Manage HITL pre-publish approvals (list/get/approve/reject).
     #[tool(
-        description = "Manage agentic-bus HITL approvals. Actions: list (namespace+tenant; optional status filter pending/approved/rejected/expired and conversation_id), get (namespace+tenant+approval_id), approve (namespace+tenant+approval_id, data = BusApprovalDecisionRequest with decided_by + optional decision_note), reject (namespace+tenant+approval_id, data = BusApprovalDecisionRequest)."
+        description = "Manage agentic-bus HITL approvals. Actions: list (optional status filter pending/approved/rejected/expired and conversation_id), get (approval_id), approve (approval_id, data = BusApprovalDecisionRequest with decided_by + optional decision_note), reject (approval_id, data = BusApprovalDecisionRequest)."
     )]
     async fn manage_bus_approvals(
         &self,
@@ -3095,18 +2677,14 @@ impl ActeonMcpServer {
                     status,
                     conversation_id: p.conversation_id,
                 };
-                ok_or_err(
-                    client
-                        .list_bus_approvals(&p.namespace, &p.tenant, &params)
-                        .await,
-                )
+                ok_or_err(client.list_bus_approvals(&params).await)
             }
             "get" => {
                 let id = p
                     .approval_id
                     .as_deref()
                     .ok_or_else(|| mcp_err("'approval_id' is required for get"))?;
-                ok_or_err(client.get_bus_approval(&p.namespace, &p.tenant, id).await)
+                ok_or_err(client.get_bus_approval(id).await)
             }
             "approve" => {
                 let id = p
@@ -3118,11 +2696,7 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("'data' is required for approve"))?;
                 let req: BusApprovalDecisionRequest = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(
-                    client
-                        .approve_bus_approval(&p.namespace, &p.tenant, id, &req)
-                        .await,
-                )
+                ok_or_err(client.approve_bus_approval(id, &req).await)
             }
             "reject" => {
                 let id = p
@@ -3134,11 +2708,7 @@ impl ActeonMcpServer {
                     .ok_or_else(|| mcp_err("'data' is required for reject"))?;
                 let req: BusApprovalDecisionRequest = serde_json::from_value(data)
                     .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
-                ok_or_err(
-                    client
-                        .reject_bus_approval(&p.namespace, &p.tenant, id, &req)
-                        .await,
-                )
+                ok_or_err(client.reject_bus_approval(id, &req).await)
             }
             other => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown action: {other}. Valid: list, get, approve, reject"
@@ -3168,23 +2738,8 @@ where
     }
 }
 
-/// Resolve `namespace`, `tenant`, and a third id-shaped field that all three
-/// must be present for. Centralises the "missing required field" error
-/// messages so individual match arms stay short.
-fn bus_three_tuple<'a>(
-    namespace: Option<&'a String>,
-    tenant: Option<&'a String>,
-    third: Option<&'a String>,
-    action: &str,
-) -> Result<(&'a str, &'a str, &'a str), McpError> {
-    let ns = namespace
-        .map(String::as_str)
-        .ok_or_else(|| mcp_err(format!("'namespace' is required for {action}")))?;
-    let t = tenant
-        .map(String::as_str)
-        .ok_or_else(|| mcp_err(format!("'tenant' is required for {action}")))?;
-    let i = third
-        .map(String::as_str)
-        .ok_or_else(|| mcp_err(format!("required id is missing for {action}")))?;
-    Ok((ns, t, i))
+/// Require a resource ID within the credential's context.
+fn required_resource_id<'a>(id: Option<&'a String>, action: &str) -> Result<&'a str, McpError> {
+    id.map(String::as_str)
+        .ok_or_else(|| mcp_err(format!("required id is missing for {action}")))
 }

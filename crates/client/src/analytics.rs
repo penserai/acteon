@@ -1,9 +1,45 @@
 pub use acteon_core::analytics::{
-    AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
-    AnalyticsTopEntry,
+    AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsResponse, AnalyticsTopEntry,
 };
 
 use crate::{ActeonClient, Error};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// Analytics filters within the authenticated context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyticsQuery {
+    /// The metric to compute.
+    pub metric: AnalyticsMetric,
+    /// Filter by provider.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Filter by action type.
+    #[serde(default)]
+    pub action_type: Option<String>,
+    /// Filter by outcome.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// Time bucket interval (default: daily).
+    #[serde(default = "default_interval")]
+    pub interval: AnalyticsInterval,
+    /// Start of the time range (inclusive). Defaults to 7 days ago.
+    #[serde(default)]
+    pub from: Option<DateTime<Utc>>,
+    /// End of the time range (inclusive). Defaults to now.
+    #[serde(default)]
+    pub to: Option<DateTime<Utc>>,
+    /// Dimension to group by (e.g. "provider", "`action_type`", "outcome").
+    #[serde(default)]
+    pub group_by: Option<String>,
+    /// Number of top entries to return for `TopActionTypes` (default: 10).
+    #[serde(default)]
+    pub top_n: Option<usize>,
+}
+
+fn default_interval() -> AnalyticsInterval {
+    AnalyticsInterval::Daily
+}
 
 impl ActeonClient {
     /// Query aggregated action analytics.
@@ -21,8 +57,6 @@ impl ActeonClient {
     /// let query = AnalyticsQuery {
     ///     metric: AnalyticsMetric::Volume,
     ///     interval: AnalyticsInterval::Daily,
-    ///     namespace: None,
-    ///     tenant: Some("tenant-1".to_string()),
     ///     provider: None,
     ///     action_type: None,
     ///     outcome: None,
@@ -30,7 +64,6 @@ impl ActeonClient {
     ///     to: None,
     ///     group_by: None,
     ///     top_n: None,
-    ///     tenant_scope: Vec::new(), // server-set from grants; leave empty
     /// };
     ///
     /// let response = client.query_analytics(&query).await?;
@@ -69,12 +102,6 @@ impl ActeonClient {
         params.push(("interval", interval_str.to_string()));
 
         // Optional string filters.
-        if let Some(ref ns) = query.namespace {
-            params.push(("namespace", ns.clone()));
-        }
-        if let Some(ref t) = query.tenant {
-            params.push(("tenant", t.clone()));
-        }
         if let Some(ref p) = query.provider {
             params.push(("provider", p.clone()));
         }

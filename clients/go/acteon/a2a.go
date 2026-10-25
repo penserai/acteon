@@ -245,11 +245,11 @@ type jsonRPCReply struct {
 // existing Task's history.
 func (c *Client) A2ASendMessage(
 	ctx context.Context,
-	namespace, tenant string,
+
 	message map[string]any,
 ) (map[string]any, error) {
 	var out map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/v1/message:send", a2aSeg(namespace), a2aSeg(tenant))
+	path := fmt.Sprintf("/a2a/v1/message:send")
 	err := c.a2aDoJSON(ctx, http.MethodPost, path, map[string]any{"message": message}, &out,
 		requestOpts{extraHeaders: a2aHeaders})
 	return out, err
@@ -260,11 +260,11 @@ func (c *Client) A2ASendMessage(
 // for the caller.
 func (c *Client) A2AGetTask(
 	ctx context.Context,
-	namespace, tenant, taskID string,
+	taskID string,
 ) (map[string]any, error) {
 	var out map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/v1/tasks/%s",
-		a2aSeg(namespace), a2aSeg(tenant), a2aSeg(taskID))
+	path := fmt.Sprintf("/a2a/v1/tasks/%s",
+		a2aSeg(taskID))
 	err := c.a2aDoJSON(ctx, http.MethodGet, path, nil, &out,
 		requestOpts{extraHeaders: a2aHeaders})
 	return out, err
@@ -275,11 +275,11 @@ func (c *Client) A2AGetTask(
 // splits it off in-handler.
 func (c *Client) A2ACancelTask(
 	ctx context.Context,
-	namespace, tenant, taskID string,
+	taskID string,
 ) (map[string]any, error) {
 	var out map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/v1/tasks/%s:cancel",
-		a2aSeg(namespace), a2aSeg(tenant), a2aSeg(taskID))
+	path := fmt.Sprintf("/a2a/v1/tasks/%s:cancel",
+		a2aSeg(taskID))
 	err := c.a2aDoJSON(ctx, http.MethodPost, path, nil, &out,
 		requestOpts{extraHeaders: a2aHeaders})
 	return out, err
@@ -295,12 +295,12 @@ func (c *Client) A2ACancelTask(
 // `MakePushConfig` to build `config`.
 func (c *Client) A2ASetPushConfig(
 	ctx context.Context,
-	namespace, tenant, taskID string,
+	taskID string,
 	config map[string]any,
 ) (map[string]any, error) {
 	var out map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/v1/tasks/%s/pushNotificationConfigs",
-		a2aSeg(namespace), a2aSeg(tenant), a2aSeg(taskID))
+	path := fmt.Sprintf("/a2a/v1/tasks/%s/pushNotificationConfigs",
+		a2aSeg(taskID))
 	err := c.a2aDoJSON(ctx, http.MethodPost, path, config, &out,
 		requestOpts{extraHeaders: a2aHeaders})
 	return out, err
@@ -311,11 +311,11 @@ func (c *Client) A2ASetPushConfig(
 // config registered for the task.
 func (c *Client) A2AListPushConfigs(
 	ctx context.Context,
-	namespace, tenant, taskID string,
+	taskID string,
 ) ([]map[string]any, error) {
 	var out []map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/v1/tasks/%s/pushNotificationConfigs",
-		a2aSeg(namespace), a2aSeg(tenant), a2aSeg(taskID))
+	path := fmt.Sprintf("/a2a/v1/tasks/%s/pushNotificationConfigs",
+		a2aSeg(taskID))
 	err := c.a2aDoJSON(ctx, http.MethodGet, path, nil, &out,
 		requestOpts{extraHeaders: a2aHeaders})
 	return out, err
@@ -325,11 +325,11 @@ func (c *Client) A2AListPushConfigs(
 // `GET …/pushNotificationConfigs/{cfgId}` to read one config.
 func (c *Client) A2AGetPushConfig(
 	ctx context.Context,
-	namespace, tenant, taskID, configID string,
+	taskID, configID string,
 ) (map[string]any, error) {
 	var out map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/v1/tasks/%s/pushNotificationConfigs/%s",
-		a2aSeg(namespace), a2aSeg(tenant), a2aSeg(taskID), a2aSeg(configID))
+	path := fmt.Sprintf("/a2a/v1/tasks/%s/pushNotificationConfigs/%s",
+		a2aSeg(taskID), a2aSeg(configID))
 	err := c.a2aDoJSON(ctx, http.MethodGet, path, nil, &out,
 		requestOpts{extraHeaders: a2aHeaders})
 	return out, err
@@ -341,10 +341,10 @@ func (c *Client) A2AGetPushConfig(
 // silently no-ops.
 func (c *Client) A2ADeletePushConfig(
 	ctx context.Context,
-	namespace, tenant, taskID, configID string,
+	taskID, configID string,
 ) error {
-	path := fmt.Sprintf("/a2a/%s/%s/v1/tasks/%s/pushNotificationConfigs/%s",
-		a2aSeg(namespace), a2aSeg(tenant), a2aSeg(taskID), a2aSeg(configID))
+	path := fmt.Sprintf("/a2a/v1/tasks/%s/pushNotificationConfigs/%s",
+		a2aSeg(taskID), a2aSeg(configID))
 	return c.a2aDoJSON(ctx, http.MethodDelete, path, nil, nil,
 		requestOpts{extraHeaders: a2aHeaders})
 }
@@ -361,13 +361,12 @@ func (c *Client) A2ADeletePushConfig(
 // `A2AGetAuthenticatedExtendedCard` for the authenticated variant.
 func (c *Client) A2ADiscoverAgent(
 	ctx context.Context,
-	namespace, tenant string,
+
 ) (map[string]any, error) {
 	var out map[string]any
-	path := fmt.Sprintf("/a2a/%s/%s/.well-known/agent.json",
-		a2aSeg(namespace), a2aSeg(tenant))
+	path := fmt.Sprintf("/a2a/.well-known/agent.json")
 	err := c.a2aDoJSON(ctx, http.MethodGet, path, nil, &out,
-		requestOpts{skipAuth: true})
+		requestOpts{})
 	return out, err
 }
 
@@ -377,14 +376,14 @@ func (c *Client) A2ADiscoverAgent(
 // confirm the method was reached.
 func (c *Client) A2AGetAuthenticatedExtendedCard(
 	ctx context.Context,
-	namespace, tenant string,
+
 ) (map[string]any, error) {
 	envelope := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "agent/getAuthenticatedExtendedCard",
 	}
-	path := fmt.Sprintf("/a2a/%s/%s", a2aSeg(namespace), a2aSeg(tenant))
+	path := fmt.Sprintf("/a2a")
 	var reply jsonRPCReply
 	if err := c.a2aDoJSON(ctx, http.MethodPost, path, envelope, &reply,
 		requestOpts{extraHeaders: a2aHeaders}); err != nil {

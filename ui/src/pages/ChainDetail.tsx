@@ -25,10 +25,8 @@ export function ChainDetail() {
   const { chainId } = useParams<{ chainId: string }>()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const ns = searchParams.get('namespace') ?? ''
-  const tenant = searchParams.get('tenant') ?? ''
   const expandAll = searchParams.get('expand') === 'all'
-  const { data: chain, isLoading } = useChainDetail(chainId, { namespace: ns, tenant })
+  const { data: chain, isLoading } = useChainDetail(chainId)
   const cancel = useCancelChain()
   const { toast } = useToast()
   const qc = useQueryClient()
@@ -38,8 +36,8 @@ export function ChainDetail() {
   const [signalName, setSignalName] = useState('')
   const [signalPayload, setSignalPayload] = useState('')
 
-  const { data: dag } = useChainDag(chainId, { namespace: ns, tenant })
-  const { data: history } = useExecutionHistory(chainId, { namespace: ns, tenant })
+  const { data: dag } = useChainDag(chainId)
+  const { data: history } = useExecutionHistory(chainId)
   const signal = useSignalExecution()
 
   const handleStreamEvent = useCallback(() => {
@@ -49,9 +47,7 @@ export function ChainDetail() {
   useEntityStream({
     entityType: 'chain',
     entityId: chainId,
-    namespace: ns,
-    tenant,
-    enabled: !!chainId && !!ns && !!tenant,
+    enabled: !!chainId,
     onEvent: handleStreamEvent,
   })
 
@@ -68,7 +64,7 @@ export function ChainDetail() {
 
   const handleCancel = () => {
     cancel.mutate(
-      { chainId: chain.chain_id, namespace: ns, tenant },
+      { chainId: chain.chain_id },
       {
         onSuccess: () => { toast('success', 'Chain cancelled'); setCancelOpen(false) },
         onError: (e) => toast('error', 'Cancel failed', (e as Error).message),
@@ -87,7 +83,7 @@ export function ChainDetail() {
       }
     }
     signal.mutate(
-      { executionId: chain.chain_id, signalName: signalName.trim(), namespace: ns, tenant, payload },
+      { executionId: chain.chain_id, signalName: signalName.trim(), payload },
       {
         onSuccess: () => { toast('success', `Signal "${signalName.trim()}" delivered`); setSignalOpen(false) },
         onError: (e) => toast('error', 'Signal failed', (e as Error).message),

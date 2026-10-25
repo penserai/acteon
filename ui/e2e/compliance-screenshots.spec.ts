@@ -116,11 +116,6 @@ test.describe('Compliance Status Screenshots', () => {
     await page.waitForTimeout(300)
 
     // Fill in the verification form
-    const nsInput = page.getByLabel('Namespace')
-    await nsInput.fill('notifications')
-
-    const tenantInput = page.getByLabel('Tenant')
-    await tenantInput.fill('acme-corp')
 
     // Click Verify and wait for results
     await page.getByRole('button', { name: /Verify/i }).click()
@@ -138,11 +133,6 @@ test.describe('Compliance Status Screenshots', () => {
     await page.waitForTimeout(300)
 
     // Fill in the verification form
-    const nsInput = page.getByLabel('Namespace')
-    await nsInput.fill('notifications')
-
-    const tenantInput = page.getByLabel('Tenant')
-    await tenantInput.fill('acme-corp')
 
     // Click Verify and wait for results
     await page.getByRole('button', { name: /Verify/i }).click()

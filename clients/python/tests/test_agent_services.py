@@ -26,6 +26,8 @@ from acteon_client.agent_services import (
 )
 from acteon_client.errors import ActeonError, HttpError
 
+from .mock_identity import credential_transport
+
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/agent-services.json").read_text()
 )
@@ -33,7 +35,7 @@ FIXTURE = json.loads(
 
 def _stream_response(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
-    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.url.path == "/a2a/agents/notifier"
     assert request.headers["accept"] == "text/event-stream"
     assert request.headers["a2a-version"] == "1.0"
     if body["method"] == "SubscribeToTask":
@@ -63,13 +65,9 @@ def test_official_agent_streams_preserve_identity_and_source_out_of_band():
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
     client = ActeonClient("http://acteon", api_key="caller-key")
-    client._client = httpx.Client(transport=httpx.MockTransport(_stream_response))
+    client._client = httpx.Client(transport=credential_transport(_stream_response))
     try:
-        sent = list(
-            client.agent_service_send_streaming_message(
-                "prod", "acme", "notifier", {"messageId": "m1"}
-            )
-        )
+        sent = list(client.agent_service_send_streaming_message("notifier", {"messageId": "m1"}))
         subscribed = list(client.agent_service_subscribe_task(receipt))
         assert sent == [AgentServiceA2aFrame(sent[0].result, job["source_context"])]
         assert sent[0].result["task"]["id"] == "job-1"
@@ -87,12 +85,12 @@ async def test_async_official_agent_streams_use_the_same_contract():
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
     client = AsyncActeonClient("http://acteon", api_key="caller-key")
-    client._client = httpx.AsyncClient(transport=httpx.MockTransport(_stream_response))
+    client._client = httpx.AsyncClient(transport=credential_transport(_stream_response))
     try:
         sent = [
             frame
             async for frame in client.agent_service_send_streaming_message(
-                "prod", "acme", "notifier", {"messageId": "m1"}
+                "notifier", {"messageId": "m1"}
             )
         ]
         subscribed = [frame async for frame in client.agent_service_subscribe_task(receipt)]
@@ -104,7 +102,7 @@ async def test_async_official_agent_streams_use_the_same_contract():
 
 def _cancel_response(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
-    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.url.path == "/a2a/agents/notifier"
     assert body == {
         "jsonrpc": "2.0",
         "id": "cancel:job-1",
@@ -133,10 +131,10 @@ async def test_official_cancel_task_has_sync_and_async_parity():
     receipt = AgentServiceReceipt(
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
-    sync = ActeonClient("http://acteon")
-    sync._client = httpx.Client(transport=httpx.MockTransport(_cancel_response))
-    async_client = AsyncActeonClient("http://acteon")
-    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_cancel_response))
+    sync = ActeonClient("http://acteon", api_key="test-key")
+    sync._client = httpx.Client(transport=credential_transport(_cancel_response))
+    async_client = AsyncActeonClient("http://acteon", api_key="test-key")
+    async_client._client = httpx.AsyncClient(transport=credential_transport(_cancel_response))
     try:
         assert sync.agent_service_cancel_task(receipt)["status"]["state"] == "TASK_STATE_CANCELED"
         assert (await async_client.agent_service_cancel_task(receipt))["id"] == "job-1"
@@ -147,7 +145,7 @@ async def test_official_cancel_task_has_sync_and_async_parity():
 
 def _list_response(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
-    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.url.path == "/a2a/agents/notifier"
     assert body == {
         "jsonrpc": "2.0",
         "id": "list:notifier",
@@ -177,26 +175,16 @@ async def test_official_list_tasks_has_typed_sync_and_async_parity():
     receipt = AgentServiceReceipt(
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
-    sync = ActeonClient("http://acteon")
-    sync._client = httpx.Client(transport=httpx.MockTransport(_list_response))
-    async_client = AsyncActeonClient("http://acteon")
-    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_list_response))
+    sync = ActeonClient("http://acteon", api_key="test-key")
+    sync._client = httpx.Client(transport=credential_transport(_list_response))
+    async_client = AsyncActeonClient("http://acteon", api_key="test-key")
+    async_client._client = httpx.AsyncClient(transport=credential_transport(_list_response))
     try:
         page = sync.agent_service_list_tasks(
-            "prod",
-            "acme",
-            "notifier",
-            source=receipt,
-            status="TASK_STATE_WORKING",
-            page_size=1,
+            "notifier", source=receipt, status="TASK_STATE_WORKING", page_size=1
         )
         async_page = await async_client.agent_service_list_tasks(
-            "prod",
-            "acme",
-            "notifier",
-            source=receipt,
-            status="TASK_STATE_WORKING",
-            page_size=1,
+            "notifier", source=receipt, status="TASK_STATE_WORKING", page_size=1
         )
         assert page.tasks[0]["id"] == "job-1"
         assert page.total_size == async_page.total_size == 2
@@ -208,7 +196,7 @@ async def test_official_list_tasks_has_typed_sync_and_async_parity():
 
 def _push_response(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
-    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.url.path == "/a2a/agents/notifier"
     assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
     method = body["method"]
     params = body["params"]
@@ -260,25 +248,23 @@ async def test_official_push_configs_have_typed_sync_and_async_parity():
         AgentServicePushAuthentication("Bearer", None, SecretRef("vault", "callbacks/auth", "v2")),
         SecretRef("vault", "callbacks/token", "v2"),
     )
-    sync = ActeonClient("http://acteon")
-    sync._client = httpx.Client(transport=httpx.MockTransport(_push_response))
-    async_client = AsyncActeonClient("http://acteon")
-    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_push_response))
+    sync = ActeonClient("http://acteon", api_key="test-key")
+    sync._client = httpx.Client(transport=credential_transport(_push_response))
+    async_client = AsyncActeonClient("http://acteon", api_key="test-key")
+    async_client._client = httpx.AsyncClient(transport=credential_transport(_push_response))
     try:
-        created = sync.agent_service_create_push_config(
-            "prod", "acme", "notifier", "job-1", config, source=receipt
-        )
+        created = sync.agent_service_create_push_config("notifier", "job-1", config, source=receipt)
         assert created.token_ref == SecretRef("vault", "callbacks/token", "v2")
         assert created.authentication is not None
         assert created.authentication.credentials_ref == SecretRef("vault", "callbacks/auth", "v2")
         fetched = await async_client.agent_service_get_push_config(
-            "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
+            "notifier", "job-1", "cfg-1", source=receipt
         )
         listed = sync.agent_service_list_push_configs(
-            "prod", "acme", "notifier", "job-1", page_size=1, source=receipt
+            "notifier", "job-1", page_size=1, source=receipt
         )
         await async_client.agent_service_delete_push_config(
-            "prod", "acme", "notifier", "job-1", "cfg-1", source=receipt
+            "notifier", "job-1", "cfg-1", source=receipt
         )
         assert created == fetched == listed.configs[0]
         assert "webhook-secret" not in repr(created)
@@ -316,10 +302,10 @@ def test_parent_context_and_permits_are_request_local():
         FIXTURE["parent"]["execution_context"],
         (PermitReference(permit["id"], permit["accepted_revision"]),),
     )
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
-        client.agent_service_send_message("prod", "acme", "notifier", {}, parent=parent)
+        client.agent_service_send_message("notifier", {}, parent=parent)
         assert len(calls) == 1
     finally:
         client.close()
@@ -353,8 +339,8 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
             headers={"a2a-version": "1.0"},
         )
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         receipt = client.agent_service_send_peer(
             source, "team/resolver", "diagnose", {"messageId": "peer-1"}
@@ -400,8 +386,8 @@ def test_peer_discovery_exposes_only_strict_safe_registry_data():
             headers={"a2a-version": "1.0"},
         )
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         peers = client.agent_service_discover_peers(source, "diagnose")
         assert len(peers) == 1
@@ -440,8 +426,8 @@ def test_peer_cancel_is_one_request_and_validates_restricted_identity():
             headers={"a2a-version": "1.0"},
         )
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         canceled = client.agent_service_cancel_peer(source, "team/resolver", "diagnose", peer)
         assert canceled.state == "restricted"
@@ -498,8 +484,8 @@ def test_peer_and_direct_continuation_preserve_host_owned_bindings():
         assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == source.source_context
         return httpx.Response(200, json=source.task, headers={"a2a-version": "1.0"})
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         continued = client.agent_service_continue_peer(
             source, "team/resolver", "diagnose", peer, message
@@ -548,8 +534,8 @@ def test_peer_authorization_sends_only_the_challenge_and_validates_receipt():
             headers={"a2a-version": "1.0"},
         )
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         receipt = client.agent_service_authorize_peer(
             source, "team/resolver", "diagnose", peer, "challenge-42"
@@ -610,12 +596,10 @@ def test_authorization_helpers_send_only_opaque_handles():
             assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == source.source_context
         return httpx.Response(200, json=source.task, headers={"a2a-version": "1.0"})
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
-        client.agent_service_request_authorization(
-            "prod", "acme", "notifier", "job-1", "opaque-flow-42"
-        )
+        client.agent_service_request_authorization("notifier", "job-1", "opaque-flow-42")
         client.agent_service_resolve_authorization(source, "challenge-42")
         assert len(calls) == 2
     finally:
@@ -624,10 +608,10 @@ def test_authorization_helpers_send_only_opaque_handles():
 
 def test_sync_receipts_keep_jobs_separate_and_original_identity():
     client = ActeonClient("http://acteon", api_key="caller-key")
-    client._client = httpx.Client(transport=httpx.MockTransport(handler))
+    client._client = httpx.Client(transport=credential_transport(handler))
     try:
-        first = client.agent_service_send_message("prod", "acme", "notifier", {"messageId": "m1"})
-        second = client.agent_service_send_message("prod", "acme", "notifier", {"messageId": "m2"})
+        first = client.agent_service_send_message("notifier", {"messageId": "m1"})
+        second = client.agent_service_send_message("notifier", {"messageId": "m2"})
         first.task["id"] = "tampered-model-id"
         assert client.agent_service_get_task(first)["id"] == "job-1"
         assert client.agent_service_get_task(second)["id"] == "job-2"
@@ -651,15 +635,10 @@ def test_sync_receipts_keep_jobs_separate_and_original_identity():
 @pytest.mark.asyncio
 async def test_async_concurrent_jobs_use_request_local_context():
     client = AsyncActeonClient("http://acteon", api_key="caller-key")
-    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client._client = httpx.AsyncClient(transport=credential_transport(handler))
     try:
         receipts = await asyncio.gather(
-            *(
-                client.agent_service_send_message(
-                    "prod", "acme", "notifier", {"messageId": f"m{i}"}
-                )
-                for i in [1, 2]
-            )
+            *(client.agent_service_send_message("notifier", {"messageId": f"m{i}"}) for i in [1, 2])
         )
         tasks = await asyncio.gather(
             *(client.agent_service_get_task(receipt) for receipt in reversed(receipts))
@@ -689,11 +668,11 @@ def test_missing_or_malformed_header_never_falls_back_to_task_metadata(source):
             headers[AGENT_SOURCE_CONTEXT_HEADER] = source
         return httpx.Response(200, json=FIXTURE["jobs"][0]["task"], headers=headers)
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         with pytest.raises(ActeonError):
-            client.agent_service_send_message("prod", "acme", "notifier", {})
+            client.agent_service_send_message("notifier", {})
         assert len(calls) == 1
     finally:
         client.close()
@@ -711,11 +690,11 @@ def test_http_errors_and_redirects_are_not_retried(status):
             headers={"location": "http://other/steal"},
         )
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond), follow_redirects=True)
     try:
         with pytest.raises(HttpError) as error:
-            client.agent_service_send_message("prod", "acme", "notifier", {})
+            client.agent_service_send_message("notifier", {})
         assert error.value.status == status
         assert len(calls) == 1
     finally:
@@ -738,8 +717,8 @@ def test_stop_rejects_non_acknowledgements_with_one_request(value):
     receipt = AgentServiceReceipt(
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         with pytest.raises(ActeonError):
             client.agent_service_stop_task(receipt)
@@ -768,8 +747,8 @@ def test_stop_rejects_malformed_provider_abort_with_one_request():
     receipt = AgentServiceReceipt(
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         with pytest.raises(ActeonError):
             client.agent_service_stop_task(receipt)
@@ -804,8 +783,8 @@ def test_stop_failed_acknowledgements_preserve_status_and_never_retry(status):
     receipt = AgentServiceReceipt(
         "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
     )
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond), follow_redirects=True)
     try:
         with pytest.raises(HttpError) as error:
             client.agent_service_stop_task(receipt)
@@ -836,8 +815,8 @@ def test_stop_rejects_foreign_task_identity(field, value):
             headers={"a2a-version": "1.0"},
         )
 
-    client = ActeonClient("http://acteon")
-    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    client = ActeonClient("http://acteon", api_key="test-key")
+    client._client = httpx.Client(transport=credential_transport(respond))
     try:
         with pytest.raises(ActeonError, match="identity mismatch"):
             client.agent_service_stop_task(receipt)

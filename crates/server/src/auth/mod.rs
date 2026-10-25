@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod authority;
 pub mod config;
+pub mod context;
 pub mod crypto;
 pub mod enrollment;
 pub mod identity;
@@ -29,6 +30,7 @@ use self::role::Role;
 /// In-memory user entry for fast lookup.
 #[derive(Debug, Clone)]
 pub struct UserEntry {
+    pub scope: acteon_core::TenantContext,
     pub password_hash: SecretString,
     pub authority_id: Option<String>,
     pub principal: Option<acteon_core::PrincipalIdentity>,
@@ -166,6 +168,7 @@ impl AuthProvider {
         enrollment::validate_enrollments(config)?;
         let mut users = HashMap::new();
         for u in &config.users {
+            validate_tenant_context(&u.scope, &u.grants)?;
             if users.contains_key(&u.username) {
                 return Err("duplicate username".into());
             }
@@ -174,6 +177,7 @@ impl AuthProvider {
             users.insert(
                 u.username.clone(),
                 UserEntry {
+                    scope: u.scope.clone(),
                     password_hash: u.password_hash.clone(),
                     authority_id: u.authority_id.clone(),
                     principal: u.principal.clone(),
@@ -264,6 +268,7 @@ impl AuthProvider {
         }
 
         let identity = CallerIdentity {
+            scope: user.scope.clone(),
             id: username.to_owned(),
             principal: user.principal.clone(),
             role: user.role,
@@ -306,13 +311,16 @@ impl AuthProvider {
         if identity.principal != user.principal {
             return Err("principal binding changed; login again".into());
         }
+        if identity.scope != user.scope {
+            return Err("tenant context changed; login again".into());
+        }
         if authority_id != user.authority_id {
             return Err("credential enrollment changed; login again".into());
         }
-        let credential =
-            enrollment::AuthenticatedCredential::from_identity(authority_id.as_deref(), &identity)?;
         identity.role = user.role;
         identity.grants.clone_from(&user.grants);
+        let credential =
+            enrollment::AuthenticatedCredential::from_identity(authority_id.as_deref(), &identity)?;
         let binding = self.bind_identity(&tables, &identity).await?;
         let scopes = Self::bind_scopes(&tables, credential.as_ref(), binding.as_ref())?;
         Ok(AuthenticatedCaller {
@@ -398,4 +406,23 @@ impl AuthProvider {
             _ => Err("authentication authority binding unavailable".into()),
         }
     }
+}
+
+fn validate_tenant_context(
+    scope: &acteon_core::TenantContext,
+    grants: &[Grant],
+) -> Result<(), String> {
+    if !scope.is_valid() {
+        return Err("credential requires an exact nonempty tenant and namespace".into());
+    }
+    if !grants.iter().any(|grant| {
+        config::tenant_matches(&grant.tenants, &scope.tenant)
+            && grant
+                .namespaces
+                .iter()
+                .any(|n| n == "*" || n == &scope.namespace)
+    }) {
+        return Err("credential tenant context is not covered by its grants".into());
+    }
+    Ok(())
 }

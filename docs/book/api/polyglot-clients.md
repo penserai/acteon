@@ -1,5 +1,8 @@
 # Polyglot Clients
 
+Tenant context comes from the authenticated JWT or API key. Requests do not
+accept tenant selectors. See [credential-derived context](tenant-context.md).
+
 Acteon provides official client SDKs for multiple programming languages. All clients support dispatch, batch operations, rule management, and audit querying.
 
 ## Available Clients
@@ -20,12 +23,12 @@ See [SDK coverage and wire contracts](sdk-coverage.md) for the complete operatio
 
     ```rust
     use acteon_client::ActeonClient;
-    use acteon_core::Action;
+    use acteon_client::ActionRequest;
     use serde_json::json;
 
     let client = ActeonClient::new("http://localhost:8080");
-    let action = Action::new(
-        "ns", "tenant", "email", "send",
+    let action = ActionRequest::new(
+        "email", "send",
         json!({"to": "user@example.com"}),
     );
     let outcome = client.dispatch(&action).await?;
@@ -37,7 +40,7 @@ See [SDK coverage and wire contracts](sdk-coverage.md) for the complete operatio
     from acteon_client import ActeonClient, Action
 
     client = ActeonClient("http://localhost:8080")
-    action = Action("ns", "tenant", "email", "send", {"to": "user@example.com"})
+    action = Action("email", "send", {"to": "user@example.com"})
     outcome = client.dispatch(action)
     ```
 
@@ -47,7 +50,7 @@ See [SDK coverage and wire contracts](sdk-coverage.md) for the complete operatio
     import { ActeonClient, createAction } from "@acteon/client";
 
     const client = new ActeonClient("http://localhost:8080");
-    const action = createAction("ns", "tenant", "email", "send", {
+    const action = createAction("email", "send", {
       to: "user@example.com",
     });
     const outcome = await client.dispatch(action);
@@ -59,7 +62,7 @@ See [SDK coverage and wire contracts](sdk-coverage.md) for the complete operatio
     import "github.com/penserai/acteon/clients/go/acteon"
 
     client := acteon.NewClient("http://localhost:8080")
-    action := acteon.NewAction("ns", "tenant", "email", "send",
+    action := acteon.NewAction("email", "send",
         map[string]any{"to": "user@example.com"})
     outcome, err := client.Dispatch(ctx, action)
     ```
@@ -71,7 +74,7 @@ See [SDK coverage and wire contracts](sdk-coverage.md) for the complete operatio
     import com.acteon.Action;
 
     ActeonClient client = new ActeonClient("http://localhost:8080");
-    Action action = new Action("ns", "tenant", "email", "send",
+    Action action = new Action("email", "send",
         Map.of("to", "user@example.com"));
     ActionOutcome outcome = client.dispatch(action);
     ```
@@ -102,13 +105,13 @@ All clients provide convenience types and factory functions for creating webhook
     use acteon_client::webhook;
 
     // Simple webhook
-    let action = webhook::action("notifications", "tenant-1")
+    let action = webhook::action()
         .url("https://hooks.example.com/alert")
         .body(serde_json::json!({"message": "Alert fired"}))
         .build();
 
     // With all options
-    let action = webhook::action("notifications", "tenant-1")
+    let action = webhook::action()
         .url("https://hooks.example.com/alert")
         .method("PUT")
         .body(serde_json::json!({"severity": "critical"}))
@@ -124,16 +127,12 @@ All clients provide convenience types and factory functions for creating webhook
 
     # Simple webhook
     action = create_webhook_action(
-        namespace="notifications",
-        tenant="tenant-1",
         url="https://hooks.example.com/alert",
         body={"message": "Alert fired"},
     )
 
     # With all options
     action = create_webhook_action(
-        namespace="notifications",
-        tenant="tenant-1",
         url="https://hooks.example.com/alert",
         body={"severity": "critical"},
         method="PUT",
@@ -149,14 +148,12 @@ All clients provide convenience types and factory functions for creating webhook
 
     // Simple webhook
     const action = createWebhookAction(
-      "notifications", "tenant-1",
       "https://hooks.example.com/alert",
       { message: "Alert fired" }
     );
 
     // With all options
     const action = createWebhookAction(
-      "notifications", "tenant-1",
       "https://hooks.example.com/alert",
       { severity: "critical" },
       {
@@ -172,14 +169,12 @@ All clients provide convenience types and factory functions for creating webhook
     ```go
     // Simple webhook
     action := acteon.NewWebhookAction(
-        "notifications", "tenant-1",
         "https://hooks.example.com/alert",
         map[string]any{"message": "Alert fired"},
     )
 
     // With all options
     action := acteon.NewWebhookActionWithOptions(
-        "notifications", "tenant-1",
         "https://hooks.example.com/alert", "PUT",
         map[string]any{"severity": "critical"},
         map[string]string{"X-Api-Key": "secret"},
@@ -191,15 +186,12 @@ All clients provide convenience types and factory functions for creating webhook
     ```java
     // Simple webhook
     Action action = WebhookAction.create(
-        "notifications", "tenant-1",
         "https://hooks.example.com/alert",
         Map.of("message", "Alert fired")
     );
 
     // With all options
     Action action = WebhookAction.builder()
-        .namespace("notifications")
-        .tenant("tenant-1")
         .url("https://hooks.example.com/alert")
         .method("PUT")
         .body(Map.of("severity", "critical"))

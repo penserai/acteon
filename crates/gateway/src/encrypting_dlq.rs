@@ -4,7 +4,7 @@
 
 use acteon_core::Action;
 use acteon_crypto::{CryptoError, PayloadEncryptor};
-use acteon_executor::{DeadLetterEntry, DeadLetterError, DeadLetterSink};
+use acteon_executor::{DeadLetterEntry, DeadLetterError, DeadLetterSelection, DeadLetterSink};
 use async_trait::async_trait;
 use std::sync::{
     Arc,
@@ -49,6 +49,33 @@ impl EncryptingDeadLetterSink {
         }
     }
 
+    async fn decrypt_entries(&self, entries: Vec<DeadLetterEntry>) -> Vec<DeadLetterEntry> {
+        let mut readable = Vec::new();
+        for mut entry in entries {
+            if let serde_json::Value::String(ref encrypted) = entry.action.payload
+                && acteon_crypto::is_encrypted(encrypted)
+            {
+                if let Ok(payload) = self.encryptor.decrypt(encrypted) {
+                    entry.action.payload = payload;
+                } else {
+                    self.failure("decryption");
+                    // Bypass this wrapper: the entry is already encrypted.
+                    if self
+                        .inner
+                        .push(entry.action, entry.error, entry.attempts)
+                        .await
+                        .is_err()
+                    {
+                        self.failure("ciphertext retention");
+                    }
+                    continue;
+                }
+            }
+            readable.push(entry);
+        }
+        readable
+    }
+
     fn failure(&self, operation: &str) -> DeadLetterError {
         self.failures.fetch_add(1, Ordering::Relaxed);
         // Cipher errors may contain sensitive material. Record only the operation.
@@ -81,30 +108,16 @@ impl DeadLetterSink for EncryptingDeadLetterSink {
     }
 
     async fn drain(&self) -> Vec<DeadLetterEntry> {
-        let mut readable = Vec::new();
-        for mut entry in self.inner.drain().await {
-            if let serde_json::Value::String(ref encrypted) = entry.action.payload
-                && acteon_crypto::is_encrypted(encrypted)
-            {
-                if let Ok(payload) = self.encryptor.decrypt(encrypted) {
-                    entry.action.payload = payload;
-                } else {
-                    self.failure("decryption");
-                    // Bypass this wrapper: the entry is already encrypted.
-                    if self
-                        .inner
-                        .push(entry.action, entry.error, entry.attempts)
-                        .await
-                        .is_err()
-                    {
-                        self.failure("ciphertext retention");
-                    }
-                    continue;
-                }
-            }
-            readable.push(entry);
-        }
-        readable
+        self.decrypt_entries(self.inner.drain().await).await
+    }
+
+    async fn drain_selected(&self, selection: &DeadLetterSelection) -> Vec<DeadLetterEntry> {
+        self.decrypt_entries(self.inner.drain_selected(selection).await)
+            .await
+    }
+
+    async fn len_selected(&self, selection: &DeadLetterSelection) -> usize {
+        self.inner.len_selected(selection).await
     }
 
     async fn cleanup_expired(&self) -> usize {

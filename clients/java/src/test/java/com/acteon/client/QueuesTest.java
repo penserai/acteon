@@ -44,8 +44,7 @@ class QueuesTest {
 
     @Test
     void enqueueRequestMinimalDropsMaxAttempts() throws Exception {
-        Queues.EnqueueTaskRequest req = new Queues.EnqueueTaskRequest(
-            "ns", "tnt", "send_email", Map.of("to", "a@b.c"));
+        Queues.EnqueueTaskRequest req = new Queues.EnqueueTaskRequest("send_email", Map.of("to", "a@b.c"));
         String json = MAPPER.writeValueAsString(req);
         assertFalse(json.contains("max_attempts"), json);
         assertTrue(json.contains("\"action_type\":\"send_email\""), json);
@@ -54,16 +53,14 @@ class QueuesTest {
 
     @Test
     void enqueueRequestFullSnakeCasesMaxAttempts() throws Exception {
-        Queues.EnqueueTaskRequest req = new Queues.EnqueueTaskRequest(
-            "ns", "tnt", "send_email", Map.of(), 5);
+        Queues.EnqueueTaskRequest req = new Queues.EnqueueTaskRequest("send_email", Map.of(), 5);
         String json = MAPPER.writeValueAsString(req);
         assertTrue(json.contains("\"max_attempts\":5"), json);
     }
 
     @Test
     void pollRequestSnakeCasesOptionalFields() throws Exception {
-        Queues.PollTasksRequest req = new Queues.PollTasksRequest(
-            "ns", "tnt", 4, 120, "w-1");
+        Queues.PollTasksRequest req = new Queues.PollTasksRequest(4, 120, "w-1");
         String json = MAPPER.writeValueAsString(req);
         assertTrue(json.contains("\"max_tasks\":4"), json);
         assertTrue(json.contains("\"lease_seconds\":120"), json);
@@ -72,15 +69,14 @@ class QueuesTest {
 
     @Test
     void pollRequestMinimalDropsOptionalFields() throws Exception {
-        Queues.PollTasksRequest req = new Queues.PollTasksRequest("ns", "tnt");
+        Queues.PollTasksRequest req = new Queues.PollTasksRequest();
         String json = MAPPER.writeValueAsString(req);
-        assertEquals("{\"namespace\":\"ns\",\"tenant\":\"tnt\"}", json);
+        assertEquals("{}", json);
     }
 
     @Test
     void heartbeatRequestSerde() throws Exception {
-        Queues.HeartbeatTaskRequest req = new Queues.HeartbeatTaskRequest(
-            "ns", "tnt", "lease-1", 90);
+        Queues.HeartbeatTaskRequest req = new Queues.HeartbeatTaskRequest("lease-1", 90);
         String json = MAPPER.writeValueAsString(req);
         assertTrue(json.contains("\"lease_token\":\"lease-1\""), json);
         assertTrue(json.contains("\"extend_seconds\":90"), json);
@@ -88,8 +84,7 @@ class QueuesTest {
 
     @Test
     void failRequestAlwaysCarriesRetryable() throws Exception {
-        Queues.FailTaskRequest req = new Queues.FailTaskRequest(
-            "ns", "tnt", "lease-1", "smtp timeout", false);
+        Queues.FailTaskRequest req = new Queues.FailTaskRequest("lease-1", "smtp timeout", false);
         String json = MAPPER.writeValueAsString(req);
         assertTrue(json.contains("\"error\":\"smtp timeout\""), json);
         assertTrue(json.contains("\"retryable\":false"), json);
@@ -144,7 +139,7 @@ class QueuesTest {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
                 Queues.WorkerTask t = client.enqueueTask("emails",
-                    new Queues.EnqueueTaskRequest("ns", "tnt", "send_email", Map.of("to", "a@b.c")));
+                    new Queues.EnqueueTaskRequest("send_email", Map.of("to", "a@b.c")));
                 assertEquals(Queues.TASK_STATUS_PENDING, t.status());
                 assertEquals("t-1", t.taskId());
             }
@@ -173,7 +168,7 @@ class QueuesTest {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
                 List<Queues.WorkerTask> tasks = client.pollTasks("emails",
-                    new Queues.PollTasksRequest("ns", "tnt", 2, 60, "w-1"));
+                    new Queues.PollTasksRequest(2, 60, "w-1"));
                 assertEquals(1, tasks.size());
                 assertEquals("lease-1", tasks.get(0).leaseToken());
             }
@@ -199,13 +194,11 @@ class QueuesTest {
         try {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
-                Optional<Queues.WorkerTask> t = client.getTask("missing", "ns", "tnt");
+                Optional<Queues.WorkerTask> t = client.getTask("missing");
                 assertTrue(t.isEmpty());
             }
             String q = seenQuery.get();
-            assertNotNull(q);
-            assertTrue(q.contains("namespace=ns"), q);
-            assertTrue(q.contains("tenant=tnt"), q);
+            assertNull(q);
         } finally {
             server.stop(0);
         }
@@ -227,7 +220,7 @@ class QueuesTest {
         try {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
-                Optional<Queues.WorkerTask> t = client.getTask("t-1", "ns", "tnt");
+                Optional<Queues.WorkerTask> t = client.getTask("t-1");
                 assertTrue(t.isPresent());
                 assertEquals("t-1", t.get().taskId());
             }
@@ -255,14 +248,13 @@ class QueuesTest {
         try {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
-                List<Queues.WorkerTask> tasks = client.listTasks(
-                    "emails", "ns", "tnt", Queues.TASK_STATUS_PENDING);
+                List<Queues.WorkerTask> tasks = client.listTasks("emails", Queues.TASK_STATUS_PENDING);
                 assertTrue(tasks.isEmpty());
             }
             assertEquals("/v1/queues/emails/tasks", seenPath.get());
             String q = seenQuery.get();
-            assertTrue(q.contains("namespace=ns"), q);
-            assertTrue(q.contains("tenant=tnt"), q);
+            assertFalse(q.contains("namespace=ns"), q);
+            assertFalse(q.contains("tenant=tnt"), q);
             assertTrue(q.contains("status=pending"), q);
         } finally {
             server.stop(0);
@@ -284,8 +276,7 @@ class QueuesTest {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
                 ApiException ex = assertThrows(ApiException.class,
-                    () -> client.completeTask("t-1", new Queues.CompleteTaskRequest(
-                        "ns", "tnt", "stale-lease", Map.of())));
+                    () -> client.completeTask("t-1", new Queues.CompleteTaskRequest("stale-lease", Map.of())));
                 assertTrue(ex.getMessage().contains("lease token mismatch"), ex.getMessage());
                 // Conflicts are not transient — the lease is gone.
                 assertFalse(ex.isRetryable());
@@ -310,7 +301,7 @@ class QueuesTest {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
                 ApiException ex = assertThrows(ApiException.class,
-                    () -> client.pollTasks("emails", new Queues.PollTasksRequest("ns", "tnt")));
+                    () -> client.pollTasks("emails", new Queues.PollTasksRequest()));
                 assertTrue(ex.isRetryable());
             }
         } finally {

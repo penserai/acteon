@@ -520,17 +520,23 @@ Each transition is driven by an API call:
 # Confirm payment
 curl -X PUT "http://localhost:8080/v1/events/order-lifecycle-001/transition" \
   -H "Content-Type: application/json" \
-  -d '{"to": "confirmed", "namespace": "ecommerce", "tenant": "acme-store"}'
+  -d '{
+  "to": "confirmed"
+}'
 
 # Ship order
 curl -X PUT "http://localhost:8080/v1/events/order-lifecycle-001/transition" \
   -H "Content-Type: application/json" \
-  -d '{"to": "shipped", "namespace": "ecommerce", "tenant": "acme-store"}'
+  -d '{
+  "to": "shipped"
+}'
 
 # Confirm delivery
 curl -X PUT "http://localhost:8080/v1/events/order-lifecycle-001/transition" \
   -H "Content-Type: application/json" \
-  -d '{"to": "delivered", "namespace": "ecommerce", "tenant": "acme-store"}'
+  -d '{
+  "to": "delivered"
+}'
 ```
 
 ---
@@ -542,7 +548,7 @@ Events. Orders dispatched to Acteon generate SSE events that clients can consume
 
 ```bash
 # Start listening for order events
-curl -N "http://localhost:8080/v1/stream?namespace=ecommerce"
+curl -N "http://localhost:8080/v1/stream"
 ```
 
 The demo script starts a background SSE listener, dispatches 3 orders (2 standard,
@@ -574,13 +580,13 @@ Query the audit trail to see what happened:
 
 ```bash
 # All dispatches
-curl -s "http://localhost:8080/v1/audit?namespace=ecommerce&tenant=acme-store&limit=50" | jq .
+curl -s "http://localhost:8080/v1/audit?limit=50" | jq .
 
 # Only denied actions (sanctioned regions)
-curl -s "http://localhost:8080/v1/audit?namespace=ecommerce&tenant=acme-store&outcome=suppressed" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=suppressed" | jq .
 
 # Only orders that required approval
-curl -s "http://localhost:8080/v1/audit?namespace=ecommerce&tenant=acme-store&outcome=pending_approval" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=pending_approval" | jq .
 ```
 
 ---

@@ -22,13 +22,6 @@ pub enum SilencesCommand {
     /// `key=~pattern` (`Regex`), or `key!~pattern` (`NotRegex`). Repeat
     /// `--matcher` to combine matchers with AND semantics.
     Create {
-        /// Namespace this silence applies to.
-        #[arg(long)]
-        namespace: String,
-        /// Tenant this silence applies to. Hierarchical matching applies —
-        /// a silence on `acme` also covers `acme.us-east`.
-        #[arg(long)]
-        tenant: String,
         /// Label matcher in `key=value`, `key!=value`, `key=~regex`, or
         /// `key!~regex` form. Repeat for multiple matchers (AND).
         #[arg(long = "matcher", required = true)]
@@ -50,12 +43,6 @@ pub enum SilencesCommand {
     },
     /// List silences.
     List {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
         /// Include expired silences.
         #[arg(long)]
         include_expired: bool,
@@ -96,32 +83,14 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     match &args.command {
         SilencesCommand::Create {
-            namespace,
-            tenant,
             matchers,
             starts_at,
             hours,
             ends_at,
             comment,
-        } => {
-            create_silence(
-                ops, format, namespace, tenant, matchers, *starts_at, *hours, *ends_at, comment,
-            )
-            .await
-        }
-        SilencesCommand::List {
-            namespace,
-            tenant,
-            include_expired,
-        } => {
-            list_silences(
-                ops,
-                format,
-                namespace.as_ref(),
-                tenant.as_ref(),
-                *include_expired,
-            )
-            .await
+        } => create_silence(ops, format, matchers, *starts_at, *hours, *ends_at, comment).await,
+        SilencesCommand::List { include_expired } => {
+            list_silences(ops, format, *include_expired).await
         }
         SilencesCommand::Get { id } => get_silence(ops, format, id).await,
         SilencesCommand::Update {
@@ -141,8 +110,6 @@ pub async fn run(
 async fn create_silence(
     ops: &OpsClient,
     format: &OutputFormat,
-    namespace: &str,
-    tenant: &str,
     matchers: &[String],
     starts_at: Option<DateTime<Utc>>,
     hours: Option<u64>,
@@ -157,8 +124,6 @@ async fn create_silence(
     let duration_seconds = hours.map(|h| h.saturating_mul(3600));
 
     let req = CreateSilenceRequest {
-        namespace: namespace.to_owned(),
-        tenant: tenant.to_owned(),
         matchers: parsed,
         starts_at,
         ends_at,
@@ -187,15 +152,9 @@ async fn create_silence(
 async fn list_silences(
     ops: &OpsClient,
     format: &OutputFormat,
-    namespace: Option<&String>,
-    tenant: Option<&String>,
     include_expired: bool,
 ) -> anyhow::Result<()> {
-    let query = ListSilencesQuery {
-        namespace: namespace.cloned(),
-        tenant: tenant.cloned(),
-        include_expired,
-    };
+    let query = ListSilencesQuery { include_expired };
     let resp = ops.list_silences(&query).await?;
 
     match format {

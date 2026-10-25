@@ -100,8 +100,8 @@ mod tests {
     #[test]
     fn agent_continuation_routes_require_dispatch_permission() {
         for path in [
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send",
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
+            "/a2a/agents/{agent}/v1/tasks/{id}/message:send",
+            "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
         ] {
             let route = ROUTES
                 .iter()
@@ -115,9 +115,7 @@ mod tests {
     fn governed_agent_rpc_allows_reads_then_enforces_writes_in_handler() {
         let route = ROUTES
             .iter()
-            .find(|route| {
-                route.method == "POST" && route.path == "/a2a/{namespace}/{tenant}/agents/{agent}"
-            })
+            .find(|route| route.method == "POST" && route.path == "/a2a/agents/{agent}")
             .expect("missing governed agent RPC permission inventory entry");
         assert_eq!(route.permission, Some(Permission::AuditRead));
     }
@@ -125,12 +123,9 @@ mod tests {
     #[test]
     fn federation_separates_peer_admission_from_trust_management() {
         for (path, permission) in [
+            ("/a2a/federation/envelopes:import", Permission::Dispatch),
             (
-                "/a2a/{namespace}/{tenant}/federation/envelopes:import",
-                Permission::Dispatch,
-            ),
-            (
-                "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+                "/a2a/federation/agents/{agent}/v1/message:send",
                 Permission::Dispatch,
             ),
             (

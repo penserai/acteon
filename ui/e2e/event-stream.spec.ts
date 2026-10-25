@@ -10,8 +10,8 @@ test.describe('Event Stream', () => {
   })
 
   test('filter controls are present', async ({ page }) => {
-    await expect(page.getByPlaceholder('Namespace')).toBeVisible()
-    await expect(page.getByPlaceholder('Tenant')).toBeVisible()
+    await expect(page.getByPlaceholder('Namespace')).toHaveCount(0)
+    await expect(page.getByPlaceholder('Tenant')).toHaveCount(0)
     // Event type dropdown
     await expect(page.locator('select').first()).toBeVisible()
   })

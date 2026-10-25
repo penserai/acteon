@@ -40,7 +40,7 @@ A complete HTTP client is not a workflow runtime. For example, Go and Java can s
 
 ## Inspect a managed stage
 
-These examples call the same authenticated endpoint, `GET /v1/bus/stages/{namespace}/{tenant}/{id}`. They assume a configured bus and an existing stage named `log-detector`. Supply an API key authorized for that scope. Use the SDK source from the matching server revision when adopting newly added operations.
+These examples call the same authenticated endpoint, `GET /v1/bus/stages/{id}`. They assume a configured bus and an existing stage named `log-detector`. Supply an API key authorized for that scope. Use the SDK source from the matching server revision when adopting newly added operations.
 
 === "Python"
 
@@ -203,7 +203,7 @@ refusals without mutation retries. See [Agent workforce](../features/workforce.m
 
 ## Historical provider execution evidence
 
-`GET /v1/governance/executions/{execution_id}?namespace=prod&tenant=acme`
+`GET /v1/governance/executions/{execution_id}`
 returns verified provider receipts, original evidence and accepted reconciliation
 records from the deployment's configured state backend. The operator must have
 current scope management authority and an explicit `can_read_history = true`
@@ -233,8 +233,8 @@ for evidence integrity and recovery semantics.
 ## Retain an authenticated agent-service receipt
 
 Individual governed services expose `POST
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send` and `GET
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}`. These require a configured
+/a2a/agents/{agent}/v1/message:send` and `GET
+/a2a/agents/{agent}/v1/tasks/{id}`. These require a configured
 service and the requester's original private authentication; a registry card
 alone does not install a runtime or authorize an invocation.
 
@@ -394,7 +394,7 @@ longer-lived clients.
 ## Stop future agent-service starts
 
 The service control extension `POST
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the original
+/a2a/agents/{agent}/v1/tasks/{id}/stop` uses the original
 requester's private credential and admission source-context header. Agent
 requesters must send the exact `x-acteon-agent-source-context` returned for that
 job. The finite operation catalog includes `agent_services_task_stop` in every

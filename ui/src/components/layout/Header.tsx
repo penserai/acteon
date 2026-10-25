@@ -1,3 +1,4 @@
+import { useIdentity } from '../../api/hooks/useIdentity'
 import { useLocation } from 'react-router-dom'
 import { Sun, Moon, Monitor, Command, Menu } from 'lucide-react'
 import { useThemeStore } from '../../stores/theme'
@@ -7,6 +8,7 @@ import styles from './Header.module.css'
 
 export function Header() {
   const location = useLocation()
+  const { data: identity } = useIdentity()
   const mode = useThemeStore((s) => s.mode)
   const cycleMode = useThemeStore((s) => s.cycleMode)
   const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen)
@@ -53,6 +55,7 @@ export function Header() {
       </div>
 
       <div className={styles.rightSection}>
+        {identity && <span aria-label="Authenticated context" title="Context is set by your credential">{identity.scope.namespace} / {identity.scope.tenant}</span>}
         <button
           onClick={cycleMode}
           aria-label={`Theme: ${mode}. Click to change.`}

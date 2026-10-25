@@ -42,18 +42,16 @@ from acteon_client import (
 
 class TestRequestSerde(unittest.TestCase):
     def test_create_topic_minimal(self):
-        req = CreateBusTopic(name="t", namespace="n", tenant="te")
+        req = CreateBusTopic(name="t")
         d = req.to_dict()
-        self.assertEqual(d, {"name": "t", "namespace": "n", "tenant": "te"})
+        self.assertEqual(d, {"name": "t"})
 
     def test_create_topic_full(self):
         req = CreateBusTopic(
             name="t",
-            namespace="n",
-            tenant="te",
             partitions=4,
             replication_factor=2,
-            retention_ms=86_400_000,
+            retention_ms=86400000,
             description="demo",
             labels={"env": "prod"},
         )
@@ -67,45 +65,26 @@ class TestRequestSerde(unittest.TestCase):
 
     def test_subscription_request(self):
         req = CreateBusSubscription(
-            id="s1",
-            topic="ns.te.t",
-            namespace="ns",
-            tenant="te",
-            ack_mode="manual",
-            ack_timeout_ms=30_000,
+            id="s1", topic="ns.te.t", ack_mode="manual", ack_timeout_ms=30000
         )
         d = req.to_dict()
         self.assertEqual(d["ack_mode"], "manual")
         self.assertEqual(d["ack_timeout_ms"], 30_000)
 
     def test_register_schema(self):
-        req = RegisterBusSchema(
-            subject="orders",
-            namespace="ns",
-            tenant="te",
-            body={"type": "object"},
-        )
+        req = RegisterBusSchema(subject="orders", body={"type": "object"})
         self.assertEqual(req.to_dict()["body"], {"type": "object"})
 
     def test_register_agent(self):
         req = RegisterBusAgent(
-            agent_id="a1",
-            namespace="ns",
-            tenant="te",
-            capabilities=["tools.calendar"],
-            heartbeat_ttl_ms=30_000,
+            agent_id="a1", capabilities=["tools.calendar"], heartbeat_ttl_ms=30000
         )
         d = req.to_dict()
         self.assertEqual(d["capabilities"], ["tools.calendar"])
         self.assertEqual(d["heartbeat_ttl_ms"], 30_000)
 
     def test_create_conversation(self):
-        req = CreateBusConversation(
-            conversation_id="c1",
-            namespace="ns",
-            tenant="te",
-            participants=["a1", "a2"],
-        )
+        req = CreateBusConversation(conversation_id="c1", participants=["a1", "a2"])
         self.assertEqual(req.to_dict()["participants"], ["a1", "a2"])
 
     def test_append_message(self):
@@ -513,15 +492,10 @@ class TestStreamConsumeUrl(unittest.TestCase):
 
         # Use a constructor that doesn't actually open a connection.
         c = ActeonClient("http://localhost:3000")
-        url = c.bus_stream_consume_url(
-            "agents/x",
-            "demo",
-            "thread/with/slashes",
-            "story 1",
-        )
+        url = c.bus_stream_consume_url("thread/with/slashes", "story 1")
         # The path slashes inside segments must be %2F-encoded so
         # they don't escape into the URL grammar.
-        self.assertIn("agents%2Fx", url)
+        self.assertNotIn("agents%2Fx", url)
         self.assertIn("thread%2Fwith%2Fslashes", url)
         self.assertIn("story%201", url)
 
@@ -529,10 +503,10 @@ class TestStreamConsumeUrl(unittest.TestCase):
         from acteon_client import ActeonClient
 
         c = ActeonClient("http://localhost:3000")
-        url = c.bus_stream_consume_url("agents", "demo", "thread-1", "stream-1")
+        url = c.bus_stream_consume_url("thread-1", "stream-1")
         self.assertEqual(
             url,
-            "http://localhost:3000/v1/bus/streams/agents/demo/thread-1/stream-1",
+            "http://localhost:3000/v1/bus/streams/thread-1/stream-1",
         )
 
 

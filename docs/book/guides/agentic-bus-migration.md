@@ -200,7 +200,7 @@ outcome = client.post_bus_tool_call("agents", "acme", "billing-thread",
 if outcome.was_parked:
     print(f"awaiting approval: {outcome.parked.approval_id}")
     # ...later, an operator approves via the admin UI or:
-    # POST /v1/bus/approvals/agents/acme/<approval_id>/approve
+    # POST /v1/bus/approvals/<approval_id>/approve
     # The Kafka record then lands with an acteon.approval.id audit header.
 ```
 

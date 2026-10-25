@@ -54,7 +54,7 @@ Retry policies apply only to **provider steps**. Sub-chain steps and parallel st
 Each retry attempt is recorded in the chain's step history. Query it with:
 
 ```
-GET /v1/chains/{chain_id}/history?namespace=ns&tenant=tenant-1
+GET /v1/chains/{chain_id}/history
 ```
 
 Example response:

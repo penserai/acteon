@@ -30,7 +30,7 @@ class BusTest {
 
     @Test
     void createTopicMinimalDropsOptionalFields() throws Exception {
-        Bus.CreateBusTopic req = new Bus.CreateBusTopic("t", "n", "te");
+        Bus.CreateBusTopic req = new Bus.CreateBusTopic("t");
         String json = MAPPER.writeValueAsString(req);
         // `@JsonInclude(NON_NULL)` on the record drops every nullable
         // optional from the wire form.
@@ -42,8 +42,7 @@ class BusTest {
 
     @Test
     void createTopicSnakeCasesOptionalFields() throws Exception {
-        Bus.CreateBusTopic req = new Bus.CreateBusTopic(
-            "t", "n", "te", 4, 2, 86_400_000L, "demo", Map.of("env", "prod"));
+        Bus.CreateBusTopic req = new Bus.CreateBusTopic("t", 4, 2, 86_400_000L, "demo", Map.of("env", "prod"));
         String json = MAPPER.writeValueAsString(req);
         assertTrue(json.contains("\"replication_factor\":2"), json);
         assertTrue(json.contains("\"retention_ms\":86400000"), json);
@@ -217,16 +216,16 @@ class BusTest {
     @Test
     void busStreamConsumeUrlSimple() {
         try (ActeonClient client = new ActeonClient("http://localhost:3000")) {
-            String url = client.busStreamConsumeUrl("agents", "demo", "thread-1", "stream-1");
-            assertEquals("http://localhost:3000/v1/bus/streams/agents/demo/thread-1/stream-1", url);
+            String url = client.busStreamConsumeUrl("thread-1", "stream-1");
+            assertEquals("http://localhost:3000/v1/bus/streams/thread-1/stream-1", url);
         }
     }
 
     @Test
     void busStreamConsumeUrlEncodesSlashesAndSpaces() {
         try (ActeonClient client = new ActeonClient("http://localhost:3000")) {
-            String url = client.busStreamConsumeUrl("agents/x", "demo", "thread/with/slashes", "story 1");
-            assertTrue(url.contains("agents%2Fx"), url);
+            String url = client.busStreamConsumeUrl("thread/with/slashes", "story 1");
+
             assertTrue(url.contains("thread%2Fwith%2Fslashes"), url);
             // Java's URLEncoder turns spaces into `+` for form-urlencoded
             // but the bus REST surface accepts both — the important
@@ -284,15 +283,13 @@ class BusTest {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
                 // Immediate produce path.
-                Bus.PostBusToolCallOutcome produced = client.postBusToolCall("n", "te", "c1",
-                    new Bus.PostBusToolCall("call-1", "calendar.list", Map.of()));
+                Bus.PostBusToolCallOutcome produced = client.postBusToolCall("c1", new Bus.PostBusToolCall("call-1", "calendar.list", Map.of()));
                 assertFalse(produced.isParked());
                 Bus.PostBusToolCallOutcome.Produced p = (Bus.PostBusToolCallOutcome.Produced) produced;
                 assertEquals(17L, p.receipt().offset());
 
                 // Approval gate path.
-                Bus.PostBusToolCallOutcome parked = client.postBusToolCall("n", "te", "c1",
-                    new Bus.PostBusToolCall(
+                Bus.PostBusToolCallOutcome parked = client.postBusToolCall("c1", new Bus.PostBusToolCall(
                         "call-1", "billing.charge", Map.of("usd", 42),
                         null, null, null, null, true, "paid action", null));
                 assertTrue(parked.isParked());
@@ -321,7 +318,7 @@ class BusTest {
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
                 com.acteon.client.exceptions.ApiException ex = assertThrows(
                     com.acteon.client.exceptions.ApiException.class,
-                    () -> client.createBusTopic(new Bus.CreateBusTopic("t", "n", "te")));
+                    () -> client.createBusTopic(new Bus.CreateBusTopic("t")));
                 assertTrue(ex.getMessage().contains("sender"), ex.getMessage());
             }
         } finally {
@@ -366,15 +363,13 @@ class BusTest {
         try {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
-                Bus.BusApprovalDecisionResponse r = client.approveBusApproval(
-                    "agents", "demo", "appr-1",
-                    new Bus.BusApprovalDecision("ops-1"));
+                Bus.BusApprovalDecisionResponse r = client.approveBusApproval("appr-1", new Bus.BusApprovalDecision("ops-1"));
                 assertEquals("approved", r.approval().status());
                 assertNotNull(r.receipt());
                 assertEquals(99L, r.receipt().offset());
             }
             assertEquals("POST", seenMethod.get());
-            assertEquals("/v1/bus/approvals/agents/demo/appr-1/approve", seenPath.get());
+            assertEquals("/v1/bus/approvals/appr-1/approve", seenPath.get());
         } finally {
             server.stop(0);
         }
@@ -396,14 +391,12 @@ class BusTest {
         try {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port)) {
-                List<Bus.BusTopic> topics = client.listBusTopics("agents", "demo");
+                List<Bus.BusTopic> topics = client.listBusTopics();
                 assertTrue(topics.isEmpty());
             }
             // Both filter params present in the query string.
             String q = seenQuery.get();
-            assertNotNull(q);
-            assertTrue(q.contains("namespace=agents"), q);
-            assertTrue(q.contains("tenant=demo"), q);
+            assertNull(q);
         } finally {
             server.stop(0);
         }

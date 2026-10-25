@@ -37,7 +37,7 @@ func TestWorkforceWireContracts(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
-			if r.URL.Path != "/v1/workforce" || r.URL.Query().Get("namespace") != "prod" || r.URL.Query().Get("tenant") != "acme" {
+			if r.URL.Path != "/v1/workforce" || r.URL.Query().Get("namespace") != "" || r.URL.Query().Get("tenant") != "" {
 				t.Error("wrong scope")
 			}
 			w.Write(fixture.Scope)
@@ -59,7 +59,7 @@ func TestWorkforceWireContracts(t *testing.T) {
 	defer server.Close()
 	client := NewClient(server.URL, WithAPIKey("operator-key"))
 	ctx := context.Background()
-	scope, err := client.Workforce(ctx, "prod", "acme")
+	scope, err := client.Workforce(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

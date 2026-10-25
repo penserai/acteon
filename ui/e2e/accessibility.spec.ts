@@ -71,8 +71,8 @@ test.describe('Accessibility', () => {
     await page.goto('/dispatch')
 
     // Each field should have a label
-    await expect(page.getByLabel('Namespace *')).toBeVisible()
-    await expect(page.getByLabel('Tenant *')).toBeVisible()
+    await expect(page.getByLabel('Namespace *')).toHaveCount(0)
+    await expect(page.getByLabel('Tenant *')).toHaveCount(0)
     await expect(page.getByLabel('Provider *')).toBeVisible()
     await expect(page.getByLabel('Action Type *')).toBeVisible()
     await expect(page.getByLabel('Dedup Key')).toBeVisible()

@@ -67,8 +67,8 @@ class GovernanceTest {
         server.createContext("/v1/governance/executions/" + executionId, exchange -> {
             assertEquals("GET", exchange.getRequestMethod());
             assertEquals("Bearer operator-key", exchange.getRequestHeaders().getFirst("Authorization"));
-            assertTrue(exchange.getRequestURI().getQuery().contains("namespace=prod"));
-            assertTrue(exchange.getRequestURI().getQuery().contains("tenant=acme"));
+            assertNull(exchange.getRequestURI().getQuery());
+            assertNull(exchange.getRequestURI().getQuery());
             int index = calls.getAndIncrement();
             byte[] body = (responseStatus.get() == 200 ? fixtures.get(index).toString() : "{\"error\":\"history_denied\"}")
                 .getBytes(StandardCharsets.UTF_8);
@@ -76,16 +76,16 @@ class GovernanceTest {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
-        server.start();
+        CredentialContextFixture.install(server); server.start();
         try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort(), "operator-key")) {
             for (var wire : fixtures) {
-                var history = client.providerExecutionHistory("prod", "acme", executionId);
+                var history = client.providerExecutionHistory(executionId);
                 assertEquals(wire.get("receipt").get("status").get("state").asText(), history.receipt().status().state());
             }
             for (int status : new int[]{401, 403, 404, 409, 503}) {
                 responseStatus.set(status);
                 int before = calls.get();
-                var error = assertThrows(HttpException.class, () -> client.providerExecutionHistory("prod", "acme", executionId));
+                var error = assertThrows(HttpException.class, () -> client.providerExecutionHistory(executionId));
                 assertEquals(status, error.getStatus());
                 assertEquals(before + 1, calls.get());
             }
@@ -110,16 +110,16 @@ class GovernanceTest {
             exchange.sendResponseHeaders(status.get(), wire.length);
             exchange.getResponseBody().write(wire); exchange.close();
         });
-        server.start();
+        CredentialContextFixture.install(server); server.start();
         try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort(), "operator-key")) {
-            var scope = client.governance("prod", "acme");
+            var scope = client.governance();
             assertEquals(fixture.get("scope"), mapper.readTree(mapper.writeValueAsString(scope)));
             var publication = mapper.treeToValue(fixture.get("publication"), Governance.PublishPermitRequest.class);
             var intervention = mapper.treeToValue(fixture.get("intervention"), Governance.InterventionRequest.class);
             assertEquals(fixture.get("receipt"), mapper.readTree(mapper.writeValueAsString(client.publishGovernancePermit(publication))));
             assertEquals(fixture.get("receipt"), mapper.readTree(mapper.writeValueAsString(client.interveneGovernance(intervention))));
-            assertTrue(requests.get(0).contains("namespace=prod"));
-            assertTrue(requests.get(0).contains("tenant=acme"));
+            assertFalse(requests.get(0).contains("namespace=prod"));
+            assertFalse(requests.get(0).contains("tenant=acme"));
             assertEquals(fixture.get("publication"), mapper.readTree(bodies.get(1)));
             assertEquals(fixture.get("intervention"), mapper.readTree(bodies.get(2)));
             assertTrue(authorization.stream().allMatch("Bearer operator-key"::equals));
@@ -165,35 +165,31 @@ class GovernanceTest {
             exchange.getResponseBody().write(wire);
             exchange.close();
         });
-        server.start();
+        CredentialContextFixture.install(server); server.start();
         try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort(), "federation-key")) {
             var publication = mapper.treeToValue(fixture.get("publication"), Governance.PublishFederationTrustRequest.class);
             var revocation = mapper.treeToValue(fixture.get("revocation"), Governance.RevokeFederationTrustRequest.class);
             var envelope = mapper.treeToValue(fixture.get("envelope"), Governance.SignedFederationEnvelopeDeclaration.class);
             client.publishFederationTrust(publication);
             client.revokeFederationTrust(revocation);
-            var capability = client.federationCapabilities("prod", "acme", "maya");
-            var receipt = client.importFederationEnvelope("prod", "acme", envelope);
+            var capability = client.federationCapabilities("maya");
+            var receipt = client.importFederationEnvelope(envelope);
             var invocation = new Governance.SignedFederationInvocationDeclaration("signed-payload", "a".repeat(128));
             var message = Map.<String, Object>of("messageId", "message-1", "role", "user",
                 "parts", java.util.List.of(Map.of("text", "inspect")));
-            var task = client.invokeFederatedAgent("prod", "acme", "maya", invocation, message);
+            var task = client.invokeFederatedAgent("maya", invocation, message);
             var exportMessage = mapper.convertValue(fixture.get("export_message"),
                 new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
             var sourceTask = "11111111-1111-4111-8111-111111111111";
-            var exported = client.exportFederatedMessage("prod", "acme", "maya", sourceTask,
-                "remote-triage", exportMessage);
-            client.observeFederatedExport("prod", "acme", "maya", sourceTask,
-                "remote-triage", exportMessage);
-            client.replayFederatedExport("prod", "acme", "maya", sourceTask,
-                "remote-triage", exportMessage);
-            var evidence = client.federationDeliveryEvidence("prod", "acme", null, 25);
+            var exported = client.exportFederatedMessage("maya", sourceTask, "remote-triage", exportMessage);
+            client.observeFederatedExport("maya", sourceTask, "remote-triage", exportMessage);
+            client.replayFederatedExport("maya", sourceTask, "remote-triage", exportMessage);
+            var evidence = client.federationDeliveryEvidence(null, 25);
             var abandonRequest = mapper.treeToValue(fixture.get("abandon_request"),
                 Governance.AbandonFederationDeliveryRequest.class);
             var abandoned = client.abandonFederationDelivery(
                 evidence.deliveries().get(0).deliveryId(), abandonRequest);
-            var correlation = client.federationFinalityCorrelation("prod", "acme",
-                evidence.deliveries().get(0).deliveryId());
+            var correlation = client.federationFinalityCorrelation(evidence.deliveries().get(0).deliveryId());
             var reconcileRequest = mapper.treeToValue(fixture.get("reconcile_request"),
                 Governance.ReconcileFederationDeliveryRequest.class);
             var reconciled = client.reconcileFederationDelivery(
@@ -209,12 +205,12 @@ class GovernanceTest {
             assertEquals(java.util.List.of(
                 "/v1/governance/federation/trusts",
                 "/v1/governance/federation/trusts/revoke",
-                "/a2a/prod/acme/federation/agents/maya/capabilities",
-                "/a2a/prod/acme/federation/envelopes:import",
-                "/a2a/prod/acme/federation/agents/maya/v1/message:send",
-                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:send",
-                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:observe",
-                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:replay",
+                "/a2a/federation/agents/maya/capabilities",
+                "/a2a/federation/envelopes:import",
+                "/a2a/federation/agents/maya/v1/message:send",
+                "/a2a/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:send",
+                "/a2a/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:observe",
+                "/a2a/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:replay",
                 "/v1/governance/federation/deliveries",
                 "/v1/governance/federation/deliveries/" + evidence.deliveries().get(0).deliveryId() + ":abandon",
                 "/v1/governance/federation/deliveries/" + evidence.deliveries().get(0).deliveryId() + "/correlation",
@@ -259,20 +255,20 @@ class GovernanceTest {
             boolean read = exchange.getRequestMethod().equals("GET");
             if (read) {
                 assertEquals("/v1/governance/registry/maya", exchange.getRequestURI().getPath());
-                for (var part : new String[]{"namespace=prod","tenant=acme","projection=card"}) assertTrue(exchange.getRequestURI().getQuery().contains(part));
+                for (var part : new String[]{"projection=card"}) assertTrue(exchange.getRequestURI().getQuery().contains(part));
             } else assertEquals(fixture.get("request"), mapper.readTree(exchange.getRequestBody()));
             byte[] body=(read ? view.get() : receipt.get()).toString().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Location","/redirected");
             exchange.sendResponseHeaders(read ? 200 : status.get(),body.length);
             exchange.getResponseBody().write(body); exchange.close();
-        }); server.start();
+        }); CredentialContextFixture.install(server); server.start();
         try (var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort(),"operator-key")) {
-            assertEquals(fixture.get("view"),mapper.readTree(mapper.writeValueAsString(client.registryProjection("prod","acme","maya","card"))));
+            assertEquals(fixture.get("view"),mapper.readTree(mapper.writeValueAsString(client.registryProjection("maya", "card"))));
             for (var field : new String[]{"tenant","version","qualification_retired","registry_revision","value"}) {
                 var bad = (com.fasterxml.jackson.databind.node.ObjectNode) fixture.get("view").deepCopy();
                 if (field.equals("tenant")) bad.put(field,"other"); else if (field.equals("qualification_retired")) bad.putNull(field); else if (field.equals("value")) bad.put(field,"invalid"); else bad.put(field,0);
                 view.set(bad); int before=calls.get();
-                assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.registryProjection("prod","acme","maya","card"));
+                assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.registryProjection("maya", "card"));
                 assertEquals(before+1,calls.get());
             }
             for (int i=0;i<2;i++) assertEquals(fixture.get("receipt"),mapper.readTree(mapper.writeValueAsString(client.mutateRegistry(request))));

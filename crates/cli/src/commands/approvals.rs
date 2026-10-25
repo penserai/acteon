@@ -13,14 +13,7 @@ pub struct ApprovalsArgs {
 #[derive(Subcommand, Debug)]
 pub enum ApprovalsCommand {
     /// List pending approvals.
-    List {
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
-    },
+    List {},
 }
 
 pub async fn run(
@@ -29,8 +22,8 @@ pub async fn run(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        ApprovalsCommand::List { namespace, tenant } => {
-            let resp = ops.list_approvals(namespace, tenant).await?;
+        ApprovalsCommand::List {} => {
+            let resp = ops.list_approvals().await?;
             match format {
                 OutputFormat::Json => {
                     info!("{}", serde_json::to_string_pretty(&resp)?);

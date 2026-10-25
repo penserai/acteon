@@ -314,71 +314,74 @@ Azure SDK errors are classified into the standard `ProviderError` enum:
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "storage",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "upload_blob",
-    "payload": {
-      "blob_name": "reports/2026/02/daily.json",
-      "body": "{\"total\": 42}",
-      "content_type": "application/json"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "upload_blob",
+  "payload": {
+    "blob_name": "reports/2026/02/daily.json",
+    "body": "{\"total\": 42}",
+    "content_type": "application/json"
+  }
+}'
 
 # Download a blob
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "storage",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "download_blob",
-    "payload": {
-      "blob_name": "reports/2026/02/daily.json"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "download_blob",
+  "payload": {
+    "blob_name": "reports/2026/02/daily.json"
+  }
+}'
 
 # Delete a blob
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "storage",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "delete_blob",
-    "payload": {
-      "blob_name": "old/data.csv"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "delete_blob",
+  "payload": {
+    "blob_name": "old/data.csv"
+  }
+}'
 
 # Send an event to Event Hubs
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "events",
-    "tenant": "acme-corp",
-    "provider": "telemetry-hub",
-    "action_type": "send_event",
-    "payload": {
-      "body": {"device_id": "sensor-001", "temperature": 72.5}
+  "provider": "telemetry-hub",
+  "action_type": "send_event",
+  "payload": {
+    "body": {
+      "device_id": "sensor-001",
+      "temperature": 72.5
     }
-  }'
+  }
+}'
 
 # Send a batch of events
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "events",
-    "tenant": "acme-corp",
-    "provider": "telemetry-hub",
-    "action_type": "send_batch",
-    "payload": {
-      "events": [
-        {"body": {"device_id": "sensor-001", "temperature": 72.5}},
-        {"body": {"device_id": "sensor-002", "temperature": 68.1}}
-      ]
-    }
-  }'
+  "provider": "telemetry-hub",
+  "action_type": "send_batch",
+  "payload": {
+    "events": [
+      {
+        "body": {
+          "device_id": "sensor-001",
+          "temperature": 72.5
+        }
+      },
+      {
+        "body": {
+          "device_id": "sensor-002",
+          "temperature": 68.1
+        }
+      }
+    ]
+  }
+}'
 ```
 
 ## Example: Rust Client

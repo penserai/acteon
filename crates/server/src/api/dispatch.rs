@@ -4,7 +4,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use acteon_core::{Action, ActionOutcome};
+use crate::auth::context::RequestScope;
+use acteon_core::{Action, ActionOutcome, ActionRequest};
 
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
@@ -96,7 +97,7 @@ pub struct DurableDispatchResponse {
     tag = "Dispatch",
     summary = "Dispatch action",
     description = "Sends a single action through the gateway pipeline (lock, rules, execute) and returns the outcome. Pass ?dry_run=true to evaluate rules without executing.",
-    request_body(content = Action, description = "Action to dispatch"),
+    request_body(content = ActionRequest, description = "Action to dispatch"),
     params(
         ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing the action"),
         ("x-acteon-execution-permits" = Option<String>, Header, description = "When execution authority is configured, JSON array of explicit permit references with id and accepted_revision; required for effectful dispatch"),
@@ -120,8 +121,10 @@ pub async fn dispatch(
         axum::Extension<crate::auth::projection::AuthenticatedExecutionConfiguration>,
     >,
     headers: axum::http::HeaderMap,
-    Json(action): Json<Action>,
+    RequestScope(context): RequestScope,
+    Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let action = request.into_action(&context);
     let permits = match execution_permits(
         &headers,
         state.execution_authority.is_some(),
@@ -425,7 +428,7 @@ pub async fn dispatch(
     tag = "Dispatch",
     summary = "Batch dispatch",
     description = "Dispatches multiple actions through the gateway pipeline and returns an array of outcomes or errors. Pass ?dry_run=true to evaluate rules without executing.",
-    request_body(content = Vec<Action>, description = "Actions to dispatch"),
+    request_body(content = Vec<ActionRequest>, description = "Actions to dispatch"),
     params(
         ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing any actions"),
         ("x-acteon-execution-permits" = Option<String>, Header, description = "JSON array of explicit id and accepted_revision permit references; required for effectful dispatch when execution authority is configured")
@@ -443,8 +446,13 @@ pub async fn dispatch_batch(
         axum::Extension<crate::auth::projection::AuthenticatedExecutionConfiguration>,
     >,
     headers: axum::http::HeaderMap,
-    Json(actions): Json<Vec<Action>>,
+    RequestScope(context): RequestScope,
+    Json(requests): Json<Vec<ActionRequest>>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let actions: Vec<Action> = requests
+        .into_iter()
+        .map(|request| request.into_action(&context))
+        .collect();
     let permits = match execution_permits(
         &headers,
         state.execution_authority.is_some(),

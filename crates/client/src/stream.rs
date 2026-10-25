@@ -26,15 +26,11 @@ use crate::Error;
 /// use acteon_client::StreamFilter;
 ///
 /// let filter = StreamFilter::new()
-///     .namespace("notifications")
 ///     .action_type("send_email")
 ///     .outcome("executed");
 /// ```
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StreamFilter {
-    /// Filter by namespace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
     /// Filter by action type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action_type: Option<String>,
@@ -60,13 +56,6 @@ impl StreamFilter {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Filter events by namespace.
-    #[must_use]
-    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.namespace = Some(namespace.into());
-        self
     }
 
     /// Filter events by action type.
@@ -278,12 +267,10 @@ mod tests {
 
     #[test]
     fn stream_filter_serialization() {
-        let filter = StreamFilter::new()
-            .namespace("alerts")
-            .action_type("send_email");
+        let filter = StreamFilter::new().action_type("send_email");
 
         let json = serde_json::to_value(&filter).unwrap();
-        assert_eq!(json["namespace"], "alerts");
+        assert!(json.get("namespace").is_none());
         assert_eq!(json["action_type"], "send_email");
         assert!(json.get("outcome").is_none());
         assert!(json.get("event_type").is_none());

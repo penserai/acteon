@@ -2,10 +2,11 @@
 //!
 //! CRUD operations for per-tenant data retention policies.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -28,9 +29,11 @@ use crate::auth::identity::CallerIdentity;
 pub struct CreateRetentionRequest {
     /// Namespace this policy applies to.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant this policy applies to.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Override for the global audit TTL (seconds).
     #[serde(default)]
@@ -153,9 +156,11 @@ pub struct ListRetentionResponse {
 pub struct ListRetentionParams {
     /// Filter by namespace (optional).
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Filter by tenant (optional).
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Maximum number of results (default: 100).
     #[serde(default = "default_limit")]
@@ -278,7 +283,7 @@ fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
 pub async fn create_retention(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateRetentionRequest>,
+    ScopedJson(req): ScopedJson<CreateRetentionRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -384,7 +389,7 @@ pub async fn create_retention(
 pub async fn list_retention(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListRetentionParams>,
+    ScopedQuery(params): ScopedQuery<ListRetentionParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -651,3 +656,5 @@ pub async fn delete_retention(
 
     StatusCode::NO_CONTENT.into_response()
 }
+
+crate::auth::context::scoped_body!(CreateRetentionRequest);

@@ -1,11 +1,9 @@
-import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { useChains } from '../api/hooks/useChains'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
 import { Badge } from '../components/ui/Badge'
-import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { relativeTime } from '../lib/format'
 import type { ChainSummary } from '../types'
@@ -16,13 +14,9 @@ const col = createDataTableColumnHelper<ChainSummary>()
 export function Chains() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const [ns, setNs] = useState(searchParams.get('namespace') ?? '')
-  const [tenant, setTenant] = useState(searchParams.get('tenant') ?? '')
   const statusFilter = searchParams.get('status') ?? ''
 
   const { data: chains, isLoading } = useChains({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     status: statusFilter || undefined,
   })
 
@@ -63,28 +57,6 @@ export function Chains() {
       <PageHeader title="Chains" />
 
       <div className={styles.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => {
-            setNs(e.target.value)
-            const next = new URLSearchParams(searchParams)
-            if (e.target.value) next.set('namespace', e.target.value)
-            else next.delete('namespace')
-            setSearchParams(next)
-          }}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => {
-            setTenant(e.target.value)
-            const next = new URLSearchParams(searchParams)
-            if (e.target.value) next.set('tenant', e.target.value)
-            else next.delete('tenant')
-            setSearchParams(next)
-          }}
-        />
         <Select
           options={[
             { value: '', label: 'All Statuses' },
@@ -108,7 +80,7 @@ export function Chains() {
         data={chains ?? []}
         columns={columns}
         loading={isLoading}
-        onRowClick={(row) => navigate(`/chains/${row.chain_id}?namespace=${encodeURIComponent(ns)}&tenant=${encodeURIComponent(tenant)}`)}
+        onRowClick={(row) => navigate(`/chains/${row.chain_id}`)}
         emptyTitle="No chain executions"
         emptyDescription="Chain executions are created when a rule triggers a Chain action."
       />

@@ -117,8 +117,6 @@ export function Dispatch() {
   const navigate = useNavigate()
   const config = useConfig()
   const audit = useAudit({ limit: 200 })
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [provider, setProvider] = useState('')
   const [actionType, setActionType] = useState('')
   const [payload, setPayload] = useState('{\n  \n}')
@@ -185,21 +183,6 @@ export function Dispatch() {
     return [...merged].sort()
   }, [selectedProviderType, provider, audit.data])
 
-  const { namespaces, tenants } = useMemo(() => {
-    const nsSet = new Set<string>()
-    const tenantSet = new Set<string>()
-    if (audit.data?.records) {
-      for (const r of audit.data.records) {
-        nsSet.add(r.namespace)
-        tenantSet.add(r.tenant)
-      }
-    }
-    return {
-      namespaces: [...nsSet].sort(),
-      tenants: [...tenantSet].sort(),
-    }
-  }, [audit.data])
-
   // Reset action type when provider changes.
   const handleProviderChange = (v: string) => {
     setProvider(v)
@@ -239,8 +222,6 @@ export function Dispatch() {
     }))
 
     const request: DispatchRequest = {
-      namespace: ns,
-      tenant,
       provider,
       action_type: actionType,
       payload: parsed,
@@ -264,20 +245,6 @@ export function Dispatch() {
       <div className={styles.container}>
         <div className={styles.formCard}>
           <div className={shared.formGrid}>
-            <SelectOrCustom
-              label="Namespace *"
-              value={ns}
-              onChange={setNs}
-              options={namespaces}
-              placeholder="Select namespace"
-            />
-            <SelectOrCustom
-              label="Tenant *"
-              value={tenant}
-              onChange={setTenant}
-              options={tenants}
-              placeholder="Select tenant"
-            />
             <Select
               label="Provider *"
               options={providerOptions}
@@ -398,7 +365,7 @@ export function Dispatch() {
               icon={<Send className="h-3.5 w-3.5" />}
               loading={dispatch.isPending}
               onClick={handleDispatch}
-              disabled={!ns || !tenant || !provider || !actionType}
+              disabled={!provider || !actionType}
             >
               Dispatch Action
             </Button>

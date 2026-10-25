@@ -15,12 +15,6 @@ pub struct RecurringArgs {
 pub enum RecurringCommand {
     /// List recurring actions.
     List {
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
         /// Filter by status (active/paused).
         #[arg(long)]
         status: Option<String>,
@@ -29,12 +23,6 @@ pub enum RecurringCommand {
     Get {
         /// Recurring action ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Create a recurring action.
     Create {
@@ -54,34 +42,16 @@ pub enum RecurringCommand {
     Delete {
         /// Recurring action ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Pause a recurring action.
     Pause {
         /// Recurring action ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Resume a recurring action.
     Resume {
         /// Recurring action ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
 }
 
@@ -100,50 +70,26 @@ pub async fn run(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        RecurringCommand::List {
-            namespace,
-            tenant,
-            status,
-        } => run_list(ops, namespace, tenant, status.as_ref(), format).await,
-        RecurringCommand::Get {
-            id,
-            namespace,
-            tenant,
-        } => run_get(ops, id, namespace, tenant, format).await,
+        RecurringCommand::List { status } => run_list(ops, status.as_ref(), format).await,
+        RecurringCommand::Get { id } => run_get(ops, id, format).await,
         RecurringCommand::Create { data } => run_create(ops, data, format).await,
         RecurringCommand::Update { id, data } => run_update(ops, id, data, format).await,
-        RecurringCommand::Delete {
-            id,
-            namespace,
-            tenant,
-        } => {
-            ops.delete_recurring(id, namespace, tenant).await?;
+        RecurringCommand::Delete { id } => {
+            ops.delete_recurring(id).await?;
             info!(id = %id, "Recurring action deleted");
             Ok(())
         }
-        RecurringCommand::Pause {
-            id,
-            namespace,
-            tenant,
-        } => run_pause(ops, id, namespace, tenant, format).await,
-        RecurringCommand::Resume {
-            id,
-            namespace,
-            tenant,
-        } => run_resume(ops, id, namespace, tenant, format).await,
+        RecurringCommand::Pause { id } => run_pause(ops, id, format).await,
+        RecurringCommand::Resume { id } => run_resume(ops, id, format).await,
     }
 }
 
 async fn run_list(
     ops: &OpsClient,
-    namespace: &str,
-    tenant: &str,
     status: Option<&String>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let filter = RecurringFilter {
-        namespace: namespace.to_string(),
-        tenant: tenant.to_string(),
         status: status.cloned(),
         ..Default::default()
     };
@@ -170,14 +116,8 @@ async fn run_list(
     Ok(())
 }
 
-async fn run_get(
-    ops: &OpsClient,
-    id: &str,
-    namespace: &str,
-    tenant: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let resp = ops.get_recurring(id, namespace, tenant).await?;
+async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let resp = ops.get_recurring(id).await?;
     match resp {
         Some(detail) => match format {
             OutputFormat::Json => {
@@ -242,14 +182,8 @@ async fn run_update(
     Ok(())
 }
 
-async fn run_pause(
-    ops: &OpsClient,
-    id: &str,
-    namespace: &str,
-    tenant: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let resp = ops.pause_recurring(id, namespace, tenant).await?;
+async fn run_pause(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let resp = ops.pause_recurring(id).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);
@@ -261,14 +195,8 @@ async fn run_pause(
     Ok(())
 }
 
-async fn run_resume(
-    ops: &OpsClient,
-    id: &str,
-    namespace: &str,
-    tenant: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let resp = ops.resume_recurring(id, namespace, tenant).await?;
+async fn run_resume(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let resp = ops.resume_recurring(id).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);

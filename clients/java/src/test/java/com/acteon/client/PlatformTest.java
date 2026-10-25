@@ -98,9 +98,10 @@ class PlatformTest {
             } else exchange.sendResponseHeaders(204, -1);
             exchange.close();
         });
+        CredentialContextFixture.install(server, "n", "t");
         server.start();
         try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort())) {
-            client.deleteBusTopic("n", "t", "logs");
+            client.deleteBusTopic("logs");
             assertEquals(List.of("GET /v1/bus/topics", "DELETE /v1/bus/topics/actual.logs"), seen);
         } finally { server.stop(0); }
     }
@@ -118,14 +119,14 @@ class PlatformTest {
         });
         server.start();
         try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort())) {
-            client.setBusAgentAdminState("n", "t", "agent", new Bus.SetBusAgentAdminState("active"));
-            assertEquals("PUT /v1/bus/agents/n/t/agent/admin-state {\"admin_state\":\"active\"}", received.get());
+            client.setBusAgentAdminState("agent", new Bus.SetBusAgentAdminState("active"));
+            assertEquals("PUT /v1/bus/agents/agent/admin-state {\"admin_state\":\"active\"}", received.get());
         } finally { server.stop(0); }
         var mapper = JsonMapper.build();
         var sub = mapper.readValue("{\"id\":\"sub\",\"receipt_required\":true,\"consumer_group\":\"scoped\"}", Bus.BusSubscription.class);
         assertTrue(sub.receiptRequired());
         assertEquals("scoped", sub.consumerGroup());
-        var create = new Bus.CreateBusSubscription("sub", "n.t.logs", "n", "t", null, null, null, null, null, null, true);
+        var create = new Bus.CreateBusSubscription("sub", "n.t.logs", null, null, null, null, null, null, true);
         assertTrue(mapper.valueToTree(create).get("receipt_required").asBoolean());
     }
 }

@@ -82,8 +82,22 @@ const AgentDetail = lazyPage(() => import('./pages/AgentDetail'), 'AgentDetail')
 
 function App() {
   useEffect(() => {
+    const credential = localStorage.getItem('acteon-token')
+    const refreshCredential = () => {
+      if (localStorage.getItem('acteon-token') !== credential) {
+        disconnectEvents()
+        // Drop cached records and mounted forms before loading another tenant.
+        window.location.reload()
+      }
+    }
     connectEvents()
-    return () => disconnectEvents()
+    window.addEventListener('storage', refreshCredential)
+    window.addEventListener('focus', refreshCredential)
+    return () => {
+      disconnectEvents()
+      window.removeEventListener('storage', refreshCredential)
+      window.removeEventListener('focus', refreshCredential)
+    }
   }, [])
 
   return (
@@ -133,12 +147,12 @@ function App() {
           <Route path="swarm" element={<SwarmRuns />} />
           <Route path="bus" element={<Bus />} />
           <Route
-            path="bus/conversations/:namespace/:tenant/:id"
+            path="bus/conversations/:id"
             element={<BusConversation />}
           />
           <Route path="agents" element={<Agents />} />
           <Route
-            path="agents/:namespace/:tenant/:agentId"
+            path="agents/:agentId"
             element={<AgentDetail />}
           />
           <Route path="settings/*" element={<Settings />} />

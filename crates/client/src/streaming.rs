@@ -15,7 +15,7 @@ impl ActeonClient {
     /// use futures::StreamExt;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let filter = StreamFilter::new().namespace("notifications");
+    /// let filter = StreamFilter::new();
     ///
     /// let mut stream = client.stream(&filter).await?;
     /// while let Some(item) = stream.next().await {

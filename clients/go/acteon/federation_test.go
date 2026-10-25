@@ -67,9 +67,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 			response = wire["export_receipt"]
 		} else if strings.HasSuffix(r.URL.Path, "/capabilities") {
 			response = wire["signed_capability_card"]
-		} else if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
+		} else if r.URL.Path == "/a2a/federation/envelopes:import" {
 			response = wire["import_receipt"]
-		} else if r.URL.Path == "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
+		} else if r.URL.Path == "/a2a/federation/agents/maya/v1/message:send" {
 			response = json.RawMessage(`{"id":"federated-task","namespace":"prod","tenant":"acme"}`)
 		}
 		return &http.Response{
@@ -86,11 +86,11 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if _, err = client.RevokeFederationTrust(ctx, revocation); err != nil {
 		t.Fatal(err)
 	}
-	capability, err := client.FederationCapabilities(ctx, "prod", "acme", "maya")
+	capability, err := client.FederationCapabilities(ctx, "maya")
 	if err != nil || capability.Payload == "" {
 		t.Fatalf("unexpected capability card: %v (%v)", capability, err)
 	}
-	receipt, err := client.ImportFederationEnvelope(ctx, "prod", "acme", envelope)
+	receipt, err := client.ImportFederationEnvelope(ctx, envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	}
 	invocation := SignedFederationInvocationDeclaration{Payload: "signed-payload", Signature: string(bytes.Repeat([]byte("a"), 128))}
 	message := map[string]any{"messageId": "message-1", "role": "user", "parts": []any{map[string]any{"text": "inspect"}}}
-	task, err := client.InvokeFederatedAgent(ctx, "prod", "acme", "maya", invocation, message)
+	task, err := client.InvokeFederatedAgent(ctx, "maya", invocation, message)
 	if err != nil || task["id"] != "federated-task" {
 		t.Fatalf("unexpected federated task: %v (%v)", task, err)
 	}
@@ -108,18 +108,18 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	sourceTask := "11111111-1111-4111-8111-111111111111"
-	exported, err := client.ExportFederatedMessage(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage)
+	exported, err := client.ExportFederatedMessage(ctx, "maya", sourceTask, "remote-triage", exportMessage)
 	if err != nil || exported.AttemptStatus != "in_flight" {
 		t.Fatalf("unexpected export receipt: %v (%v)", exported, err)
 	}
-	if _, err = client.ObserveFederatedExport(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage); err != nil {
+	if _, err = client.ObserveFederatedExport(ctx, "maya", sourceTask, "remote-triage", exportMessage); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = client.ReplayFederatedExport(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage); err != nil {
+	if _, err = client.ReplayFederatedExport(ctx, "maya", sourceTask, "remote-triage", exportMessage); err != nil {
 		t.Fatal(err)
 	}
 	limit := 25
-	evidence, err := client.FederationDeliveryEvidence(ctx, "prod", "acme", nil, &limit)
+	evidence, err := client.FederationDeliveryEvidence(ctx, nil, &limit)
 	if err != nil || len(evidence.Deliveries) != 1 || evidence.Deliveries[0].MessageID != "export-message-1" || evidence.Deliveries[0].Capability == nil {
 		t.Fatalf("unexpected delivery evidence: %v (%v)", evidence, err)
 	}
@@ -127,7 +127,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if err != nil || abandoned.Status.Status != "abandoned" || abandoned.Status.Abandonment == nil {
 		t.Fatalf("unexpected abandonment evidence: %v (%v)", abandoned, err)
 	}
-	correlation, err := client.FederationFinalityCorrelation(ctx, "prod", "acme", evidence.Deliveries[0].DeliveryID)
+	correlation, err := client.FederationFinalityCorrelation(ctx, evidence.Deliveries[0].DeliveryID)
 	if err != nil || correlation.Stage != "import" {
 		t.Fatalf("unexpected finality correlation: %v (%v)", correlation, err)
 	}
@@ -135,11 +135,11 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if err != nil || reconciled.Status.Status != "rejected" || len(reconciled.Reconciliations) != 1 {
 		t.Fatalf("unexpected reconciled evidence: %v (%v)", reconciled, err)
 	}
-	if len(paths) != 12 || paths[2] != "/a2a/prod/acme/federation/agents/maya/capabilities" || paths[3] != "/a2a/prod/acme/federation/envelopes:import" || paths[4] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[8] != "/v1/governance/federation/deliveries" || paths[9] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" || !strings.HasSuffix(paths[10], "/correlation") || !strings.HasSuffix(paths[11], ":reconcile") {
+	if len(paths) != 12 || paths[2] != "/a2a/federation/agents/maya/capabilities" || paths[3] != "/a2a/federation/envelopes:import" || paths[4] != "/a2a/federation/agents/maya/v1/message:send" || paths[8] != "/v1/governance/federation/deliveries" || paths[9] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" || !strings.HasSuffix(paths[10], "/correlation") || !strings.HasSuffix(paths[11], ":reconcile") {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
 	for i, action := range []string{"send", "observe", "replay"} {
-		expected := "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:" + action
+		expected := "/a2a/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:" + action
 		if paths[i+5] != expected {
 			t.Fatalf("unexpected export path: %s", paths[i+5])
 		}
@@ -178,6 +178,10 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	if response := testIdentityResponse(request); response != nil {
+		return response, nil
+	}
+
 	return fn(request)
 }
 

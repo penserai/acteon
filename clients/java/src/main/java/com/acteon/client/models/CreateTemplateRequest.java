@@ -13,12 +13,6 @@ public class CreateTemplateRequest {
     @JsonProperty("name")
     private String name;
 
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
-
     @JsonProperty("content")
     private String content;
 
@@ -30,21 +24,14 @@ public class CreateTemplateRequest {
 
     public CreateTemplateRequest() {}
 
-    public CreateTemplateRequest(String name, String namespace, String tenant, String content) {
+    public CreateTemplateRequest(String name, String content) {
         this.name = name;
-        this.namespace = namespace;
-        this.tenant = tenant;
+
         this.content = content;
     }
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }

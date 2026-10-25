@@ -70,8 +70,6 @@ const col = createDataTableColumnHelper<Silence>()
 export function Silences() {
   const { toast } = useToast()
 
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [includeExpired, setIncludeExpired] = useState(false)
 
   const [showCreate, setShowCreate] = useState(false)
@@ -79,8 +77,6 @@ export function Silences() {
   const [expireTarget, setExpireTarget] = useState<Silence | null>(null)
 
   const { data: silences, isLoading } = useSilences({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     includeExpired,
   })
 
@@ -187,16 +183,6 @@ export function Silences() {
       />
 
       <div className={styles.filterRow}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
         <label className={styles.toggleLabel}>
           <Toggle checked={includeExpired} onChange={setIncludeExpired} label="Include expired" />
           Include expired
@@ -413,8 +399,6 @@ function SilenceCreateModal({
   onSubmit: (req: CreateSilenceRequest) => void
   loading: boolean
 }) {
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
   const [comment, setComment] = useState('')
   const [duration, setDuration] = useState('3600')
   const [matchers, setMatchers] = useState<SilenceMatcher[]>([
@@ -434,8 +418,6 @@ function SilenceCreateModal({
     setMatchers((prev) => prev.filter((_, i) => i !== index))
 
   const reset = () => {
-    setNamespace('')
-    setTenant('')
     setComment('')
     setDuration('3600')
     setMatchers([{ name: '', value: '', op: 'equal' }])
@@ -448,8 +430,6 @@ function SilenceCreateModal({
 
   const validMatchers = matchers.filter((m) => m.name.trim() !== '')
   const isValid =
-    namespace.trim() !== '' &&
-    tenant.trim() !== '' &&
     comment.trim() !== '' &&
     validMatchers.length > 0 &&
     Number.parseInt(duration, 10) > 0
@@ -471,8 +451,6 @@ function SilenceCreateModal({
             icon={<BellOff className="h-3.5 w-3.5" />}
             onClick={() =>
               onSubmit({
-                namespace: namespace.trim(),
-                tenant: tenant.trim(),
                 comment: comment.trim(),
                 duration_seconds: Number.parseInt(duration, 10),
                 matchers: validMatchers,
@@ -485,20 +463,6 @@ function SilenceCreateModal({
       }
     >
       <div className={shared.formSection}>
-        <div className={shared.formGrid}>
-          <Input
-            label="Namespace *"
-            value={namespace}
-            onChange={(e) => setNamespace(e.target.value)}
-            placeholder="prod"
-          />
-          <Input
-            label="Tenant *"
-            value={tenant}
-            onChange={(e) => setTenant(e.target.value)}
-            placeholder="acme"
-          />
-        </div>
 
         <Select
           label="Duration *"

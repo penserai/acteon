@@ -17,22 +17,13 @@ pub struct TopicsArgs {
 #[derive(Subcommand, Debug)]
 pub enum TopicsCommand {
     /// List bus topics, optionally filtered by namespace/tenant.
-    List {
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        tenant: Option<String>,
-    },
+    List {},
     /// Create a bus topic. Persists in Acteon state and creates the
     /// backing Kafka topic.
     Create {
         /// Logical topic name (Kafka name is `namespace.tenant.name`).
         #[arg(long)]
         name: String,
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         partitions: Option<i32>,
         #[arg(long)]
@@ -55,11 +46,6 @@ pub enum TopicsCommand {
         /// Either the full `namespace.tenant.name` form...
         #[arg(long)]
         topic: Option<String>,
-        /// ...or the three parts spelled out separately.
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        tenant: Option<String>,
         #[arg(long)]
         name: Option<String>,
         /// Partition key (Kafka routes by this).
@@ -77,11 +63,8 @@ pub enum TopicsCommand {
 #[allow(clippy::too_many_lines)]
 pub async fn run(ops: &OpsClient, args: &TopicsArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
-        TopicsCommand::List { namespace, tenant } => {
-            let filter = BusTopicFilter {
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
-            };
+        TopicsCommand::List {} => {
+            let filter = BusTopicFilter {};
             let resp = ops.client().list_bus_topics(&filter).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),
@@ -103,8 +86,7 @@ pub async fn run(ops: &OpsClient, args: &TopicsArgs, format: &OutputFormat) -> a
         }
         TopicsCommand::Create {
             name,
-            namespace,
-            tenant,
+
             partitions,
             replication_factor,
             retention_ms,
@@ -113,8 +95,7 @@ pub async fn run(ops: &OpsClient, args: &TopicsArgs, format: &OutputFormat) -> a
         } => {
             let req = CreateBusTopic {
                 name: name.clone(),
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
+
                 partitions: *partitions,
                 replication_factor: *replication_factor,
                 retention_ms: *retention_ms,
@@ -138,8 +119,7 @@ pub async fn run(ops: &OpsClient, args: &TopicsArgs, format: &OutputFormat) -> a
         }
         TopicsCommand::Publish {
             topic,
-            namespace,
-            tenant,
+
             name,
             key,
             payload,
@@ -148,8 +128,7 @@ pub async fn run(ops: &OpsClient, args: &TopicsArgs, format: &OutputFormat) -> a
             let payload = parse_json_arg(payload)?;
             let msg = PublishBusMessage {
                 topic: topic.clone(),
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
+
                 name: name.clone(),
                 key: key.clone(),
                 payload,

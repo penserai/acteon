@@ -12,7 +12,7 @@ export function useComplianceStatus() {
 
 export function useVerifyChain() {
   return useMutation({
-    mutationFn: (params: { namespace: string; tenant: string }) =>
-      apiPost<HashChainVerification>('/v1/compliance/verify-chain', params),
+    mutationFn: () =>
+      apiPost<HashChainVerification>('/v1/audit/verify', {}),
   })
 }

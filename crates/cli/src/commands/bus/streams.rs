@@ -22,10 +22,6 @@ pub enum StreamsCommand {
     /// Append a stream-chunk envelope.
     Chunk {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
         #[arg(long)]
         stream_id: String,
@@ -41,10 +37,6 @@ pub enum StreamsCommand {
     },
     /// Append the terminal `stream_end` marker.
     End {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         conversation_id: String,
         #[arg(long)]
@@ -65,10 +57,6 @@ pub enum StreamsCommand {
     /// --header 'accept: text/event-stream' "$(...)"` to tail it.
     ConsumeUrl {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
         #[arg(long)]
         stream_id: String,
@@ -76,10 +64,6 @@ pub enum StreamsCommand {
     /// Tail a single stream over SSE. Prints each chunk as JSONL on
     /// stdout and exits when the terminal `stream_end` lands.
     Tail {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         conversation_id: String,
         #[arg(long)]
@@ -108,8 +92,6 @@ impl From<StreamEndStatusKind> for BusStreamEndStatus {
 pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
         StreamsCommand::Chunk {
-            namespace,
-            tenant,
             conversation_id,
             stream_id,
             chunk_seq,
@@ -131,7 +113,7 @@ pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> 
             };
             let receipt = ops
                 .client()
-                .post_bus_stream_chunk(namespace, tenant, conversation_id, &req)
+                .post_bus_stream_chunk(conversation_id, &req)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&receipt)?),
@@ -146,8 +128,6 @@ pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> 
             }
         }
         StreamsCommand::End {
-            namespace,
-            tenant,
             conversation_id,
             stream_id,
             chunk_seq,
@@ -166,7 +146,7 @@ pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> 
             };
             let receipt = ops
                 .client()
-                .post_bus_stream_end(namespace, tenant, conversation_id, &req)
+                .post_bus_stream_end(conversation_id, &req)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&receipt)?),
@@ -180,27 +160,23 @@ pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> 
             }
         }
         StreamsCommand::ConsumeUrl {
-            namespace,
-            tenant,
             conversation_id,
             stream_id,
         } => {
-            let url =
-                ops.client()
-                    .bus_stream_consume_url(namespace, tenant, conversation_id, stream_id);
+            let url = ops
+                .client()
+                .bus_stream_consume_url(conversation_id, stream_id);
             // Print the URL to stdout so it can be piped without log
             // formatting noise.
             println!("{url}");
         }
         StreamsCommand::Tail {
-            namespace,
-            tenant,
             conversation_id,
             stream_id,
         } => {
             let mut stream = ops
                 .client()
-                .consume_bus_stream(namespace, tenant, conversation_id, stream_id)
+                .consume_bus_stream(conversation_id, stream_id)
                 .await?;
             while let Some(item) = stream.next().await {
                 match item? {

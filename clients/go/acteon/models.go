@@ -30,9 +30,8 @@ func NewAttachment(id, name, filename, contentType, dataBase64 string) Attachmen
 
 // Action represents an action to be dispatched through Acteon.
 type Action struct {
-	ID          string          `json:"id"`
-	Namespace   string          `json:"namespace"`
-	Tenant      string          `json:"tenant"`
+	ID string `json:"id"`
+
 	Provider    string          `json:"provider"`
 	ActionType  string          `json:"action_type"`
 	Payload     map[string]any  `json:"payload"`
@@ -68,11 +67,10 @@ func (m *ActionMetadata) UnmarshalJSON(data []byte) error {
 }
 
 // NewAction creates a new action with an auto-generated ID.
-func NewAction(namespace, tenant, provider, actionType string, payload map[string]any) *Action {
+func NewAction(provider, actionType string, payload map[string]any) *Action {
 	return &Action{
-		ID:         uuid.New().String(),
-		Namespace:  namespace,
-		Tenant:     tenant,
+		ID: uuid.New().String(),
+
 		Provider:   provider,
 		ActionType: actionType,
 		Payload:    payload,
@@ -565,8 +563,6 @@ type ReloadResult struct {
 // AuditPage back in here to fetch the next page in O(limit) time.
 // Treat the cursor as opaque.
 type AuditQuery struct {
-	Namespace  string
-	Tenant     string
 	Provider   string
 	ActionType string
 	Outcome    string
@@ -612,10 +608,8 @@ type AuditPage struct {
 
 // EventQuery contains query parameters for listing events.
 type EventQuery struct {
-	Namespace string
-	Tenant    string
-	Status    string
-	Limit     int
+	Status string
+	Limit  int
 }
 
 // EventState represents the current state of an event.
@@ -738,13 +732,13 @@ func (w *WebhookPayload) ToPayload() map[string]any {
 // This is a convenience function that constructs a properly formatted Action
 // for the webhook provider, wrapping the URL, method, headers, and body into
 // the payload.
-func NewWebhookAction(namespace, tenant, url string, body map[string]any) *Action {
+func NewWebhookAction(url string, body map[string]any) *Action {
 	payload := &WebhookPayload{
 		URL:    url,
 		Method: "POST",
 		Body:   body,
 	}
-	return NewAction(namespace, tenant, "webhook", "webhook", payload.ToPayload())
+	return NewAction("webhook", "webhook", payload.ToPayload())
 }
 
 // NewWebhookActionWithOptions creates a webhook Action with additional options.
@@ -755,7 +749,7 @@ func NewWebhookActionWithOptions(namespace, tenant, url, method string, body map
 		Body:    body,
 		Headers: headers,
 	}
-	return NewAction(namespace, tenant, "webhook", "webhook", payload.ToPayload())
+	return NewAction("webhook", "webhook", payload.ToPayload())
 }
 
 // WithWebhookMethod sets a custom HTTP method for a webhook action.
@@ -792,8 +786,6 @@ type ReplaySummary struct {
 
 // ReplayQuery contains query parameters for bulk audit replay.
 type ReplayQuery struct {
-	Namespace   string
-	Tenant      string
 	Provider    string
 	ActionType  string
 	Outcome     string
@@ -810,8 +802,6 @@ type ReplayQuery struct {
 
 // CreateRecurringAction is the request to create a recurring action.
 type CreateRecurringAction struct {
-	Namespace      string            `json:"namespace"`
-	Tenant         string            `json:"tenant"`
 	Provider       string            `json:"provider"`
 	ActionType     string            `json:"action_type"`
 	Payload        map[string]any    `json:"payload"`
@@ -836,11 +826,9 @@ type CreateRecurringResponse struct {
 
 // RecurringFilter contains query parameters for listing recurring actions.
 type RecurringFilter struct {
-	Namespace string
-	Tenant    string
-	Status    string
-	Limit     int
-	Offset    int
+	Status string
+	Limit  int
+	Offset int
 }
 
 // RecurringSummary is a summary of a recurring action in list responses.
@@ -890,8 +878,6 @@ type RecurringDetail struct {
 
 // UpdateRecurringAction is the request to update a recurring action.
 type UpdateRecurringAction struct {
-	Namespace      string            `json:"namespace"`
-	Tenant         string            `json:"tenant"`
 	Name           *string           `json:"name,omitempty"`
 	Payload        map[string]any    `json:"payload,omitempty"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
@@ -906,8 +892,6 @@ type UpdateRecurringAction struct {
 
 // RecurringLifecycleRequest is the body for pause/resume endpoints.
 type RecurringLifecycleRequest struct {
-	Namespace string `json:"namespace"`
-	Tenant    string `json:"tenant"`
 }
 
 // =============================================================================
@@ -922,9 +906,7 @@ type RecurringLifecycleRequest struct {
 // (and are enforced by) this policy. Generic and per-provider
 // policies may coexist for the same (Namespace, Tenant) pair.
 type CreateQuotaRequest struct {
-	Namespace string `json:"namespace"`
-	Tenant    string `json:"tenant"`
-	Provider  string `json:"provider,omitempty"`
+	Provider string `json:"provider,omitempty"`
 	// Principal is an optional caller-id scope. When empty, the
 	// policy applies to every caller. When set, only dispatches
 	// made by that caller (API key name or JWT subject) count
@@ -944,8 +926,6 @@ type CreateQuotaRequest struct {
 
 // UpdateQuotaRequest is the request to update a quota policy.
 type UpdateQuotaRequest struct {
-	Namespace       string  `json:"namespace"`
-	Tenant          string  `json:"tenant"`
 	MaxActions      *int64  `json:"max_actions,omitempty"`
 	Window          *string `json:"window,omitempty"`
 	OverageBehavior *string `json:"overage_behavior,omitempty"`
@@ -1018,8 +998,6 @@ type SilenceMatcher struct {
 // Either EndsAt or DurationSeconds must be supplied. When StartsAt
 // is zero/empty, the server uses its current time.
 type CreateSilenceRequest struct {
-	Namespace       string           `json:"namespace"`
-	Tenant          string           `json:"tenant"`
 	Matchers        []SilenceMatcher `json:"matchers"`
 	Comment         string           `json:"comment"`
 	StartsAt        *string          `json:"starts_at,omitempty"`
@@ -1087,9 +1065,8 @@ type TimeRange struct {
 
 // CreateTimeIntervalRequest is the body for POST /v1/time-intervals.
 type CreateTimeIntervalRequest struct {
-	Name        string      `json:"name"`
-	Namespace   string      `json:"namespace"`
-	Tenant      string      `json:"tenant"`
+	Name string `json:"name"`
+
 	TimeRanges  []TimeRange `json:"time_ranges"`
 	Location    *string     `json:"location,omitempty"`
 	Description *string     `json:"description,omitempty"`
@@ -1128,8 +1105,6 @@ type ListTimeIntervalsResponse struct {
 
 // CreateRetentionRequest is the request to create a retention policy.
 type CreateRetentionRequest struct {
-	Namespace            string            `json:"namespace"`
-	Tenant               string            `json:"tenant"`
 	AuditTTLSeconds      int64             `json:"audit_ttl_seconds"`
 	StateTTLSeconds      int64             `json:"state_ttl_seconds"`
 	EventTTLSeconds      int64             `json:"event_ttl_seconds"`
@@ -1278,8 +1253,6 @@ type DagResponse struct {
 
 // CancelChainRequest is the request body for cancelling a chain.
 type CancelChainRequest struct {
-	Namespace   string  `json:"namespace"`
-	Tenant      string  `json:"tenant"`
 	Reason      *string `json:"reason,omitempty"`
 	CancelledBy *string `json:"cancelled_by,omitempty"`
 }
@@ -1349,8 +1322,6 @@ type DlqDrainResponse struct {
 
 // EvaluateRulesRequest is the request body for rule evaluation.
 type EvaluateRulesRequest struct {
-	Namespace       string                 `json:"namespace"`
-	Tenant          string                 `json:"tenant"`
 	Provider        string                 `json:"provider"`
 	ActionType      string                 `json:"action_type"`
 	Payload         map[string]interface{} `json:"payload"`
@@ -1418,14 +1389,11 @@ type EvaluateRulesResponse struct {
 
 // SubscribeOptions contains optional parameters for the Subscribe method.
 type SubscribeOptions struct {
-	Namespace      *string
-	Tenant         *string
 	IncludeHistory *bool
 }
 
 // StreamOptions contains optional filter parameters for the Stream method.
 type StreamOptions struct {
-	Namespace   *string
 	ActionType  *string
 	Outcome     *string
 	EventType   *string
@@ -1544,10 +1512,8 @@ type HashChainVerification struct {
 
 // VerifyHashChainRequest is the request body for hash chain verification.
 type VerifyHashChainRequest struct {
-	Namespace string  `json:"namespace"`
-	Tenant    string  `json:"tenant"`
-	From      *string `json:"from,omitempty"`
-	To        *string `json:"to,omitempty"`
+	From *string `json:"from,omitempty"`
+	To   *string `json:"to,omitempty"`
 }
 
 // =============================================================================
@@ -1569,9 +1535,8 @@ type TemplateInfo struct {
 
 // CreateTemplateRequest is the request to create a payload template.
 type CreateTemplateRequest struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace"`
-	Tenant      string            `json:"tenant"`
+	Name string `json:"name"`
+
 	Content     string            `json:"content"`
 	Description string            `json:"description,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
@@ -1610,9 +1575,8 @@ type TemplateProfileInfo struct {
 
 // CreateProfileRequest is the request to create a template profile.
 type CreateProfileRequest struct {
-	Name        string                          `json:"name"`
-	Namespace   string                          `json:"namespace"`
-	Tenant      string                          `json:"tenant"`
+	Name string `json:"name"`
+
 	Fields      map[string]TemplateProfileField `json:"fields"`
 	Description string                          `json:"description,omitempty"`
 	Labels      map[string]string               `json:"labels,omitempty"`
@@ -1633,10 +1597,9 @@ type ListProfilesResponse struct {
 
 // RenderPreviewRequest is the request to render a template profile with payload data.
 type RenderPreviewRequest struct {
-	Profile   string         `json:"profile"`
-	Namespace string         `json:"namespace"`
-	Tenant    string         `json:"tenant"`
-	Payload   map[string]any `json:"payload"`
+	Profile string `json:"profile"`
+
+	Payload map[string]any `json:"payload"`
 }
 
 // RenderPreviewResponse is the response from rendering a template profile.
@@ -2017,10 +1980,8 @@ type AnalyticsQuery struct {
 	Metric string
 
 	// Namespace is an optional namespace filter.
-	Namespace string
 
 	// Tenant is an optional tenant filter.
-	Tenant string
 
 	// Provider is an optional provider filter.
 	Provider string
@@ -2385,10 +2346,8 @@ type CoverageEntry struct {
 
 // CoverageQuery holds options for a rule coverage analysis.
 type CoverageQuery struct {
-	Namespace string
-	Tenant    string
-	From      *time.Time
-	To        *time.Time
+	From *time.Time
+	To   *time.Time
 }
 
 // CoverageReport is the full rule coverage report.
@@ -2450,11 +2409,9 @@ type SwarmRunSnapshot struct {
 
 // SwarmRunFilter contains query parameters for ListSwarmRuns.
 type SwarmRunFilter struct {
-	Namespace string
-	Tenant    string
-	Status    string
-	Limit     int
-	Offset    int
+	Status string
+	Limit  int
+	Offset int
 }
 
 // ListSwarmRunsResponse is the response shape from GET /v1/swarm/runs.

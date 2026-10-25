@@ -59,6 +59,9 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
+            if let Err(response) = super::context::reject_scope_query(req.uri().query()) {
+                return Ok(response);
+            }
             let Some(provider) = provider else {
                 // Auth disabled: inject anonymous identity with full access.
                 req.extensions_mut().insert(CallerIdentity::anonymous());

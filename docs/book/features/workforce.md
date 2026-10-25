@@ -83,7 +83,7 @@ Existing protocol-8 authority records require the explicit reviewed
 
 ## API
 
-`GET /v1/workforce?namespace=prod&tenant=acme` returns your current management
+`GET /v1/workforce` returns your current management
 bounds, qualified routes and visible workforce records. Each record contains
 `value` and `revoked`. Inspection is filtered to your independent bounds.
 

@@ -1,5 +1,8 @@
 # REST API Reference
 
+Tenant context comes from the authenticated JWT or API key. Requests do not
+accept tenant selectors. See [credential-derived context](tenant-context.md).
+
 Acteon exposes a RESTful HTTP API via Axum with auto-generated OpenAPI/Swagger documentation.
 
 ## Base URL
@@ -96,8 +99,6 @@ Dispatch a single action through the gateway pipeline.
 
 ```json
 {
-  "namespace": "notifications",
-  "tenant": "tenant-1",
   "provider": "email",
   "action_type": "send_email",
   "payload": {
@@ -119,8 +120,6 @@ Dispatch a single action through the gateway pipeline.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | string | Yes | Logical namespace |
-| `tenant` | string | Yes | Tenant identifier |
 | `provider` | string | Yes | Target provider |
 | `action_type` | string | Yes | Action discriminator |
 | `payload` | object | Yes | Arbitrary JSON payload |
@@ -179,15 +178,11 @@ Supports the same `traceparent` and `tracestate` headers as the single dispatch 
 {
   "actions": [
     {
-      "namespace": "notifications",
-      "tenant": "tenant-1",
       "provider": "email",
       "action_type": "send_email",
       "payload": {"to": "alice@example.com"}
     },
     {
-      "namespace": "notifications",
-      "tenant": "tenant-1",
       "provider": "sms",
       "action_type": "send_sms",
       "payload": {"to": "+1234567890"}
@@ -273,8 +268,6 @@ Query audit records with filters.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `namespace` | string | Filter by namespace |
-| `tenant` | string | Filter by tenant |
 | `provider` | string | Filter by provider |
 | `action_type` | string | Filter by action type |
 | `outcome` | string | Filter by outcome |
@@ -310,13 +303,13 @@ Get a specific audit record.
 
 List events, optionally filtered by status.
 
-**Query Parameters:** `status`, `namespace`, `tenant`
+**Query Parameters:** `status`
 
 ### `GET /v1/events/{fingerprint}`
 
 Get event lifecycle state.
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
 ### `PUT /v1/events/{fingerprint}/transition`
 
@@ -326,9 +319,7 @@ Transition an event to a new state.
 
 ```json
 {
-  "to_state": "acknowledged",
-  "namespace": "monitoring",
-  "tenant": "tenant-1"
+  "to_state": "acknowledged"
 }
 ```
 
@@ -340,19 +331,19 @@ Transition an event to a new state.
 
 List pending approvals.
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
-### `POST /v1/approvals/{namespace}/{tenant}/{id}/approve`
+### `POST /v1/approvals/{id}/approve`
 
-Approve a pending action (requires HMAC signature).
+Approve a pending action (requires authenticated operator or admin access).
 
-**Query Parameters:** `sig`, `expires_at`, `kid` (optional)
+Send the operator JWT or service API key in the authorization header.
 
-### `POST /v1/approvals/{namespace}/{tenant}/{id}/reject`
+### `POST /v1/approvals/{id}/reject`
 
-Reject a pending action (requires HMAC signature).
+Reject a pending action (requires authenticated operator or admin access).
 
-**Query Parameters:** `sig`, `expires_at`, `kid` (optional)
+Send the operator JWT or service API key in the authorization header.
 
 ---
 
@@ -429,7 +420,6 @@ Subscribe to real-time action outcomes via Server-Sent Events (SSE).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `namespace` | string | Filter by namespace |
 | `action_type` | string | Filter by action type |
 | `outcome` | string | Filter by outcome category (`executed`, `suppressed`, `failed`, `throttled`, `rerouted`, `deduplicated`) |
 | `event_type` | string | Filter by event type (`action_dispatched`, `group_flushed`, `timeout`, `chain_advanced`, `approval_required`) |
@@ -471,7 +461,7 @@ data: {"id":"550e8400-...","timestamp":"2026-02-07T14:30:00Z","type":"action_dis
 
 ```bash
 curl -N -H "Authorization: Bearer <token>" \
-  "http://localhost:8080/v1/stream?namespace=alerts&outcome=failed"
+  "http://localhost:8080/v1/stream?outcome=failed"
 ```
 
 See [Event Streaming](../features/event-streaming.md) for full documentation.
@@ -488,8 +478,6 @@ Create a new recurring action.
 
 ```json
 {
-  "namespace": "notifications",
-  "tenant": "acme",
   "cron_expr": "0 9 * * MON-FRI",
   "timezone": "US/Eastern",
   "provider": "email",
@@ -518,21 +506,19 @@ Create a new recurring action.
 
 ### `GET /v1/recurring`
 
-List recurring actions for a namespace and tenant.
+List recurring actions in the credential context.
 
 **Query Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `namespace` | string | Yes | Filter by namespace |
-| `tenant` | string | Yes | Filter by tenant |
 | `enabled` | bool | No | Filter by enabled status |
 
 ### `GET /v1/recurring/{id}`
 
 Get a recurring action by ID.
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
 | Status | Description |
 |--------|-------------|
@@ -543,7 +529,7 @@ Get a recurring action by ID.
 
 Update a recurring action (partial update).
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
 | Status | Description |
 |--------|-------------|
@@ -555,7 +541,7 @@ Update a recurring action (partial update).
 
 Delete a recurring action.
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
 | Status | Description |
 |--------|-------------|
@@ -566,13 +552,13 @@ Delete a recurring action.
 
 Pause a recurring action (stops future executions).
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
 ### `POST /v1/recurring/{id}/resume`
 
 Resume a paused recurring action (recomputes next execution from now).
 
-**Query Parameters:** `namespace`, `tenant`
+Context is derived from the authenticated credential.
 
 See [Recurring Actions](../features/recurring-actions.md) for full documentation.
 
@@ -686,7 +672,7 @@ Revoke the current JWT token.
 
 ### `GET /v1/chains`
 
-List active and completed chains. Filters by `namespace`, `tenant`, and `status`.
+List active and completed chains. Filters by `status` within the credential context.
 
 ### `GET /v1/chains/{chain_id}`
 
@@ -756,7 +742,7 @@ Deliver an asynchronous external signal to a waiting execution.
 
 ## Agent Interop (A2A Protocol v1.0)
 
-### `POST /a2a/{namespace}/{tenant}`
+### `POST /a2a`
 
 A2A JSON-RPC 2.0 endpoint supporting the v1 `SendMessage`, `GetTask`,
 `ListTasks`, `CancelTask`, and `GetExtendedAgentCard` methods. `ListTasks`
@@ -765,7 +751,7 @@ history, and artifact selectors defined by A2A 1.0. The four v1 Task push
 notification configuration methods use schema-closed ProtoJSON and cursor
 pagination. Pre-1.0 slash-separated methods remain compatibility aliases.
 
-### `POST /a2a/{namespace}/{tenant}/agents/{agent}`
+### `POST /a2a/agents/{agent}`
 
 Official A2A 1.0 JSON-RPC bound to one configured agent service. `SendMessage`
 enters the governed execution runtime and `GetTask` revalidates the original
@@ -786,7 +772,7 @@ exact job receipt and therefore cannot enumerate sibling jobs that share their
 credential. Push methods remain unsupported and never fall back to the tenant
 Task engine.
 
-### `POST /a2a/{namespace}/{tenant}/v1/message:send`
+### `POST /a2a/v1/message:send`
 
 A2A REST binding for submitting agent messages and tasks. An
 `InputRequired` continuation must carry the current Task `taskId`, matching
@@ -795,19 +781,19 @@ A2A REST binding for submitting agent messages and tasks. An
 retries are safe. An expired challenge fails the still-paused Task. An
 `AuthRequired` Task cannot be authorized by message content.
 
-### `POST /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request`
+### `POST /a2a/agents/{agent}/v1/tasks/{id}/authorization:request`
 
 The authenticated recipient agent opens an `AuthRequired` challenge with an
 opaque `authorizationRequestId`. Acteon supplies the verifier, recipient,
 credential authority, audience, scopes, and TTL from the service binding.
 
-### `POST /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve`
+### `POST /a2a/agents/{agent}/v1/tasks/{id}/authorization:resolve`
 
 The authenticated original requester asks Acteon to verify the exact
 `challengeId`. The body contains no credential. A denial leaves the challenge
 pending; transient verifier failure returns `503` without changing task state.
 
-### `POST /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve`
+### `POST /a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve`
 
 The currently authenticated source agent asks the target host to resolve the
 accepted peer task's exact `challengeId`. The body contains no credential or
@@ -818,15 +804,15 @@ ambiguous response, the same request observes the target and can settle
 or failure after an ambiguous response remains `uncertain` because it cannot
 prove that authorization succeeded.
 
-### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`
+### `GET /a2a/v1/tasks/{id}`
 
 Retrieve task lifecycle status, output artifacts, and sub-task graphs.
 
-### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}/events`
+### `GET /a2a/v1/tasks/{id}/events`
 
 Server-Sent Events (SSE) stream of real-time task lifecycle transitions.
 
-### `GET /a2a/{namespace}/{tenant}/.well-known/agent-card.json`
+### `GET /a2a/.well-known/agent-card.json`
 
 Public A2A 1.0 ProtoJSON Agent Card discovery endpoint. Only a published
 JSON-RPC interface is advertised until the HTTP+JSON binding has its own v1
@@ -834,7 +820,7 @@ wire adapter and conformance gate. Push notifications follow the published
 capability after their v1 adapter passed external client conformance; streaming
 remains false until its v1 adapter passes the same gate.
 
-### `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`
+### `GET /a2a/.well-known/agent.json`
 
 Compatibility discovery endpoint returning Acteon's stored card or
 tenant-aggregated catalog.
@@ -855,7 +841,7 @@ Publish an event to a topic with JSON schema validation.
 
 Manage durable subscriptions with offset tracking.
 
-### `POST /v1/bus/subscriptions/{ns}/{tenant}/{id}/ack`
+### `POST /v1/bus/subscriptions/{id}/ack`
 
 Acknowledge processed message offset.
 
@@ -1005,17 +991,17 @@ Cancel an active swarm execution run.
 | `POST` | `/v1/queues/{queue}/poll` | Worker queue poll with lease |
 | `POST` | `/v1/queues/tasks/{id}/complete` | Complete worker task |
 | **A2A Protocol & Bus** |||
-| `POST` | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 endpoint |
-| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}` | Exact-agent A2A JSON-RPC through the governed execution runtime |
-| `POST` | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST message/task submit |
-| `GET` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}` | List current safe, source-authorized registry options; descriptions are untrusted and the result grants no authority |
-| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send` | Governed peer submission from an accepted agent task |
-| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh` | Revalidate authority and journal the latest accepted remote task snapshot |
-| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel` | Persist and deliver at most one governed remote cancellation; reconcile ambiguity by safe observation |
-| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send` | Persist and deliver one exact response to the remote task's active input challenge |
-| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve` | Persist an opaque remote authorization handoff and reconcile response loss without verifier replay |
-| `GET` | `/a2a/{ns}/{tenant}/v1/tasks/{id}` | A2A task details |
-| `GET` | `/a2a/{ns}/{tenant}/.well-known/agent.json` | Public A2A agent card discovery |
+| `POST` | `/a2a` | A2A JSON-RPC 2.0 endpoint |
+| `POST` | `/a2a/agents/{agent}` | Exact-agent A2A JSON-RPC through the governed execution runtime |
+| `POST` | `/a2a/v1/message:send` | A2A REST message/task submit |
+| `GET` | `/a2a/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}` | List current safe, source-authorized registry options; descriptions are untrusted and the result grants no authority |
+| `POST` | `/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send` | Governed peer submission from an accepted agent task |
+| `POST` | `/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh` | Revalidate authority and journal the latest accepted remote task snapshot |
+| `POST` | `/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel` | Persist and deliver at most one governed remote cancellation; reconcile ambiguity by safe observation |
+| `POST` | `/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send` | Persist and deliver one exact response to the remote task's active input challenge |
+| `POST` | `/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve` | Persist an opaque remote authorization handoff and reconcile response loss without verifier replay |
+| `GET` | `/a2a/v1/tasks/{id}` | A2A task details |
+| `GET` | `/a2a/.well-known/agent.json` | Authenticated A2A agent card discovery |
 | `GET` | `/v1/bus/topics` | List bus topics |
 | `POST` | `/v1/bus/publish` | Publish message to bus topic |
 | `GET` | `/v1/bus/subscriptions` | List durable subscriptions |
@@ -1037,8 +1023,8 @@ Cancel an active swarm execution run.
 | `GET` | `/v1/dlq/stats` | DLQ statistics |
 | `POST` | `/v1/dlq/drain` | Drain DLQ entries |
 | `GET` | `/v1/approvals` | List approvals |
-| `POST` | `/v1/approvals/{ns}/{tenant}/{id}/approve` | Approve action |
-| `POST` | `/v1/approvals/{ns}/{tenant}/{id}/reject` | Reject action |
+| `POST` | `/v1/approvals/{id}/approve` | Approve action |
+| `POST` | `/v1/approvals/{id}/reject` | Reject action |
 | `POST` | `/v1/recurring` | Create recurring action |
 | `GET` | `/v1/recurring` | List recurring actions |
 | `POST` | `/v1/auth/login` | Login |
@@ -1047,7 +1033,7 @@ Cancel an active swarm execution run.
 ## Explicit execution permits
 
 Independently authorized operators inspect and change workforce relationships
-through `GET /v1/workforce?namespace=...&tenant=...` and
+through `GET /v1/workforce` and
 `POST /v1/workforce/changes`. These endpoints use typed team, membership,
 ownership, assignment, mandate and represented-permit declarations. See
 [Agent workforce](../features/workforce.md) for all change kinds and current
@@ -1075,7 +1061,7 @@ A foreign peer authenticated as its configured local principal first obtains
 the capability card addressed to its configured foreign domain:
 
 ```text
-GET /a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities
+GET /a2a/federation/agents/{agent}/capabilities
 ```
 
 The response contains exact signed `payload` bytes and an Ed25519 `signature`.
@@ -1086,7 +1072,7 @@ short validity window. The caller cannot choose the audience.
 The peer submits exact signed authority bytes through:
 
 ```text
-POST /a2a/{namespace}/{tenant}/federation/envelopes:import
+POST /a2a/federation/envelopes:import
 ```
 
 The JSON body is `{"envelope":{"payload":"...","signature":"..."}}`.
@@ -1100,7 +1086,7 @@ identity and service-binding guarantees.
 To execute or replay an admitted message, the same configured peer calls:
 
 ```text
-POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send
+POST /a2a/federation/agents/{agent}/v1/message:send
 ```
 
 The body is
@@ -1112,7 +1098,7 @@ agent, import, signature or current binding is rejected.
 
 ## Historical provider executions
 
-Read `GET /v1/governance/executions/{execution_id}` with `namespace` and `tenant`
+Read `GET /v1/governance/executions/{execution_id}` using the authenticated credential
 query parameters. This is a provider execution UUID, which may differ from a
 chain execution ID. Authentication must produce Acteon's private middleware
 proof; caller-supplied actor or role labels do not authorize access.

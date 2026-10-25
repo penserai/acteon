@@ -12,31 +12,30 @@ use super::schemas::ErrorResponse;
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 
-/// `403` for a caller that is not fully unrestricted. The DLQ is a single
-/// global queue and the gateway offers no per-scope draining; each entry
-/// exposes its namespace, tenant, and provider. A caller may therefore only
-/// touch it if it holds a grant that is wildcard on EVERY one of those
-/// dimensions — a wildcard *tenant* grant that is still namespace- or
-/// provider-scoped must not pass, or it would read entries for namespaces /
-/// providers it holds no grant for.
-fn require_global_access(identity: &CallerIdentity) -> Option<axum::response::Response> {
-    let unrestricted = identity.allowed_tenants().is_none()
-        && identity.allowed_namespaces().is_none()
-        && identity.allowed_providers().is_none();
-    if !unrestricted {
-        return Some(
-            (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!(ErrorResponse {
-                    error: "the dead-letter queue spans all tenants, namespaces, and \
-                            providers; access requires fully unrestricted (wildcard) grants"
-                        .into(),
-                })),
-            )
-                .into_response(),
-        );
+fn selection(identity: &CallerIdentity) -> acteon_executor::DeadLetterSelection {
+    let operations = identity
+        .grants
+        .iter()
+        .filter(|grant| {
+            crate::auth::config::tenant_matches(&grant.tenants, &identity.scope.tenant)
+                && grant
+                    .namespaces
+                    .iter()
+                    .any(|n| n == "*" || n == &identity.scope.namespace)
+        })
+        .flat_map(|grant| {
+            grant.providers.iter().flat_map(|provider| {
+                grant
+                    .actions
+                    .iter()
+                    .map(move |action| (provider.clone(), action.clone()))
+            })
+        })
+        .collect();
+    acteon_executor::DeadLetterSelection {
+        scope: identity.scope.clone(),
+        operations,
     }
-    None
 }
 
 /// Response for DLQ stats endpoint.
@@ -104,22 +103,22 @@ pub async fn dlq_stats(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
 ) -> impl IntoResponse {
-    if let Some(resp) = require_global_access(&identity) {
-        return resp;
-    }
     let gw = state.gateway.read().await;
     let enabled = gw.dlq_enabled();
-    let count = gw.dlq_len().await.unwrap_or(0);
+    let count = gw
+        .dlq_len_selected(&selection(&identity))
+        .await
+        .unwrap_or(0);
     (StatusCode::OK, Json(DlqStatsResponse { enabled, count })).into_response()
 }
 
-/// `POST /v1/dlq/drain` -- drain all entries from the dead-letter queue.
+/// `POST /v1/dlq/drain` -- drain authorized entries from the dead-letter queue.
 #[utoipa::path(
     post,
     path = "/v1/dlq/drain",
     tag = "DLQ",
     summary = "Drain DLQ entries",
-    description = "Removes and returns all entries from the dead-letter queue. Use this to retrieve failed actions for manual processing or resubmission.",
+    description = "Removes and returns authorized entries from the dead-letter queue. Use this to retrieve failed actions for manual processing or resubmission.",
     responses(
         (status = 200, description = "Drained entries", body = DlqDrainResponse),
         (status = 404, description = "DLQ not enabled", body = ErrorResponse)
@@ -129,8 +128,7 @@ pub async fn dlq_drain(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
 ) -> impl IntoResponse {
-    // Draining is a destructive, cross-tenant operation: require a write
-    // role and unrestricted tenant access.
+    // Draining changes only entries authorized by this credential.
     if !identity.role.has_permission(Permission::Dispatch) {
         return (
             StatusCode::FORBIDDEN,
@@ -139,9 +137,6 @@ pub async fn dlq_drain(
             })),
         )
             .into_response();
-    }
-    if let Some(resp) = require_global_access(&identity) {
-        return resp;
     }
 
     let gw = state.gateway.read().await;
@@ -157,7 +152,7 @@ pub async fn dlq_drain(
     }
 
     let entries: Vec<DlqEntry> = gw
-        .dlq_drain()
+        .dlq_drain_selected(&selection(&identity))
         .await
         .into_iter()
         .map(|e| DlqEntry {

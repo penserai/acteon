@@ -94,23 +94,15 @@ public final class Queues {
      * Request body for enqueueing a task
      * ({@code POST /v1/queues/{queue}/tasks}).
      *
-     * @param namespace namespace scoping the task
-     * @param tenant tenant scoping the task
      * @param actionType drives worker handler dispatch
      * @param payload arbitrary JSON payload delivered to the worker
      * @param maxAttempts maximum number of delivery attempts (server
      *     default 3 when null)
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record EnqueueTaskRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("action_type") String actionType,
-        Object payload,
-        @JsonProperty("max_attempts") Integer maxAttempts
-    ) {
-        public EnqueueTaskRequest(String namespace, String tenant, String actionType, Object payload) {
-            this(namespace, tenant, actionType, payload, null);
+    public record EnqueueTaskRequest(@JsonProperty("action_type") String actionType, Object payload, @JsonProperty("max_attempts") Integer maxAttempts) {
+        public EnqueueTaskRequest(String actionType, Object payload) {
+            this(actionType, payload, null);
         }
     }
 
@@ -118,8 +110,6 @@ public final class Queues {
      * Request body for polling a queue
      * ({@code POST /v1/queues/{queue}/poll}).
      *
-     * @param namespace namespace scoping the poll
-     * @param tenant tenant scoping the poll
      * @param maxTasks maximum number of tasks to lease in one poll
      *     (server default 1 when null)
      * @param leaseSeconds lease duration in seconds (server default
@@ -127,15 +117,9 @@ public final class Queues {
      * @param workerId identifies the polling worker (for observability)
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record PollTasksRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("max_tasks") Integer maxTasks,
-        @JsonProperty("lease_seconds") Integer leaseSeconds,
-        @JsonProperty("worker_id") String workerId
-    ) {
-        public PollTasksRequest(String namespace, String tenant) {
-            this(namespace, tenant, null, null, null);
+    public record PollTasksRequest(@JsonProperty("max_tasks") Integer maxTasks, @JsonProperty("lease_seconds") Integer leaseSeconds, @JsonProperty("worker_id") String workerId) {
+        public PollTasksRequest() {
+            this(null, null, null);
         }
     }
 
@@ -143,21 +127,14 @@ public final class Queues {
      * Request body for extending a task lease
      * ({@code POST /v1/queues/tasks/{taskId}/heartbeat}).
      *
-     * @param namespace namespace scoping the task
-     * @param tenant tenant scoping the task
      * @param leaseToken lease token returned by poll
      * @param extendSeconds new lease duration in seconds from now
      *     (server default 60 when null)
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record HeartbeatTaskRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("lease_token") String leaseToken,
-        @JsonProperty("extend_seconds") Integer extendSeconds
-    ) {
-        public HeartbeatTaskRequest(String namespace, String tenant, String leaseToken) {
-            this(namespace, tenant, leaseToken, null);
+    public record HeartbeatTaskRequest(@JsonProperty("lease_token") String leaseToken, @JsonProperty("extend_seconds") Integer extendSeconds) {
+        public HeartbeatTaskRequest(String leaseToken) {
+            this(leaseToken, null);
         }
     }
 
@@ -165,8 +142,6 @@ public final class Queues {
      * Request body for completing a task
      * ({@code POST /v1/queues/tasks/{taskId}/complete}).
      *
-     * @param namespace namespace scoping the task
-     * @param tenant tenant scoping the task
      * @param leaseToken lease token returned by poll
      * @param result task result. For chain worker steps this becomes
      *     the step's response body; for workflow tasks it carries the
@@ -174,19 +149,12 @@ public final class Queues {
      *     the server defaults the result to JSON {@code null}.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record CompleteTaskRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("lease_token") String leaseToken,
-        Object result
-    ) {}
+    public record CompleteTaskRequest(@JsonProperty("lease_token") String leaseToken, Object result) {}
 
     /**
      * Request body for failing a task
      * ({@code POST /v1/queues/tasks/{taskId}/fail}).
      *
-     * @param namespace namespace scoping the task
-     * @param tenant tenant scoping the task
      * @param leaseToken lease token returned by poll
      * @param error error message
      * @param retryable whether the failure is retryable. Retryable
@@ -194,13 +162,7 @@ public final class Queues {
      *     backoff; non-retryable failures are terminal.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record FailTaskRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("lease_token") String leaseToken,
-        String error,
-        boolean retryable
-    ) {}
+    public record FailTaskRequest(@JsonProperty("lease_token") String leaseToken, String error, boolean retryable) {}
 
     // =========================================================================
     // Response envelopes

@@ -18,7 +18,7 @@ it("preserves credentials and body while serializing explicit permit revisions",
     return new Response(JSON.stringify(url.endsWith("/batch") ? ["Deduplicated"] : "Deduplicated"));
   });
   const client = new ActeonClient("http://localhost", {apiKey: "test-key"});
-  const action = createAction("prod", "acme", "incident", "execute", {incident: 42});
+  const action = createAction("incident", "execute", {incident: 42});
   await client.dispatch(action);
   await client.dispatch(action, {permits});
   await client.dispatchBatch([action], {permits});
@@ -29,7 +29,7 @@ it("preserves credentials and body while serializing explicit permit revisions",
 
 it("preserves single and batch HTTP refusals without retries", async () => {
   const client = new ActeonClient("http://localhost");
-  const action = createAction("prod", "acme", "incident", "execute", {});
+  const action = createAction("incident", "execute", {});
   for (const status of [400, 403, 409]) {
     const fetch = vi.fn(async () => new Response('{"error":"permit refused"}', {status}));
     vi.stubGlobal("fetch", fetch);

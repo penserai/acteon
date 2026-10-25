@@ -67,8 +67,6 @@ impl ActeonClient {
     /// Enqueue a task on a named worker queue.
     pub async fn enqueue_task(
         &self,
-        namespace: &str,
-        tenant: &str,
         queue: &str,
         action_type: &str,
         payload: Value,
@@ -76,8 +74,7 @@ impl ActeonClient {
     ) -> Result<WorkerTask, Error> {
         let url = format!("{}/v1/queues/{queue}/tasks", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "action_type": action_type,
             "payload": payload,
             "max_attempts": max_attempts,
@@ -88,15 +85,12 @@ impl ActeonClient {
     /// Lease pending tasks from a queue.
     pub async fn poll_tasks(
         &self,
-        namespace: &str,
-        tenant: &str,
         queue: &str,
         options: &PollOptions,
     ) -> Result<Vec<WorkerTask>, Error> {
         let url = format!("{}/v1/queues/{queue}/poll", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "max_tasks": options.max_tasks,
             "lease_seconds": options.lease_seconds,
             "worker_id": options.worker_id,
@@ -108,16 +102,13 @@ impl ActeonClient {
     /// Extend the lease on a task.
     pub async fn heartbeat_task(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
         lease_token: &str,
         extend_seconds: Option<u64>,
     ) -> Result<WorkerTask, Error> {
         let url = format!("{}/v1/queues/tasks/{task_id}/heartbeat", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "lease_token": lease_token,
             "extend_seconds": extend_seconds,
         });
@@ -127,16 +118,13 @@ impl ActeonClient {
     /// Complete a leased task with a result.
     pub async fn complete_task(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
         lease_token: &str,
         result: Value,
     ) -> Result<WorkerTask, Error> {
         let url = format!("{}/v1/queues/tasks/{task_id}/complete", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "lease_token": lease_token,
             "result": result,
         });
@@ -147,8 +135,6 @@ impl ActeonClient {
     /// re-queued with backoff.
     pub async fn fail_task(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
         lease_token: &str,
         error: &str,
@@ -156,8 +142,7 @@ impl ActeonClient {
     ) -> Result<WorkerTask, Error> {
         let url = format!("{}/v1/queues/tasks/{task_id}/fail", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "lease_token": lease_token,
             "error": error,
             "retryable": retryable,
@@ -166,16 +151,10 @@ impl ActeonClient {
     }
 
     /// Get a worker task by ID.
-    pub async fn get_task(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        task_id: &str,
-    ) -> Result<WorkerTask, Error> {
+    pub async fn get_task(&self, task_id: &str) -> Result<WorkerTask, Error> {
         let url = format!("{}/v1/queues/tasks/{task_id}", self.base_url);
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -196,13 +175,11 @@ impl ActeonClient {
     /// List tasks on a queue, optionally filtered by status.
     pub async fn list_tasks(
         &self,
-        namespace: &str,
-        tenant: &str,
         queue: &str,
         status: Option<&str>,
     ) -> Result<Vec<WorkerTask>, Error> {
         let url = format!("{}/v1/queues/{queue}/tasks", self.base_url);
-        let mut query: Vec<(&str, &str)> = vec![("namespace", namespace), ("tenant", tenant)];
+        let mut query: Vec<(&str, &str)> = vec![];
         if let Some(s) = status {
             query.push(("status", s));
         }

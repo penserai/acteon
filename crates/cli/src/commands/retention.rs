@@ -14,14 +14,7 @@ pub struct RetentionArgs {
 #[derive(Subcommand, Debug)]
 pub enum RetentionCommand {
     /// List retention policies.
-    List {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
-    },
+    List {},
     /// Get a retention policy by ID.
     Get {
         /// Retention policy ID.
@@ -63,10 +56,8 @@ pub async fn run(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        RetentionCommand::List { namespace, tenant } => {
-            let resp = ops
-                .list_retention(namespace.clone(), tenant.clone())
-                .await?;
+        RetentionCommand::List {} => {
+            let resp = ops.list_retention().await?;
             match format {
                 OutputFormat::Json => {
                     info!("{}", serde_json::to_string_pretty(&resp)?);

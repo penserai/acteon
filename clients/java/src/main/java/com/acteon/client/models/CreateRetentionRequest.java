@@ -22,11 +22,6 @@ public class CreateRetentionRequest {
     private Long cdcArchiveTtlSeconds;
     public Long getCdcArchiveTtlSeconds() { return cdcArchiveTtlSeconds; }
     public void setCdcArchiveTtlSeconds(Long value) { this.cdcArchiveTtlSeconds = value; }
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     @JsonProperty("audit_ttl_seconds")
     private Long auditTtlSeconds;
@@ -47,17 +42,6 @@ public class CreateRetentionRequest {
     private Map<String, String> labels;
 
     public CreateRetentionRequest() {}
-
-    public CreateRetentionRequest(String namespace, String tenant) {
-        this.namespace = namespace;
-        this.tenant = tenant;
-    }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public Long getAuditTtlSeconds() { return auditTtlSeconds; }
     public void setAuditTtlSeconds(Long auditTtlSeconds) { this.auditTtlSeconds = auditTtlSeconds; }

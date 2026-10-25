@@ -31,8 +31,8 @@ test.describe('Dispatch', () => {
   })
 
   test('form fields are present', async ({ page }) => {
-    await expect(page.getByLabel('Namespace *')).toBeVisible()
-    await expect(page.getByLabel('Tenant *')).toBeVisible()
+    await expect(page.getByLabel('Namespace *')).toHaveCount(0)
+    await expect(page.getByLabel('Tenant *')).toHaveCount(0)
     await expect(page.getByLabel('Provider *')).toBeVisible()
     await expect(page.getByLabel('Action Type *')).toBeVisible()
   })
@@ -61,8 +61,7 @@ test.describe('Dispatch', () => {
   })
 
   test('dispatch button becomes enabled when required fields are filled', async ({ page }) => {
-    await fillField(page, 'Namespace *', 'production')
-    await fillField(page, 'Tenant *', 'acme')
+
     await fillField(page, 'Provider *', 'slack')
     await fillField(page, 'Action Type *', 'send_message')
 
@@ -71,8 +70,7 @@ test.describe('Dispatch', () => {
   })
 
   test('form submission works with dry run', async ({ page }) => {
-    await fillField(page, 'Namespace *', 'production')
-    await fillField(page, 'Tenant *', 'acme')
+
     await fillField(page, 'Provider *', 'slack')
     await fillField(page, 'Action Type *', 'send_message')
 
@@ -90,8 +88,7 @@ test.describe('Dispatch', () => {
   })
 
   test('invalid JSON shows error', async ({ page }) => {
-    await fillField(page, 'Namespace *', 'production')
-    await fillField(page, 'Tenant *', 'acme')
+
     await fillField(page, 'Provider *', 'slack')
     await fillField(page, 'Action Type *', 'send_message')
 

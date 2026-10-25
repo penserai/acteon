@@ -3,8 +3,9 @@
 //! Replay actions from the audit trail by reconstructing the original action
 //! from the stored payload and dispatching it through the gateway pipeline.
 
+use crate::auth::context::ScopedQuery;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use futures::stream::{self, StreamExt};
@@ -262,16 +263,14 @@ pub struct ReplayQuery {
     summary = "Bulk replay actions from audit trail",
     description = "Queries the audit trail with the given filters and replays each action that has a stored payload. Actions are dispatched through the full gateway pipeline with new IDs.",
     params(
-        ("namespace" = Option<String>, Query, description = "Filter by namespace"),
-        ("tenant" = Option<String>, Query, description = "Filter by tenant"),
-        ("provider" = Option<String>, Query, description = "Filter by provider"),
-        ("action_type" = Option<String>, Query, description = "Filter by action type"),
-        ("outcome" = Option<String>, Query, description = "Filter by outcome"),
-        ("verdict" = Option<String>, Query, description = "Filter by verdict"),
-        ("matched_rule" = Option<String>, Query, description = "Filter by matched rule name"),
-        ("from" = Option<String>, Query, description = "Start of time range (RFC 3339)"),
-        ("to" = Option<String>, Query, description = "End of time range (RFC 3339)"),
-        ("limit" = Option<u32>, Query, description = "Max records to replay (default 50, max 1000)"),
+        ("provider" = Option<String>, description = "Filter by provider"),
+        ("action_type" = Option<String>, description = "Filter by action type"),
+        ("outcome" = Option<String>, description = "Filter by outcome"),
+        ("verdict" = Option<String>, description = "Filter by verdict"),
+        ("matched_rule" = Option<String>, description = "Filter by matched rule name"),
+        ("from" = Option<String>, description = "Start of time range (RFC 3339)"),
+        ("to" = Option<String>, description = "End of time range (RFC 3339)"),
+        ("limit" = Option<u32>, description = "Max records to replay (default 50, max 1000)"),
     ),
     responses(
         (status = 200, description = "Replay summary", body = ReplaySummary),
@@ -282,7 +281,7 @@ pub struct ReplayQuery {
 pub async fn replay_audit(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(query): Query<ReplayQuery>,
+    ScopedQuery(query): ScopedQuery<ReplayQuery>,
 ) -> impl IntoResponse {
     // Check role permission.
     if !identity.role.has_permission(Permission::Dispatch) {

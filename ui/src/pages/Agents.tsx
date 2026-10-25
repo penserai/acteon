@@ -65,15 +65,11 @@ const ch = createDataTableColumnHelper<BusAgent>()
 
 export function Agents() {
   const navigate = useNavigate()
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
   const [adminState, setAdminState] = useState('')
   const [capabilityFilter, setCapabilityFilter] = useState('')
   const [registerOpen, setRegisterOpen] = useState(false)
 
   const { data: rawAgents, isLoading } = useBusAgents({
-    namespace: namespace || undefined,
-    tenant: tenant || undefined,
     admin_state: adminState || undefined,
   })
 
@@ -152,16 +148,6 @@ export function Agents() {
       />
 
       <div className={shared.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={namespace}
-          onChange={(e) => setNamespace(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
         <Select
           options={ADMIN_OPTIONS}
           value={adminState}
@@ -182,7 +168,7 @@ export function Agents() {
         emptyDescription="No agents match the current filters. Register one with the button above, or relax the scope filters."
         onRowClick={(row) =>
           navigate(
-            `/agents/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.tenant)}/${encodeURIComponent(row.agent_id)}`,
+            `/agents/${encodeURIComponent(row.agent_id)}`,
           )
         }
       />
@@ -190,11 +176,9 @@ export function Agents() {
       <RegisterAgentModal
         open={registerOpen}
         onClose={() => setRegisterOpen(false)}
-        defaultNamespace={namespace}
-        defaultTenant={tenant}
         onRegistered={(a) =>
           navigate(
-            `/agents/${encodeURIComponent(a.namespace)}/${encodeURIComponent(a.tenant)}/${encodeURIComponent(a.agent_id)}`,
+            `/agents/${encodeURIComponent(a.agent_id)}`,
           )
         }
       />
@@ -207,21 +191,15 @@ export function Agents() {
 function RegisterAgentModal({
   open,
   onClose,
-  defaultNamespace,
-  defaultTenant,
   onRegistered,
 }: {
   open: boolean
   onClose: () => void
-  defaultNamespace: string
-  defaultTenant: string
   onRegistered: (a: BusAgent) => void
 }) {
   const { toast } = useToast()
   const register = useRegisterBusAgent()
   const [agentId, setAgentId] = useState('')
-  const [namespace, setNamespace] = useState(defaultNamespace)
-  const [tenant, setTenant] = useState(defaultTenant)
   const [displayName, setDisplayName] = useState('')
   const [capabilities, setCapabilities] = useState('')
   const [inboxTopic, setInboxTopic] = useState('')
@@ -229,8 +207,6 @@ function RegisterAgentModal({
 
   function reset() {
     setAgentId('')
-    setNamespace(defaultNamespace)
-    setTenant(defaultTenant)
     setDisplayName('')
     setCapabilities('')
     setInboxTopic('')
@@ -240,8 +216,6 @@ function RegisterAgentModal({
   function submit() {
     const req: RegisterBusAgentReq = {
       agent_id: agentId.trim(),
-      namespace: namespace.trim(),
-      tenant: tenant.trim(),
       display_name: displayName.trim() || undefined,
       capabilities: capabilities
         .split(',')
@@ -273,7 +247,7 @@ function RegisterAgentModal({
           </Button>
           <Button
             onClick={submit}
-            disabled={!agentId || !namespace || !tenant || register.isPending}
+            disabled={!agentId || register.isPending}
           >
             {register.isPending ? 'Registering…' : 'Register'}
           </Button>
@@ -285,16 +259,6 @@ function RegisterAgentModal({
           <span>Agent ID</span>
           <Input value={agentId} onChange={(e) => setAgentId(e.target.value)} placeholder="planner-01" />
         </label>
-        <div className={styles.formRow}>
-          <label>
-            <span>Namespace</span>
-            <Input value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="demo" />
-          </label>
-          <label>
-            <span>Tenant</span>
-            <Input value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder="acme" />
-          </label>
-        </div>
         <label>
           <span>Display name</span>
           <Input

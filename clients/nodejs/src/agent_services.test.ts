@@ -1,3 +1,4 @@
+import { credentialFetch } from "./test_identity.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ActeonClient } from "./client.js";
@@ -8,7 +9,7 @@ afterEach(() => vi.unstubAllGlobals());
 it("streams official exact-agent A2A frames with host-owned provenance", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   const fetch = vi.fn(async (input: string, init: RequestInit) => {
-    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(input).toBe("http://acteon/a2a/agents/notifier");
     expect(init.redirect).toBe("error");
     const headers = init.headers as Record<string, string>;
     expect(headers.Accept).toBe("text/event-stream");
@@ -31,10 +32,10 @@ it("streams official exact-agent A2A frames with host-owned provenance", async (
       },
     });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const client = new ActeonClient("http://acteon", { apiKey: "caller-key" });
   const sent = [];
-  for await (const frame of client.agentServiceSendStreamingMessage("prod", "acme", "notifier", { messageId: "m1" })) sent.push(frame);
+  for await (const frame of client.agentServiceSendStreamingMessage("notifier", { messageId: "m1" })) sent.push(frame);
   const subscribed = [];
   for await (const frame of client.agentServiceSubscribeTask(source)) subscribed.push(frame);
   expect(sent).toEqual([{ result: { task: { id: "job-1" } }, sourceContext: source.sourceContext }]);
@@ -43,12 +44,12 @@ it("streams official exact-agent A2A frames with host-owned provenance", async (
 });
 
 it("rejects a mismatched A2A stream request identity", async () => {
-  vi.stubGlobal("fetch", async () => new Response(
+  vi.stubGlobal("fetch", credentialFetch(async () => new Response(
     'data: {"jsonrpc":"2.0","id":"foreign","result":{}}\n\n',
     { headers: { "a2a-version": "1.0", "content-type": "text/event-stream", [AGENT_SOURCE_CONTEXT_HEADER]: fixture.jobs[0].source_context } },
-  ));
+  )));
   const consume = async () => {
-    for await (const _frame of new ActeonClient("http://acteon").agentServiceSendStreamingMessage("prod", "acme", "notifier", { messageId: "m1" })) { /* consume */ }
+    for await (const _frame of new ActeonClient("http://acteon").agentServiceSendStreamingMessage("notifier", { messageId: "m1" })) { /* consume */ }
   };
   await expect(consume()).rejects.toThrow("request identity mismatch");
 });
@@ -56,14 +57,14 @@ it("rejects a mismatched A2A stream request identity", async () => {
 it("requests official exact-agent cancellation with retained source provenance", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   const fetch = vi.fn(async (input: string, init: RequestInit) => {
-    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(input).toBe("http://acteon/a2a/agents/notifier");
     expect(init.redirect).toBe("error");
     expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ jsonrpc: "2.0", id: "cancel:job-1", method: "CancelTask", params: { id: "job-1" } });
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { id: "job-1", status: { state: "TASK_STATE_CANCELED" }, metadata: { acteonCancellation: { state: "confirmed" } } } }), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const task = await new ActeonClient("http://acteon").agentServiceCancelTask(source);
   expect(task.id).toBe("job-1");
   expect((task.metadata as { acteonCancellation: { state: string } }).acteonCancellation.state).toBe("confirmed");
@@ -73,7 +74,7 @@ it("requests official exact-agent cancellation with retained source provenance",
 it("lists exact-agent tasks with a typed filter-bound page", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   const fetch = vi.fn(async (input: string, init: RequestInit) => {
-    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(input).toBe("http://acteon/a2a/agents/notifier");
     expect(init.redirect).toBe("error");
     expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
     const body = JSON.parse(init.body as string);
@@ -83,8 +84,8 @@ it("lists exact-agent tasks with a typed filter-bound page", async () => {
       result: { tasks: [{ id: "job-1", status: { state: "TASK_STATE_WORKING" } }], nextPageToken: "next-1", pageSize: 1, totalSize: 2 },
     }), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
-  const page = await new ActeonClient("http://acteon").agentServiceListTasks("prod", "acme", "notifier", {
+  vi.stubGlobal("fetch", credentialFetch(fetch));
+  const page = await new ActeonClient("http://acteon").agentServiceListTasks("notifier", {
     source, status: "TASK_STATE_WORKING", pageSize: 1,
   });
   expect(page.tasks[0]?.id).toBe("job-1");
@@ -97,7 +98,7 @@ it("manages exact-agent push configurations with task-bound typed responses", as
   const stored = { id: "push-1", taskId: "job-1", url: "https://hooks.example/a2a", tokenRef: { provider: "vault", key: "callbacks/token", version: "v2" }, authentication: { scheme: "Bearer", credentialsRef: { provider: "vault", key: "callbacks/auth", version: "v2" } } };
   const methods: string[] = [];
   const fetch = vi.fn(async (input: string, init: RequestInit) => {
-    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(input).toBe("http://acteon/a2a/agents/notifier");
     expect(init.redirect).toBe("error");
     expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
     const body = JSON.parse(init.body as string);
@@ -108,17 +109,17 @@ it("manages exact-agent push configurations with task-bound typed responses", as
       : body.method === "DeleteTaskPushNotificationConfig" ? {} : stored;
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const client = new ActeonClient("http://acteon");
-  const created = await client.agentServiceCreatePushConfig("prod", "acme", "notifier", "job-1", { id: "push-1", url: stored.url, tokenRef: stored.tokenRef, authentication: stored.authentication }, source);
+  const created = await client.agentServiceCreatePushConfig("notifier", "job-1", { id: "push-1", url: stored.url, tokenRef: stored.tokenRef, authentication: stored.authentication }, source);
   expect(created.authentication?.credentialsRef?.key).toBe("callbacks/auth");
   expect(created.tokenRef?.version).toBe("v2");
-  expect((await client.agentServiceGetPushConfig("prod", "acme", "notifier", "job-1", "push-1", source)).id).toBe("push-1");
-  expect((await client.agentServiceListPushConfigs("prod", "acme", "notifier", "job-1", { pageSize: 1, source })).nextPageToken).toBe("next");
-  await client.agentServiceDeletePushConfig("prod", "acme", "notifier", "job-1", "push-1", source);
+  expect((await client.agentServiceGetPushConfig("notifier", "job-1", "push-1", source)).id).toBe("push-1");
+  expect((await client.agentServiceListPushConfigs("notifier", "job-1", { pageSize: 1, source })).nextPageToken).toBe("next");
+  await client.agentServiceDeletePushConfig("notifier", "job-1", "push-1", source);
   expect(methods).toEqual(["CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig", "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig"]);
   expect(fetch).toHaveBeenCalledTimes(4);
-  await expect(client.agentServiceGetPushConfig("prod", "acme", "notifier", "job-2", "push-1", source)).rejects.toThrow("does not match");
+  await expect(client.agentServiceGetPushConfig("notifier", "job-2", "push-1", source)).rejects.toThrow("does not match");
   expect(fetch).toHaveBeenCalledTimes(4);
 });
 
@@ -130,8 +131,8 @@ it("carries an opaque governed parent with explicit permits", async () => {
     expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
     return new Response(JSON.stringify(fixture.jobs[0].task), {headers:{"a2a-version":"1.0", [AGENT_SOURCE_CONTEXT_HEADER]:fixture.jobs[0].source_context}});
   });
-  vi.stubGlobal("fetch", fetch);
-  await new ActeonClient("http://acteon").agentServiceSendMessage("prod", "acme", "notifier", {}, {
+  vi.stubGlobal("fetch", credentialFetch(fetch));
+  await new ActeonClient("http://acteon").agentServiceSendMessage("notifier", {}, {
     executionContext: fixture.parent.execution_context,
     permits: fixture.parent.permits.map((p: {id: string; accepted_revision: number}) => ({id:p.id, acceptedRevision:p.accepted_revision})),
   });
@@ -149,7 +150,7 @@ it("sends peer tool input without authority fields and validates the durable rec
     else expect(JSON.parse(init.body as string)).toEqual({message:{messageId:"peer-1"}});
     return new Response(JSON.stringify({submission_id:"f47ac10b-58cc-5372-a567-0e02b2c3d479",status:{state:"accepted",task:fixture.jobs[1].task}}), {headers:{"a2a-version":"1.0"}});
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const receipt = await new ActeonClient("http://acteon").agentServiceSendPeer(source, "team/resolver", "diagnose", {messageId:"peer-1"});
   expect(receipt.status.state).toBe("accepted");
   const refreshed = await new ActeonClient("http://acteon").agentServiceRefreshPeer(source, "team/resolver", "diagnose", receipt);
@@ -167,7 +168,7 @@ it("discovers only strict safe peer options without authority fields", async () 
     expect(headers["x-acteon-execution-permits"]).toBeUndefined();
     return new Response(JSON.stringify({peers:[{agent_id:"resolver",skill:"diagnose",description_untrusted:"Investigates incidents",card_version:"v1",binding_digest:"a".repeat(64),checked_at_ms:42}]}), {headers:{"a2a-version":"1.0"}});
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const peers = await new ActeonClient("http://acteon").agentServiceDiscoverPeers(source, "diagnose");
   expect(peers).toEqual([{agentId:"resolver",skill:"diagnose",descriptionUntrusted:"Investigates incidents",cardVersion:"v1",bindingDigest:"a".repeat(64),checkedAtMs:42}]);
   expect(Object.keys(peers[0]!)).not.toContain("endpoint");
@@ -181,7 +182,7 @@ it("cancels an accepted peer at most once and validates restricted task identity
     expect(init.body).toBeUndefined();
     return new Response(JSON.stringify({ submission_id: peer.submissionId, cancellation_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "restricted", task } }), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const receipt = await new ActeonClient("http://acteon").agentServiceCancelPeer(source, "team/resolver", "diagnose", peer);
   expect(receipt.status.state).toBe("restricted");
   const malformedTask = structuredClone(task) as Record<string, unknown>;
@@ -206,7 +207,7 @@ it("continues peer challenges without client-supplied bindings and retains direc
     expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
     return new Response(JSON.stringify(source.task), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const client = new ActeonClient("http://acteon");
   const continued = await client.agentServiceContinuePeer(source, "team/resolver", "diagnose", peer, message);
   expect(continued.status.state).toBe("accepted");
@@ -223,7 +224,7 @@ it("resolves peer authorization with only an opaque challenge selector", async (
     expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
     return new Response(JSON.stringify({ submission_id: peer.submissionId, authorization_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "resolved", task: { ...peer.status.task, status: { state: "working" } }, progress_cursor: '"job-2:2"' } }), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const receipt = await new ActeonClient("http://acteon").agentServiceAuthorizePeer(source, "team/resolver", "diagnose", peer, "challenge-42");
   expect(receipt.status.state).toBe("resolved");
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -243,14 +244,14 @@ it("keeps authorization credentials out of both typed calls", async () => {
     }
     return new Response(JSON.stringify(source.task), { headers: { "a2a-version": "1.0" } });
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   const client = new ActeonClient("http://acteon");
-  await client.agentServiceRequestAuthorization("prod", "acme", "notifier", "job-1", "opaque-flow-42");
+  await client.agentServiceRequestAuthorization("notifier", "job-1", "opaque-flow-42");
   await client.agentServiceResolveAuthorization(source, "challenge-42");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 it("keeps concurrent job headers separate and ignores mutable task metadata", async () => {
-  vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
+  vi.stubGlobal("fetch", credentialFetch(async (input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer caller-key");
     expect(init.redirect).toBe("error");
@@ -261,9 +262,9 @@ it("keeps concurrent job headers separate and ignores mutable task metadata", as
     if (init.method === "GET" || stop) expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBe(job.source_context);
     else expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
     return new Response(JSON.stringify(stop ? job.stop_response : job.task), { headers: { "a2a-version":"1.0", [AGENT_SOURCE_CONTEXT_HEADER]:job.source_context } });
-  });
+  }));
   const client = new ActeonClient("http://acteon", {apiKey:"caller-key"});
-  const receipts = await Promise.all([1,2].map(i => client.agentServiceSendMessage("prod", "acme", "notifier", {messageId:`m${i}`})));
+  const receipts = await Promise.all([1,2].map(i => client.agentServiceSendMessage("notifier", {messageId:`m${i}`})));
   receipts[0].task.id = "tampered-model-id";
   const tasks = await Promise.all(receipts.reverse().map(receipt => client.agentServiceGetTask(receipt)));
   expect(tasks.map(task => task.id)).toEqual(["job-2","job-1"]);
@@ -275,16 +276,16 @@ it("keeps concurrent job headers separate and ignores mutable task metadata", as
 it("rejects absent or malformed admission context without metadata fallback", async () => {
   for (const source of [null, "", "bad token", "x".repeat(8193)]) {
     const fetch = vi.fn(async () => new Response(JSON.stringify(fixture.jobs[0].task), {headers:{"a2a-version":"1.0", ...(source === null ? {} : {[AGENT_SOURCE_CONTEXT_HEADER]:source})}}));
-    vi.stubGlobal("fetch", fetch);
-    await expect(new ActeonClient("http://acteon").agentServiceSendMessage("prod","acme","notifier",{})).rejects.toThrow("source context");
+    vi.stubGlobal("fetch", credentialFetch(fetch));
+    await expect(new ActeonClient("http://acteon").agentServiceSendMessage("notifier", {})).rejects.toThrow("source context");
     expect(fetch).toHaveBeenCalledTimes(1);
   }
 });
 it("preserves typed HTTP statuses with one request", async () => {
   for (const status of [...fixture.error_statuses,307]) {
     const fetch = vi.fn(async () => new Response("denied", {status}));
-    vi.stubGlobal("fetch", fetch);
-    await expect(new ActeonClient("http://acteon").agentServiceSendMessage("prod","acme","notifier",{})).rejects.toEqual(new HttpError(status,"denied"));
+    vi.stubGlobal("fetch", credentialFetch(fetch));
+    await expect(new ActeonClient("http://acteon").agentServiceSendMessage("notifier", {})).rejects.toEqual(new HttpError(status,"denied"));
     expect(fetch).toHaveBeenCalledTimes(1);
   }
 });
@@ -293,7 +294,7 @@ it("escapes route segments and rejects mismatched observed identity", async () =
     expect(input).toContain("/agents/team%2Fchild%20%3F%23/v1/tasks/job-1");
     return new Response(JSON.stringify(fixture.jobs[1].task), {headers:{"a2a-version":"1.0"}});
   });
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("fetch", credentialFetch(fetch));
   await expect(new ActeonClient("http://acteon").agentServiceGetTask({namespace:"prod", tenant:"acme", agent:"team/child ?#", taskId:"job-1", sourceContext:fixture.jobs[0].source_context, task:fixture.jobs[0].task})).rejects.toThrow("identity mismatch");
 });
 
@@ -301,13 +302,13 @@ it("rejects false stop acknowledgements and foreign task identities without retr
   const receipt = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   for (const payload of [null, {}, {task: fixture.jobs[0].task, future_starts_blocked: false}, {task: fixture.jobs[0].task, future_starts_blocked: "true"}, {task: fixture.jobs[1].task, future_starts_blocked: true}, {task: fixture.jobs[0].task, future_starts_blocked: true, provider_abort: {state: "uncertain", attempt_id: "bad"}}]) {
     const fetch = vi.fn(async () => new Response(JSON.stringify(payload), {headers: {"a2a-version":"1.0"}}));
-    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("fetch", credentialFetch(fetch));
     await expect(new ActeonClient("http://acteon").agentServiceStopTask(receipt)).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(1);
   }
   for (const status of [...fixture.error_statuses, 307]) {
     const fetch = vi.fn(async () => new Response("denied", {status}));
-    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("fetch", credentialFetch(fetch));
     await expect(new ActeonClient("http://acteon").agentServiceStopTask(receipt)).rejects.toEqual(new HttpError(status, "denied"));
     expect(fetch).toHaveBeenCalledTimes(1);
   }

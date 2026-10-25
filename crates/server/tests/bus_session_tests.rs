@@ -118,6 +118,12 @@ impl TestResponse {
     }
 }
 
+fn test_identity() -> CallerIdentity {
+    let mut identity = CallerIdentity::anonymous();
+    identity.scope = acteon_core::TenantContext::new("test", "tenant");
+    identity
+}
+
 struct Fixture {
     backend: Arc<KafkaBackend>,
     sub: Subscription,
@@ -222,28 +228,25 @@ impl Fixture {
     fn server(&self, identity: CallerIdentity) -> TestServer {
         // Exercise the endpoint authorization with a fresh principal for every request.
         let router = Router::new()
+            .route("/v1/bus/subscriptions/{id}/sessions", post(http::open))
             .route(
-                "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions",
-                post(http::open),
-            )
-            .route(
-                "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+                "/v1/bus/subscriptions/{id}/sessions/{session}",
                 get(http::get).delete(http::close),
             )
             .route(
-                "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/receive",
+                "/v1/bus/subscriptions/{id}/sessions/{session}/receive",
                 post(http::receive),
             )
             .route(
-                "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/validate",
+                "/v1/bus/subscriptions/{id}/sessions/{session}/validate",
                 post(http::validate),
             )
             .route(
-                "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack",
+                "/v1/bus/subscriptions/{id}/sessions/{session}/ack",
                 post(http::ack),
             )
             .route(
-                "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
+                "/v1/bus/subscriptions/{id}/ack",
                 post(api::bus::ack_subscription),
             )
             .route(
@@ -255,7 +258,7 @@ impl Fixture {
         TestServer(router)
     }
     fn path(&self) -> String {
-        format!("/v1/bus/subscriptions/test/tenant/{}/sessions", self.sub.id)
+        format!("/v1/bus/subscriptions/{}/sessions", self.sub.id)
     }
     async fn open(&self, server: &TestServer, request: Uuid) -> SessionResponse {
         let response = server
@@ -300,7 +303,7 @@ async fn http_sessions_replay_responses_validate_prefix_and_block_raw_bypasses()
     let Some(f) = Fixture::new(BusSessionConfig::default()).await else {
         return;
     };
-    let server = f.server(CallerIdentity::anonymous());
+    let server = f.server(test_identity());
     f.produce(3).await;
     let request = Uuid::new_v4();
     let s = f.open(&server, request).await;
@@ -338,10 +341,7 @@ async fn http_sessions_replay_responses_validate_prefix_and_block_raw_bypasses()
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     server
-        .post(&format!(
-            "/v1/bus/subscriptions/test/tenant/{}/ack",
-            f.sub.id
-        ))
+        .post(&format!("/v1/bus/subscriptions/{}/ack", f.sub.id))
         .json(&json!({"partition":0,"offset":100}))
         .await
         .assert_status_conflict();
@@ -418,7 +418,7 @@ async fn http_sessions_bind_owner_fresh_grants_scope_and_definition() {
     let Some(f) = Fixture::new(BusSessionConfig::default()).await else {
         return;
     };
-    let mut owner = CallerIdentity::anonymous();
+    let mut owner = test_identity();
     owner.id = "owner".into();
     let server = f.server(owner.clone());
     let s = f.open(&server, Uuid::new_v4()).await;
@@ -432,10 +432,9 @@ async fn http_sessions_bind_owner_fresh_grants_scope_and_definition() {
     let mut revoked = owner;
     revoked.grants.clear();
     f.server(revoked).get(&path).await.assert_status_forbidden();
-    server
-        .get(&path.replace("/tenant/", "/another/"))
-        .await
-        .assert_status_not_found();
+    let mut foreign = test_identity();
+    foreign.scope.tenant = "another".into();
+    f.server(foreign).get(&path).await.assert_status_not_found();
     let mut changed = f.sub.clone();
     changed.updated_at = chrono::Utc::now();
     f.state
@@ -467,7 +466,7 @@ async fn http_sessions_expire_and_bound_retained_capacity() {
     let Some(f) = Fixture::new(config).await else {
         return;
     };
-    let server = f.server(CallerIdentity::anonymous());
+    let server = f.server(test_identity());
     let s = f.open(&server, Uuid::new_v4()).await;
     server
         .post(&f.path())
@@ -506,7 +505,7 @@ async fn http_sessions_fence_revoked_receipts_and_replay_uncommitted_prefix() {
     let Some(f) = Fixture::new(BusSessionConfig::default()).await else {
         return;
     };
-    let server = f.server(CallerIdentity::anonymous());
+    let server = f.server(test_identity());
     f.produce(1).await;
     let original = f.open(&server, Uuid::new_v4()).await;
     let old = f
@@ -574,7 +573,7 @@ async fn http_sessions_bound_records_and_expire_unacknowledged_work_without_comm
         )
         .await
         .unwrap();
-    let server = f.server(CallerIdentity::anonymous());
+    let server = f.server(test_identity());
     f.produce(3).await;
     let s = f.open(&server, Uuid::new_v4()).await;
     let batch = f.receive(&server, s.session_id, 2).await;
@@ -614,7 +613,7 @@ async fn http_sessions_close_on_payload_limits_and_absolute_lifetime() {
     let Some(f) = Fixture::new(config).await else {
         return;
     };
-    let server = f.server(CallerIdentity::anonymous());
+    let server = f.server(test_identity());
     let s = f.open(&server, Uuid::new_v4()).await;
     f.produce(1).await;
     let path = format!("{}/{}", f.path(), s.session_id);
@@ -647,7 +646,7 @@ async fn http_sessions_close_on_payload_limits_and_absolute_lifetime() {
         ..Default::default()
     };
     let f = Fixture::new(config).await.unwrap();
-    let server = f.server(CallerIdentity::anonymous());
+    let server = f.server(test_identity());
     let s = f.open(&server, Uuid::new_v4()).await;
     tokio::time::sleep(Duration::from_millis(550)).await;
     let status: SessionResponse = server

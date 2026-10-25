@@ -222,20 +222,16 @@ func (change PublishRepresentedPermit) MarshalJSON() ([]byte, error) {
 }
 
 type WorkforceChangeRequest struct {
-	Namespace string          `json:"namespace"`
-	Tenant    string          `json:"tenant"`
-	ChangeID  string          `json:"change_id"`
-	Change    WorkforceChange `json:"change"`
-	Reason    string          `json:"reason"`
+	ChangeID string          `json:"change_id"`
+	Change   WorkforceChange `json:"change"`
+	Reason   string          `json:"reason"`
 }
 
 func (request *WorkforceChangeRequest) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Namespace string          `json:"namespace"`
-		Tenant    string          `json:"tenant"`
-		ChangeID  string          `json:"change_id"`
-		Change    json.RawMessage `json:"change"`
-		Reason    string          `json:"reason"`
+		ChangeID string          `json:"change_id"`
+		Change   json.RawMessage `json:"change"`
+		Reason   string          `json:"reason"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -274,7 +270,7 @@ func (request *WorkforceChangeRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(wire.Change, change); err != nil {
 		return err
 	}
-	*request = WorkforceChangeRequest{wire.Namespace, wire.Tenant, wire.ChangeID, change, wire.Reason}
+	*request = WorkforceChangeRequest{wire.ChangeID, change, wire.Reason}
 	return nil
 }
 
@@ -312,8 +308,8 @@ type WorkforceScopeView struct {
 	PermitBindings []WorkforcePermitBindingView           `json:"permit_bindings"`
 }
 
-func (client *Client) Workforce(ctx context.Context, namespace, tenant string) (*WorkforceScopeView, error) {
-	data, err := client.PlatformRequest(ctx, OpWorkforceInspect, nil, url.Values{"namespace": {namespace}, "tenant": {tenant}}, nil)
+func (client *Client) Workforce(ctx context.Context) (*WorkforceScopeView, error) {
+	data, err := client.PlatformRequest(ctx, OpWorkforceInspect, nil, url.Values{}, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -15,9 +15,8 @@ import "encoding/json"
 // =============================================================================
 
 type CreateBusTopic struct {
-	Name              string            `json:"name"`
-	Namespace         string            `json:"namespace"`
-	Tenant            string            `json:"tenant"`
+	Name string `json:"name"`
+
 	Partitions        *int              `json:"partitions,omitempty"`
 	ReplicationFactor *int              `json:"replication_factor,omitempty"`
 	RetentionMs       *int64            `json:"retention_ms,omitempty"`
@@ -47,18 +46,15 @@ type ListBusTopicsResponse struct {
 }
 
 type ListBusTopicsFilter struct {
-	Namespace string
-	Tenant    string
 }
 
 type PublishBusMessage struct {
-	Topic     *string           `json:"topic,omitempty"`
-	Namespace *string           `json:"namespace,omitempty"`
-	Tenant    *string           `json:"tenant,omitempty"`
-	Name      *string           `json:"name,omitempty"`
-	Key       *string           `json:"key,omitempty"`
-	Payload   any               `json:"payload"`
-	Headers   map[string]string `json:"headers,omitempty"`
+	Topic *string `json:"topic,omitempty"`
+
+	Name    *string           `json:"name,omitempty"`
+	Key     *string           `json:"key,omitempty"`
+	Payload any               `json:"payload"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 type PublishReceipt struct {
@@ -73,11 +69,10 @@ type PublishReceipt struct {
 // =============================================================================
 
 type CreateBusSubscription struct {
-	ReceiptRequired bool              `json:"receipt_required,omitempty"`
-	ID              string            `json:"id"`
-	Topic           string            `json:"topic"`
-	Namespace       string            `json:"namespace"`
-	Tenant          string            `json:"tenant"`
+	ReceiptRequired bool   `json:"receipt_required,omitempty"`
+	ID              string `json:"id"`
+	Topic           string `json:"topic"`
+
 	StartingOffset  *string           `json:"starting_offset,omitempty"`
 	AckMode         *string           `json:"ack_mode,omitempty"`
 	DeadLetterTopic *string           `json:"dead_letter_topic,omitempty"`
@@ -109,9 +104,7 @@ type ListBusSubscriptionsResponse struct {
 }
 
 type ListBusSubscriptionsFilter struct {
-	Namespace string
-	Tenant    string
-	Topic     string
+	Topic string
 }
 
 type BusLagPartition struct {
@@ -133,11 +126,10 @@ type BusLag struct {
 // =============================================================================
 
 type RegisterBusSchema struct {
-	Subject   string            `json:"subject"`
-	Namespace string            `json:"namespace"`
-	Tenant    string            `json:"tenant"`
-	Body      any               `json:"body"`
-	Labels    map[string]string `json:"labels,omitempty"`
+	Subject string `json:"subject"`
+
+	Body   any               `json:"body"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 type BusSchema struct {
@@ -156,8 +148,6 @@ type ListBusSchemasResponse struct {
 }
 
 type ListBusSchemasFilter struct {
-	Namespace  string
-	Tenant     string
 	Subject    string
 	LatestOnly bool
 }
@@ -167,9 +157,8 @@ type ListBusSchemasFilter struct {
 // =============================================================================
 
 type RegisterBusAgent struct {
-	AgentID        string            `json:"agent_id"`
-	Namespace      string            `json:"namespace"`
-	Tenant         string            `json:"tenant"`
+	AgentID string `json:"agent_id"`
+
 	Capabilities   []string          `json:"capabilities,omitempty"`
 	InboxSuffix    *string           `json:"inbox_suffix,omitempty"`
 	HeartbeatTtlMs *uint64           `json:"heartbeat_ttl_ms,omitempty"`
@@ -234,8 +223,6 @@ type ListBusAgentsResponse struct {
 }
 
 type ListBusAgentsFilter struct {
-	Namespace string
-	Tenant    string
 }
 
 // =============================================================================
@@ -243,14 +230,13 @@ type ListBusAgentsFilter struct {
 // =============================================================================
 
 type CreateBusConversation struct {
-	ConversationID string            `json:"conversation_id"`
-	Namespace      string            `json:"namespace"`
-	Tenant         string            `json:"tenant"`
-	Participants   []string          `json:"participants,omitempty"`
-	TopicSubject   *string           `json:"topic_subject,omitempty"`
-	EventsTopic    *string           `json:"events_topic,omitempty"`
-	Description    *string           `json:"description,omitempty"`
-	Labels         map[string]string `json:"labels,omitempty"`
+	ConversationID string `json:"conversation_id"`
+
+	Participants []string          `json:"participants,omitempty"`
+	TopicSubject *string           `json:"topic_subject,omitempty"`
+	EventsTopic  *string           `json:"events_topic,omitempty"`
+	Description  *string           `json:"description,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
 }
 
 type BusConversation struct {
@@ -273,8 +259,6 @@ type ListBusConversationsResponse struct {
 }
 
 type ListBusConversationsFilter struct {
-	Namespace   string
-	Tenant      string
 	State       string
 	Participant string
 }

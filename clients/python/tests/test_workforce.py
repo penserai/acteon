@@ -33,7 +33,7 @@ async def test_workforce_transport_and_refusals(asynchronous):
         calls.append(request)
         if request.method == "GET":
             assert request.url.path == "/v1/workforce"
-            assert dict(request.url.params) == {"namespace": "prod", "tenant": "acme"}
+            assert dict(request.url.params) == {}
             return httpx.Response(status, json=FIXTURE["scope"])
         assert request.url.path == "/v1/workforce/changes"
         return httpx.Response(
@@ -49,7 +49,7 @@ async def test_workforce_transport_and_refusals(asynchronous):
             transport=transport,
             headers={"Authorization": "Bearer operator-key"},
         )
-        scope = await client.workforce("prod", "acme")
+        scope = await client.workforce()
     else:
         client = ActeonClient("http://city", api_key="operator-key")
         client._client.close()
@@ -58,7 +58,7 @@ async def test_workforce_transport_and_refusals(asynchronous):
             transport=transport,
             headers={"Authorization": "Bearer operator-key"},
         )
-        scope = client.workforce("prod", "acme")
+        scope = client.workforce()
     assert asdict(scope) == FIXTURE["scope"]
     for wire in FIXTURE["changes"]:
         request = WorkforceChangeRequest.from_dict(wire)

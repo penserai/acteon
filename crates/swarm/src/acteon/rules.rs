@@ -156,9 +156,7 @@ pub async fn install_safety_rules(config: &SwarmConfig, tenant: &str) -> Result<
         ));
     }
     // A globally higher-priority allow rule must not silently override safety.
-    let probe = acteon_core::Action::new(
-        config.acteon.namespace.as_str(),
-        tenant,
+    let probe = acteon_core::ActionRequest::new(
         "claude-code",
         "execute_command",
         json!({"command":"rm -rf /tmp/acteon-policy-probe"}),

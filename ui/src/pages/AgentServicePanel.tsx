@@ -41,7 +41,7 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
   async function loadTasks(next = false) {
     setBusy(true); setError('')
     try {
-      const page = await listServiceTasks(namespace, tenant, agent, next ? nextPageToken : '')
+      const page = await listServiceTasks(agent, next ? nextPageToken : '')
       setListed(current => next ? [...current, ...page.tasks] : page.tasks)
       setListTotal(page.totalSize); setNextPageToken(page.nextPageToken)
     } catch (cause) { setError((cause as Error).message) }

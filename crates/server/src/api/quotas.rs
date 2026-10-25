@@ -2,10 +2,11 @@
 //!
 //! CRUD operations and usage queries for tenant quota policies.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -32,9 +33,11 @@ use crate::auth::role::Permission;
 pub struct CreateQuotaRequest {
     /// Namespace this quota applies to.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant this quota applies to.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Optional provider scope. When omitted, the policy is
     /// generic and counts every dispatch for the tenant. When set,
@@ -167,9 +170,11 @@ pub struct ListQuotasResponse {
 pub struct ListQuotasParams {
     /// Filter by namespace (optional).
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Filter by tenant (optional).
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Filter by provider scope (optional). Pass the literal string
     /// `generic` to match only policies without a provider scope
@@ -412,7 +417,7 @@ fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
 pub async fn create_quota(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateQuotaRequest>,
+    ScopedJson(req): ScopedJson<CreateQuotaRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -582,7 +587,7 @@ pub async fn create_quota(
 pub async fn list_quotas(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListQuotasParams>,
+    ScopedQuery(params): ScopedQuery<ListQuotasParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -1005,3 +1010,5 @@ pub async fn reload_static_quotas(
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
+
+crate::auth::context::scoped_body!(CreateQuotaRequest);

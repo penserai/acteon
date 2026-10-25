@@ -137,7 +137,7 @@ and replay grants do not confer control permission. The server binds the audit a
 to the authenticated identity.
 
 ```http
-POST /v1/bus/stages/{namespace}/{tenant}/{id}/control
+POST /v1/bus/stages/{id}/control
 Content-Type: application/json
 
 {
@@ -154,7 +154,7 @@ returns the committed audit with the next revision. A stale revision or a reused
 request ID with different actor/body returns `409`. Retry the **same UUID and body**
 after a storage timeout or lost response: it returns the original audit even if
 another command has since committed, without reapplying the earlier command.
-`GET /v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}` retrieves an audit.
+`GET /v1/bus/stages/{id}/controls/{request}` retrieves an audit.
 The Rust SDK exposes typed `control_stage` and `get_stage_control_audit` methods.
 
 Use `"command": "resume"` with the current revision to clear the operator hold.

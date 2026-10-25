@@ -701,13 +701,13 @@ Query the audit trail to see what happened:
 
 ```bash
 # All dispatches
-curl -s "http://localhost:8080/v1/audit?namespace=iot&tenant=smartbuilding-hq&limit=50" | jq .
+curl -s "http://localhost:8080/v1/audit?limit=50" | jq .
 
 # Only suppressed actions
-curl -s "http://localhost:8080/v1/audit?namespace=iot&tenant=smartbuilding-hq&outcome=suppressed" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=suppressed" | jq .
 
 # Only actions that hit a specific provider
-curl -s "http://localhost:8080/v1/audit?namespace=iot&tenant=smartbuilding-hq&provider=alert-fanout" | jq .
+curl -s "http://localhost:8080/v1/audit?provider=alert-fanout" | jq .
 ```
 
 ---
@@ -797,16 +797,14 @@ Or dispatch S3 uploads directly via the API:
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "iot",
-    "tenant": "smartbuilding-hq",
-    "provider": "telemetry-archive",
-    "action_type": "put_object",
-    "payload": {
-      "key": "reports/daily-summary.json",
-      "body": "{\"total_readings\": 1234, \"anomalies\": 3}",
-      "content_type": "application/json"
-    }
-  }'
+  "provider": "telemetry-archive",
+  "action_type": "put_object",
+  "payload": {
+    "key": "reports/daily-summary.json",
+    "body": "{\"total_readings\": 1234, \"anomalies\": 3}",
+    "content_type": "application/json"
+  }
+}'
 ```
 
 ### Adding SES Email Alerts

@@ -415,6 +415,7 @@ pub struct VerifyResponse {
 #[allow(clippy::too_many_lines)]
 pub async fn verify_action(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<crate::auth::identity::CallerIdentity>,
     Path(action_id): Path<String>,
 ) -> impl IntoResponse {
     // Look up the audit record by action ID.
@@ -449,6 +450,21 @@ pub async fn verify_action(
                 .into_response();
         }
     };
+
+    if !identity.is_authorized(
+        &record.tenant,
+        &record.namespace,
+        &record.provider,
+        &record.action_type,
+    ) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!("action not found: {action_id}"),
+            })),
+        )
+            .into_response();
+    }
 
     // If the action was not signed, report that.
     let (Some(signature), Some(signer_id)) = (&record.signature, &record.signer_id) else {

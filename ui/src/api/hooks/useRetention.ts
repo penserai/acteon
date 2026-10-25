@@ -8,10 +8,10 @@ import type {
   UpdateRetentionRequest,
 } from '../../types'
 
-export function useRetentionPolicies(params: { namespace?: string; tenant?: string }) {
+export function useRetentionPolicies() {
   return useQuery({
-    queryKey: ['retention', params],
-    queryFn: () => apiGet<RetentionListResponse>('/v1/retention', params),
+    queryKey: ['retention'],
+    queryFn: () => apiGet<RetentionListResponse>('/v1/retention'),
     refetchInterval: 30000,
   })
 }

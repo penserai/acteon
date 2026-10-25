@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { BellOff, BellRing, Layers, Radio, ShieldCheck } from 'lucide-react'
 import { useEvents } from '../api/hooks/useEvents'
@@ -8,7 +8,6 @@ import { useProviderHealth } from '../api/hooks/useProviderHealth'
 import { PageHeader } from '../components/layout/PageHeader'
 import { StatCard } from '../components/charts/StatCard'
 import { Badge } from '../components/ui/Badge'
-import { Input } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import { formatCountdown, relativeTime } from '../lib/format'
 import type { ProviderHealthStatus } from '../types'
@@ -59,21 +58,10 @@ function providerHealthVariant(
 
 export function Alerting() {
   const navigate = useNavigate()
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
 
-  const { data: events } = useEvents({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
-  const { data: groups } = useGroups({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
-  const { data: silences } = useSilences({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
+  const { data: events } = useEvents()
+  const { data: groups } = useGroups()
+  const { data: silences } = useSilences()
   const { data: providers } = useProviderHealth()
 
   const activeEvents = useMemo(
@@ -96,27 +84,12 @@ export function Alerting() {
 
   const healthyCount = alertingProviders.filter((p) => p.healthy).length
 
-  const scopeSelected = ns.trim() !== '' && tenant.trim() !== ''
-
   return (
     <div>
       <PageHeader
         title="Alerting"
         subtitle="Live view of active events, groups, silences, and the providers that deliver them"
       />
-
-      <div className={styles.filterRow}>
-        <Input
-          placeholder="Namespace (required for events/groups)"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant (required for events/groups)"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
-      </div>
 
       <div className={styles.statGrid}>
         <StatCard
@@ -159,13 +132,9 @@ export function Alerting() {
               View all
             </Button>
           </div>
-          {!scopeSelected ? (
+          {activeEvents.length === 0 ? (
             <p className={styles.empty}>
-              Enter a namespace and tenant to load active events.
-            </p>
-          ) : activeEvents.length === 0 ? (
-            <p className={styles.empty}>
-              No active events for {ns}/{tenant}.
+              No active events.
             </p>
           ) : (
             <div className={styles.cardList}>
@@ -257,13 +226,9 @@ export function Alerting() {
               View all
             </Button>
           </div>
-          {!scopeSelected ? (
+          {!groups || groups.length === 0 ? (
             <p className={styles.empty}>
-              Enter a namespace and tenant to load active groups.
-            </p>
-          ) : !groups || groups.length === 0 ? (
-            <p className={styles.empty}>
-              No event groups for {ns}/{tenant}.
+              No event groups.
             </p>
           ) : (
             <div className={styles.cardList}>

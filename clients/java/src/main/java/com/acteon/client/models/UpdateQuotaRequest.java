@@ -8,11 +8,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class UpdateQuotaRequest {
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     @JsonProperty("max_actions")
     private Long maxActions;
@@ -30,17 +25,6 @@ public class UpdateQuotaRequest {
     private Boolean enabled;
 
     public UpdateQuotaRequest() {}
-
-    public UpdateQuotaRequest(String namespace, String tenant) {
-        this.namespace = namespace;
-        this.tenant = tenant;
-    }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public Long getMaxActions() { return maxActions; }
     public void setMaxActions(Long maxActions) { this.maxActions = maxActions; }

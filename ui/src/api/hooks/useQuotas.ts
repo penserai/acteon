@@ -10,8 +10,6 @@ import type {
 } from '../../types'
 
 export function useQuotas(params: {
-  namespace?: string
-  tenant?: string
   provider?: string
   principal?: string
 }) {

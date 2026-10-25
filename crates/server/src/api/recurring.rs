@@ -2,10 +2,11 @@
 //!
 //! CRUD operations and lifecycle management for cron-scheduled recurring actions.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -45,9 +46,11 @@ pub struct CreateRecurringRequest {
     pub name: Option<String>,
     /// Namespace.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Target provider.
     #[schema(example = "email")]
@@ -96,9 +99,11 @@ pub struct CreateRecurringRequest {
 pub struct UpdateRecurringRequest {
     /// Namespace (required for key lookup).
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant (required for key lookup).
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Updated name.
     #[serde(default)]
@@ -137,8 +142,10 @@ pub struct UpdateRecurringRequest {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct RecurringNamespaceParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
 }
 
@@ -146,8 +153,10 @@ pub struct RecurringNamespaceParams {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListRecurringParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
     /// Optional status filter: `"active"`, `"paused"`.
     #[serde(default)]
@@ -276,9 +285,11 @@ pub struct CreateRecurringResponse {
 pub struct RecurringLifecycleRequest {
     /// Namespace.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
 }
 
@@ -557,7 +568,7 @@ fn validate_cron_input(
 pub async fn create_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateRecurringRequest>,
+    ScopedJson(req): ScopedJson<CreateRecurringRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -660,7 +671,7 @@ pub async fn create_recurring(
 pub async fn list_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListRecurringParams>,
+    ScopedQuery(params): ScopedQuery<ListRecurringParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -761,7 +772,7 @@ pub async fn get_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
-    Query(params): Query<RecurringNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<RecurringNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -821,7 +832,7 @@ pub async fn update_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
-    Json(req): Json<UpdateRecurringRequest>,
+    ScopedJson(req): ScopedJson<UpdateRecurringRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -1004,7 +1015,7 @@ pub async fn delete_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
-    Query(params): Query<RecurringNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<RecurringNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -1094,7 +1105,7 @@ pub async fn pause_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
-    Json(req): Json<RecurringLifecycleRequest>,
+    ScopedJson(req): ScopedJson<RecurringLifecycleRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -1185,7 +1196,7 @@ pub async fn resume_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
-    Json(req): Json<RecurringLifecycleRequest>,
+    ScopedJson(req): ScopedJson<RecurringLifecycleRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -1292,8 +1303,10 @@ pub async fn resume_recurring(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct BackfillRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Start of the backfill window (inclusive).
     pub start: DateTime<Utc>,
@@ -1355,7 +1368,7 @@ pub async fn backfill_recurring(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
-    Json(req): Json<BackfillRequest>,
+    ScopedJson(req): ScopedJson<BackfillRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -1474,3 +1487,10 @@ pub async fn backfill_recurring(
     )
         .into_response()
 }
+
+crate::auth::context::scoped_body!(
+    BackfillRequest,
+    CreateRecurringRequest,
+    RecurringLifecycleRequest,
+    UpdateRecurringRequest
+);

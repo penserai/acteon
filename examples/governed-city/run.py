@@ -34,7 +34,6 @@ from acteon_client import (  # noqa: E402
 )
 from acteon_client.errors import HttpError  # noqa: E402
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -98,6 +97,7 @@ def main():
                 provider_grants = json.dumps([provider] if provider else [])
                 action_grants = json.dumps([action] if action else [])
                 auth += f'''\n[[api_keys]]
+scope={{namespace="prod",tenant="acme"}}
 name="{name}"
 authority_id="credential/{name}"
 principal={{id="{principal}",kind="{kind}"}}
@@ -140,7 +140,7 @@ actions={action_grants}
                                     (directory / "server.log").read_text()
                                 )
                             time.sleep(0.03)
-                        view = operator.governance("prod", "acme")
+                        view = operator.governance()
                         resources = view.routes[0].effect.resources
                         references = [PermitReference("maya-response", 1)]
                         results = []
@@ -159,122 +159,44 @@ actions={action_grants}
                             )
 
                         try:
-                            maya.governance("prod", "acme")
+                            maya.governance()
                             raise AssertionError("executor reached management")
                         except HttpError as error:
                             assert error.status == 403
                             record("executor management denied", "HTTP 403", 0)
-                        issued = operator.publish_governance_permit(
-                            PublishGovernancePermitRequest(
-                                "prod",
-                                "acme",
-                                "issue-response",
-                                0,
-                                GovernancePermitDeclaration(
-                                    "maya-response",
-                                    1,
-                                    PrincipalIdentity("agent/maya", "agent"),
-                                    [GovernanceRoute("incident", "execute")],
-                                    0,
-                                    GovernanceLimits(5, 1, 4102444800000),
-                                ),
-                                "incident response",
-                            )
-                        )
+                        issued = operator.publish_governance_permit(PublishGovernancePermitRequest('issue-response', 0, GovernancePermitDeclaration('maya-response', 1, PrincipalIdentity('agent/maya', 'agent'), [GovernanceRoute('incident', 'execute')], 0, GovernanceLimits(5, 1, 4102444800000)), 'incident response'))
                         record(
                             "operator issues permit",
                             f"generation {issued.generation}",
                             0,
                         )
-                        action = Action(
-                            "prod", "acme", "incident", "execute", {"ticket": 42}
-                        )
+                        action = Action('incident', 'execute', {'ticket': 42})
                         outcome = maya.dispatch(action, permits=references)
                         assert outcome.outcome_type == "executed"
                         record("permitted action", outcome.outcome_type, 1)
                         replay = maya.dispatch(action, permits=references)
                         assert replay.outcome_type == "executed"
                         record("same action replay", replay.outcome_type, 1)
-                        closed = operator.intervene_governance(
-                            GovernanceInterventionRequest(
-                                "prod",
-                                "acme",
-                                "close-endpoint",
-                                GovernanceResourceChange(
-                                    "close_resource", resources[0]
-                                ),
-                                "maintenance",
-                            )
-                        )
+                        closed = operator.intervene_governance(GovernanceInterventionRequest('close-endpoint', GovernanceResourceChange('close_resource', resources[0]), 'maintenance'))
                         record(
                             "operator closes resource",
                             f"generation {closed.generation}",
                             1,
                         )
-                        blocked = maya.dispatch(
-                            Action(
-                                "prod", "acme", "incident", "execute", {"ticket": 43}
-                            ),
-                            permits=references,
-                        )
+                        blocked = maya.dispatch(Action('incident', 'execute', {'ticket': 43}), permits=references)
                         assert blocked.outcome_type == "failed"
                         record("closed resource", blocked.outcome_type, 1)
-                        operator.intervene_governance(
-                            GovernanceInterventionRequest(
-                                "prod",
-                                "acme",
-                                "reopen-endpoint",
-                                GovernanceResourceChange(
-                                    "reopen_resource", resources[0]
-                                ),
-                                "maintenance complete",
-                            )
-                        )
-                        resumed = maya.dispatch(
-                            Action(
-                                "prod", "acme", "incident", "execute", {"ticket": 44}
-                            ),
-                            permits=references,
-                        )
+                        operator.intervene_governance(GovernanceInterventionRequest('reopen-endpoint', GovernanceResourceChange('reopen_resource', resources[0]), 'maintenance complete'))
+                        resumed = maya.dispatch(Action('incident', 'execute', {'ticket': 44}), permits=references)
                         assert resumed.outcome_type == "executed"
                         record("reopened resource", resumed.outcome_type, 2)
-                        operator.intervene_governance(
-                            GovernanceInterventionRequest(
-                                "prod",
-                                "acme",
-                                "revoke-permit",
-                                GovernancePermitRevocation("maya-response", 1),
-                                "incident resolved",
-                            )
-                        )
-                        revoked = maya.dispatch(
-                            Action(
-                                "prod", "acme", "incident", "execute", {"ticket": 45}
-                            ),
-                            permits=references,
-                        )
+                        operator.intervene_governance(GovernanceInterventionRequest('revoke-permit', GovernancePermitRevocation('maya-response', 1), 'incident resolved'))
+                        revoked = maya.dispatch(Action('incident', 'execute', {'ticket': 45}), permits=references)
                         assert revoked.outcome_type == "failed"
                         record("revoked permit", revoked.outcome_type, 2)
-                        operator.intervene_governance(
-                            GovernanceInterventionRequest(
-                                "prod",
-                                "acme",
-                                "offboard-maya",
-                                GovernanceCredentialRevocation("credential/maya", 1),
-                                "offboarding",
-                            )
-                        )
+                        operator.intervene_governance(GovernanceInterventionRequest('offboard-maya', GovernanceCredentialRevocation('credential/maya', 1), 'offboarding'))
                         try:
-                            maya.dispatch(
-                                Action(
-                                    "prod",
-                                    "acme",
-                                    "incident",
-                                    "execute",
-                                    {"ticket": 46},
-                                ),
-                                permits=references,
-                            )
+                            maya.dispatch(Action('incident', 'execute', {'ticket': 46}), permits=references)
                             raise AssertionError("revoked credential executed")
                         except HttpError as error:
                             assert error.status == 403
@@ -287,7 +209,7 @@ actions={action_grants}
                             "steps": results,
                             "actual_webhook_calls": len(deliveries),
                             "unauthorized_webhook_calls": 0,
-                            "final_scope": asdict(operator.governance("prod", "acme")),
+                            "final_scope": asdict(operator.governance()),
                         }
                         args.output.parent.mkdir(parents=True, exist_ok=True)
                         args.output.write_text(json.dumps(report, indent=2) + "\n")
@@ -312,7 +234,6 @@ actions={action_grants}
         receiver.shutdown()
         receiver.server_close()
         thread.join(timeout=10)
-
 
 if __name__ == "__main__":
     main()

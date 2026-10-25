@@ -13,15 +13,14 @@ import type {
   CreateProfileResponse,
   RenderPreviewRequest,
   RenderPreviewResponse,
-  TemplateQueryParams,
 } from '../../types'
 
 // ---- Templates ----
 
-export function useTemplates(params: TemplateQueryParams = {}) {
+export function useTemplates() {
   return useQuery({
-    queryKey: ['templates', params],
-    queryFn: () => apiGet<TemplateListResponse>('/v1/templates', params as Record<string, string | undefined>),
+    queryKey: ['templates'],
+    queryFn: () => apiGet<TemplateListResponse>('/v1/templates'),
     refetchInterval: 30000,
   })
 }
@@ -62,10 +61,10 @@ export function useDeleteTemplate() {
 
 // ---- Profiles ----
 
-export function useTemplateProfiles(params: TemplateQueryParams = {}) {
+export function useTemplateProfiles() {
   return useQuery({
-    queryKey: ['template-profiles', params],
-    queryFn: () => apiGet<TemplateProfileListResponse>('/v1/templates/profiles', params as Record<string, string | undefined>),
+    queryKey: ['template-profiles'],
+    queryFn: () => apiGet<TemplateProfileListResponse>('/v1/templates/profiles'),
     refetchInterval: 30000,
   })
 }

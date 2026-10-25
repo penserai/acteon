@@ -30,6 +30,8 @@ func TestActionWireMetadata(t *testing.T) {
 	if err := json.Unmarshal(wire, &actual); err != nil {
 		t.Fatal(err)
 	}
+	delete(expected, "namespace")
+	delete(expected, "tenant")
 	if !reflect.DeepEqual(expected, actual) {
 		t.Fatalf("wire mismatch: %s", wire)
 	}

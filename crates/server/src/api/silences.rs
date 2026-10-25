@@ -5,8 +5,9 @@
 //! silence's active time window. See the feature documentation at
 //! `docs/book/features/silences.md`.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Duration, Utc};
@@ -49,10 +50,12 @@ fn default_op() -> MatchOp {
 pub struct CreateSilenceRequest {
     /// Namespace this silence applies to.
     #[schema(example = "prod")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant this silence applies to. Hierarchical matching applies:
     /// a silence on tenant `acme` also covers `acme.us-east`.
     #[schema(example = "acme")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Matchers — all must match for the silence to apply (AND semantics).
     pub matchers: Vec<MatcherInput>,
@@ -124,9 +127,11 @@ pub struct ListSilencesResponse {
 pub struct ListSilencesParams {
     /// Filter by namespace.
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Filter by tenant.
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Include expired silences whose `ends_at` is in the past. Default false.
     #[serde(default)]
@@ -185,7 +190,7 @@ fn silence_to_response(silence: &Silence, now: DateTime<Utc>) -> SilenceResponse
 pub async fn create_silence(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateSilenceRequest>,
+    ScopedJson(req): ScopedJson<CreateSilenceRequest>,
 ) -> impl IntoResponse {
     // Permission + tenant-scope check.
     if !identity.role.has_permission(Permission::SilencesManage) {
@@ -292,7 +297,7 @@ pub async fn create_silence(
 pub async fn list_silences(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListSilencesParams>,
+    ScopedQuery(params): ScopedQuery<ListSilencesParams>,
 ) -> impl IntoResponse {
     // Enforce requested tenant against grants.
     if let Some(ref requested_tenant) = params.tenant
@@ -529,3 +534,5 @@ pub async fn delete_silence(
     info!(silence_id = %id, "silence expired (soft)");
     StatusCode::NO_CONTENT.into_response()
 }
+
+crate::auth::context::scoped_body!(CreateSilenceRequest);

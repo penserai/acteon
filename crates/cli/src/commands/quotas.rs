@@ -17,12 +17,6 @@ pub struct QuotasArgs {
 pub enum QuotasCommand {
     /// List quota policies.
     List {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
         /// Filter by provider scope. Pass the literal `generic`
         /// to list only policies without a provider scope, or a
         /// provider name (e.g. `slack`) to list only per-provider
@@ -48,16 +42,10 @@ pub enum QuotasCommand {
         /// JSON data (string or @file path). When set, all other
         /// --field flags are ignored.
         #[arg(long, conflicts_with_all = [
-            "namespace", "tenant", "provider", "principal", "per_principal",
+            "provider", "principal", "per_principal",
             "max_actions", "window", "overage_behavior", "description", "label",
         ])]
         data: Option<String>,
-        /// Namespace scope.
-        #[arg(long, required_unless_present = "data")]
-        namespace: Option<String>,
-        /// Tenant scope.
-        #[arg(long, required_unless_present = "data")]
-        tenant: Option<String>,
         /// Provider scope. Omit for tenant-wide.
         #[arg(long)]
         provider: Option<String>,
@@ -125,12 +113,6 @@ pub enum QuotasCommand {
     Delete {
         /// Quota policy ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Get quota usage.
     Usage {
@@ -170,26 +152,13 @@ fn labels_vec_to_map(labels: Vec<(String, String)>) -> Option<HashMap<String, St
 pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
         QuotasCommand::List {
-            namespace,
-            tenant,
             provider,
             principal,
-        } => {
-            run_list(
-                ops,
-                namespace.as_ref(),
-                tenant.as_ref(),
-                provider.as_ref(),
-                principal.as_ref(),
-                format,
-            )
-            .await
-        }
+        } => run_list(ops, provider.as_ref(), principal.as_ref(), format).await,
         QuotasCommand::Get { id } => run_get(ops, id, format).await,
         QuotasCommand::Create {
             data,
-            namespace,
-            tenant,
+
             provider,
             principal,
             per_principal,
@@ -204,8 +173,6 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
                 serde_json::from_value::<CreateQuotaRequest>(value)?
             } else {
                 CreateQuotaRequest {
-                    namespace: namespace.clone().unwrap_or_default(),
-                    tenant: tenant.clone().unwrap_or_default(),
                     provider: provider.clone(),
                     principal: principal.clone(),
                     per_principal: *per_principal,
@@ -233,14 +200,7 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
                 let value = parse_json_data(raw)?;
                 serde_json::from_value::<UpdateQuotaRequest>(value)?
             } else {
-                // The Rust client's UpdateQuotaRequest insists on
-                // namespace/tenant for legacy key-lookup reasons,
-                // but the v1 PATCH route ignores them — pass empty
-                // strings so the field is present on the wire and
-                // the server does its own lookup by id.
                 UpdateQuotaRequest {
-                    namespace: String::new(),
-                    tenant: String::new(),
                     max_actions: *max_actions,
                     window: window.clone(),
                     overage_behavior: overage_behavior.clone(),
@@ -252,12 +212,8 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
             };
             run_update(ops, id, &req, format).await
         }
-        QuotasCommand::Delete {
-            id,
-            namespace,
-            tenant,
-        } => {
-            ops.delete_quota(id, namespace, tenant).await?;
+        QuotasCommand::Delete { id } => {
+            ops.delete_quota(id).await?;
             info!(id = %id, "Quota deleted");
             Ok(())
         }
@@ -267,19 +223,12 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
 
 async fn run_list(
     ops: &OpsClient,
-    namespace: Option<&String>,
-    tenant: Option<&String>,
     provider: Option<&String>,
     principal: Option<&String>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let resp = ops
-        .list_quotas(
-            namespace.map(String::as_str),
-            tenant.map(String::as_str),
-            provider.map(String::as_str),
-            principal.map(String::as_str),
-        )
+        .list_quotas(provider.map(String::as_str), principal.map(String::as_str))
         .await?;
     match format {
         OutputFormat::Json => {

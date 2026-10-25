@@ -147,18 +147,13 @@ Verify the integrity of the hash chain for a namespace/tenant pair:
 ```bash
 curl -X POST http://localhost:8080/v1/audit/verify \
   -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "notifications",
-    "tenant": "acme"
-  }'
+  -d '{}'
 ```
 
 Optional parameters:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `namespace` | string | Required. Namespace to verify. |
-| `tenant` | string | Required. Tenant to verify. |
 | `from` | string | Optional. Start of the time range (ISO 8601). |
 | `to` | string | Optional. End of the time range (ISO 8601). |
 
@@ -239,8 +234,6 @@ Verify the integrity of the hash chain for a namespace/tenant pair.
 
 ```json
 {
-  "namespace": "notifications",
-  "tenant": "acme",
   "from": "2026-01-01T00:00:00Z",
   "to": "2026-02-17T00:00:00Z"
 }
@@ -279,7 +272,7 @@ curl http://localhost:8080/v1/compliance/status
 ```bash
 curl -X POST http://localhost:8080/v1/audit/verify \
   -H "Content-Type: application/json" \
-  -d '{"namespace": "notifications", "tenant": "acme"}'
+  -d '{}'
 ```
 
 ### Verify a time range
@@ -288,11 +281,9 @@ curl -X POST http://localhost:8080/v1/audit/verify \
 curl -X POST http://localhost:8080/v1/audit/verify \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "notifications",
-    "tenant": "acme",
-    "from": "2026-02-01T00:00:00Z",
-    "to": "2026-02-17T00:00:00Z"
-  }'
+  "from": "2026-02-01T00:00:00Z",
+  "to": "2026-02-17T00:00:00Z"
+}'
 ```
 
 ## Interaction with Other Features

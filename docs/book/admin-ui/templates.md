@@ -6,11 +6,11 @@ The Templates page lets you manage payload templates and profiles through the ad
 
 ## Templates Tab
 
-The Templates tab displays all stored templates in a sortable data table. Each row shows the template name, namespace, tenant, description, and last-updated timestamp.
+The Templates tab displays all stored templates in a sortable data table. Each row shows the template name and description, and last-updated timestamp.
 
 ### Browsing Templates
 
-Use the namespace and tenant filters at the top of the page to narrow the list. The table columns are sortable -- click a column header to reorder. When no templates exist for the current filter, the page shows an empty state with a prompt to create your first template.
+The list is scoped to the authenticated credential. The table columns are sortable -- click a column header to reorder. When no templates exist for the current filter, the page shows an empty state with a prompt to create your first template.
 
 ![Empty state](assets/templates-empty-state.png)
 
@@ -26,8 +26,6 @@ Fill in the following fields:
 |-------|----------|-------------|
 | **Name** | Yes | Unique identifier (alphanumeric, hyphens, underscores, dots; max 128 chars) |
 | **Description** | No | Human-readable description of the template's purpose |
-| **Namespace** | Yes | Namespace scope for the template |
-| **Tenant** | Yes | Tenant scope for the template |
 | **Content** | Yes | MiniJinja template body with variable placeholders like `{{ name }}` |
 | **Labels** | No | Key-value labels for organization (one per line, `key=value` format) |
 
@@ -44,7 +42,7 @@ Click any row in the templates table to open the detail drawer on the right side
 The drawer shows:
 
 - **ID** -- the system-generated UUID
-- **Name**, **Namespace**, **Tenant** -- scope identifiers
+- **Name** -- template identifier
 - **Description** -- the template's purpose
 - **Created** and **Updated** -- timestamps
 - **Labels** -- all attached labels displayed as badges (e.g., team, env, type)
@@ -68,7 +66,7 @@ Switch to the **Profiles** tab to manage template profiles. Profiles map payload
 
 ![Profiles list](assets/profiles-list.png)
 
-The profiles table shows each profile's name, namespace, tenant, field count, and description. Like the templates table, it supports namespace and tenant filtering and column sorting.
+The profiles table shows each profile's name, namespace, tenant, field count, and description. Like the templates table, it supports column sorting within the credential context.
 
 ### Creating a Profile
 
@@ -76,7 +74,7 @@ Click **Create Profile** to open the creation modal with the dynamic field build
 
 ![Create Profile modal](assets/profiles-create-modal.png)
 
-Fill in the profile metadata (name, namespace, tenant, description), then use the field builder to define payload field mappings. For each field:
+Fill in the profile metadata (name and description), then use the field builder to define payload field mappings. For each field:
 
 1. Enter the **field name** (the key that will be merged into the action payload)
 2. Choose the field type:
@@ -108,7 +106,7 @@ The Playground tab lets you test how a template profile renders against sample d
 
 ### Using the Playground
 
-1. Set the **Namespace** and **Tenant** to scope which profiles are available
+1. Check the read-only credential context in the header
 2. Select a **Profile** from the dropdown (profiles matching the current namespace/tenant are listed automatically) or type a profile name directly
 3. Enter **Payload** variables as a JSON object -- these are the variables your templates reference (e.g., `{{ name }}`, `{{ severity }}`)
 4. Click **Render Preview** to send the payload to the server for rendering

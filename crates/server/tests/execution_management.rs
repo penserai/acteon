@@ -1,4 +1,21 @@
 //! Original middleware proof, current scope policy, and management CAS together.
+fn http_input(value: impl serde::Serialize) -> serde_json::Value {
+    let mut value = serde_json::to_value(value).unwrap();
+    fn strip(value: &mut serde_json::Value) {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("namespace");
+            object.remove("tenant");
+            object.remove("scope");
+        } else if let Some(items) = value.as_array_mut() {
+            for item in items {
+                strip(item);
+            }
+        }
+    }
+    strip(&mut value);
+    value
+}
+
 use acteon_governance::{AuthorityCoordinator, CoordinatorLimits};
 use acteon_server::{
     auth::{
@@ -40,6 +57,7 @@ authority_revision = 1
 [settings]
 jwt_secret = {:?}
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "operator"
 authority_id = "credential/operator"
 principal = {{id="operator",kind="human"}}
@@ -178,6 +196,7 @@ authority_revision = 1
 [settings]
 jwt_secret = {:?}
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "operator"
 authority_id = "credential/operator"
 principal = {{id="operator",kind="human"}}
@@ -189,6 +208,7 @@ tenants = ["acme"]
 providers = ["audit"]
 actions = ["read"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "remote-peer"
 authority_id = "credential/remote-peer"
 principal = {{id="agent/remote-peer",kind="agent"}}
@@ -537,7 +557,7 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         trust: public_trust,
         reason: "reviewed foreign production domain".into(),
     };
-    let publication_body = serde_json::to_vec(&publication).unwrap();
+    let publication_body = serde_json::to_vec(&http_input(&publication)).unwrap();
     let denied_publication = router
         .clone()
         .oneshot(
@@ -636,20 +656,21 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         shape.max_depth,
     );
     let signed_http = signer.sign(&http_envelope).unwrap();
-    let request_body = serde_json::to_vec(&json!({"envelope": signed_http.clone()})).unwrap();
-    let malformed_body = serde_json::to_vec(&json!({
+    let request_body =
+        serde_json::to_vec(&http_input(&json!({"envelope": signed_http.clone()}))).unwrap();
+    let malformed_body = serde_json::to_vec(&http_input(&json!({
         "envelope": {
             "payload": signed_http.payload,
             "signature": "A".repeat(128),
         }
-    }))
+    })))
     .unwrap();
     let denied = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/envelopes:import")
+                .uri("/a2a/federation/envelopes:import")
                 .header("authorization", "Bearer operator-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(request_body.clone()))
@@ -663,7 +684,7 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/envelopes:import")
+                .uri("/a2a/federation/envelopes:import")
                 .header("authorization", "Bearer remote-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(malformed_body))
@@ -677,7 +698,7 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/envelopes:import")
+                .uri("/a2a/federation/envelopes:import")
                 .header("authorization", "Bearer remote-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(request_body))
@@ -716,17 +737,17 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
             now + 30_000,
         ))
         .unwrap();
-    let invocation_body = serde_json::to_vec(&json!({
+    let invocation_body = serde_json::to_vec(&http_input(&json!({
         "invocation": invocation,
         "message": message,
-    }))
+    })))
     .unwrap();
     let denied_manager_invocation = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .uri("/a2a/federation/agents/notifier/v1/message:send")
                 .header("authorization", "Bearer operator-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(invocation_body.clone()))
@@ -740,7 +761,7 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .uri("/a2a/federation/agents/notifier/v1/message:send")
                 .header("authorization", "Bearer remote-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(invocation_body))
@@ -749,7 +770,7 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         .await
         .unwrap();
     assert_eq!(denied_input_mismatch.status(), 409);
-    let invalid_signature_body = serde_json::to_vec(&json!({
+    let invalid_signature_body = serde_json::to_vec(&http_input(&json!({
         "invocation": {"payload": signer.sign_invocation(&FederationInvocation::new(
             "remote-invocation-invalid-signature",
             FederationImportReference {
@@ -761,14 +782,14 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
             now + 30_000,
         )).unwrap().payload, "signature": "0".repeat(128)},
         "message": message,
-    }))
+    })))
     .unwrap();
     let denied_signature = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .uri("/a2a/federation/agents/notifier/v1/message:send")
                 .header("authorization", "Bearer remote-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(invalid_signature_body))
@@ -808,14 +829,14 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .uri("/a2a/federation/agents/notifier/v1/message:send")
                 .header("authorization", "Bearer remote-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::to_vec(&json!({
+                    serde_json::to_vec(&http_input(&json!({
                         "invocation": valid_invocation,
                         "message": message,
-                    }))
+                    })))
                     .unwrap(),
                 ))
                 .unwrap(),
@@ -852,7 +873,9 @@ async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch(
                 .uri("/v1/governance/federation/trusts/revoke")
                 .header("authorization", "Bearer operator-secret")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&revocation).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&http_input(&revocation)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1517,9 +1540,7 @@ async fn retained_history_remains_authenticated_after_every_live_provider_is_rem
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/v1/governance/executions/{execution_id}?namespace=prod&tenant=acme"
-                ))
+                .uri(format!("/v1/governance/executions/{execution_id}"))
                 .header("authorization", "Bearer operator-secret")
                 .body(Body::empty())
                 .unwrap(),
@@ -2086,7 +2107,7 @@ async fn history_http_revalidates_authority_after_a_paused_receipt_read() {
             .unwrap();
         let request = Request::builder()
             .uri(format!(
-                "/v1/governance/executions/{}?namespace=prod&tenant=acme",
+                "/v1/governance/executions/{}",
                 fixture.execution_id
             ))
             .header("authorization", "Bearer operator-secret")
@@ -2332,7 +2353,7 @@ async fn register_abandoned_reconciliation_attempt(f: &HistoryReadFixture) {
         .unwrap();
 }
 fn reconciliation_url(execution_id: uuid::Uuid, tail: &str) -> String {
-    format!("/v1/governance/executions/{execution_id}/attempts/0/{tail}?namespace=prod&tenant=acme")
+    format!("/v1/governance/executions/{execution_id}/attempts/0/{tail}")
 }
 async fn reconciliation_http(
     app: Router,
@@ -2355,9 +2376,9 @@ async fn reconciliation_http(
             .method("POST")
             .header("content-type", "application/json");
         Body::from(
-            serde_json::to_vec(&acteon_core::ProviderReconciliationRequest {
+            serde_json::to_vec(&http_input(&acteon_core::ProviderReconciliationRequest {
                 proof_base64: base64::engine::general_purpose::STANDARD.encode(proof),
-            })
+            }))
             .unwrap(),
         )
     } else {
@@ -2510,7 +2531,7 @@ async fn reconciliation_http_rejects_untrusted_oversized_and_unknown_field_proof
                     .uri(reconciliation_url(f.execution_id, "reconciliation"))
                     .header("authorization", "Bearer operator-secret")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&http_input(&body)).unwrap()))
                     .unwrap(),
             )
             .await
@@ -2986,7 +3007,7 @@ async fn registry_http(
                 .header("content-type", "application/json")
                 .header("x-acteon-principal", "forged-admin")
                 .body(body.map_or_else(Body::empty, |body| {
-                    Body::from(serde_json::to_vec(body).unwrap())
+                    Body::from(serde_json::to_vec(&http_input(body)).unwrap())
                 }))
                 .unwrap(),
         )
@@ -3027,7 +3048,7 @@ async fn registry_http_requires_independent_exact_agent_bounds() {
         let (status, _) = registry_http(
             &f.app,
             "GET",
-            "/v1/governance/registry/maya?namespace=prod&tenant=acme&projection=agent",
+            "/v1/governance/registry/maya?projection=agent",
             None,
         )
         .await;
@@ -3175,7 +3196,7 @@ async fn registry_http_legacy_card_writes_cannot_bypass_governed_scope() {
     ));
     for (method, body) in [("PUT", Some(&card)), ("DELETE", None)] {
         let (status, response) =
-            registry_http(&f.app, method, "/v1/bus/agents/prod/acme/maya/card", body).await;
+            registry_http(&f.app, method, "/v1/bus/agents/maya/card", body).await;
         assert_eq!(status, 409);
         assert_eq!(response["code"], "governed_registry_mutation_required");
     }
@@ -3247,7 +3268,7 @@ async fn registry_http_mutation_retires_qualification_even_on_known_version_conf
         let (status, observed) = registry_http(
             &f.app,
             "GET",
-            "/v1/governance/registry/maya?namespace=prod&tenant=acme&projection=agent",
+            "/v1/governance/registry/maya?projection=agent",
             None,
         )
         .await;
@@ -3293,7 +3314,7 @@ fn registry_manager_agent_bounds_reject_unbounded_or_nonintervening_declarations
 async fn registry_http_legacy_guard_survives_uninstalled_runtime_and_unreadable_authority() {
     let f = registry_http_fixture(vec!["maya".into()]).await;
     let app = history_router_with_runtime(f.state.clone(), None, f.provider, false);
-    let uri = "/v1/bus/agents/prod/acme/maya/card";
+    let uri = "/v1/bus/agents/maya/card";
     let (status, response) = registry_http(&app, "DELETE", uri, None).await;
     assert_eq!(status, 409);
     assert_eq!(response["code"], "governed_registry_mutation_required");
@@ -3329,13 +3350,9 @@ async fn registry_http_all_legacy_bus_metadata_writers_refuse_governed_scope() {
     let admin = json!({"admin_state":"active"});
     for (method, uri, body) in [
         ("POST", "/v1/bus/agents", Some(&register)),
-        ("PUT", "/v1/bus/agents/prod/acme/maya", Some(&update)),
-        ("DELETE", "/v1/bus/agents/prod/acme/maya", None),
-        (
-            "PUT",
-            "/v1/bus/agents/prod/acme/maya/admin-state",
-            Some(&admin),
-        ),
+        ("PUT", "/v1/bus/agents/maya", Some(&update)),
+        ("DELETE", "/v1/bus/agents/maya", None),
+        ("PUT", "/v1/bus/agents/maya/admin-state", Some(&admin)),
     ] {
         let (status, response) = registry_http(&app, method, uri, body).await;
         assert_eq!(status, 409, "{method} {uri}: {response}");
@@ -3463,9 +3480,7 @@ async fn registry_http_can_inspect_and_delete_older_records_above_discovery_limi
         let (status, view) = registry_http(
             &f.app,
             "GET",
-            &format!(
-                "/v1/governance/registry/maya?namespace=prod&tenant=acme&projection={projection}"
-            ),
+            &format!("/v1/governance/registry/maya?projection={projection}"),
             None,
         )
         .await;

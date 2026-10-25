@@ -1,3 +1,4 @@
+import { useIdentity } from '../api/hooks/useIdentity'
 import { useState } from 'react'
 import { useWorkforce, useWorkforceChange } from '../api/hooks/useWorkforce'
 import { PageHeader } from '../components/layout/PageHeader'
@@ -13,9 +14,12 @@ import styles from './Governance.module.css'
 
 export type WorkforceReview = (label: string, change: WorkforceChange) => void
 export function Workforce() {
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
-  const [scope, setScope] = useState({ namespace: '', tenant: '' })
+  const { data: identity, error } = useIdentity()
+  if (error) return <p role="alert">{error.message}</p>
+  if (!identity) return <p role="status">Loading identity…</p>
+  return <WorkforceScope key={JSON.stringify(identity.scope)} scope={identity.scope} />
+}
+function WorkforceScope({ scope }: { scope: { namespace: string; tenant: string } }) {
   const query = useWorkforce(scope.namespace, scope.tenant)
   const mutation = useWorkforceChange()
   const [pending, setPending] = useState<{ label: string; change: WorkforceChange } | null>(null)
@@ -37,11 +41,7 @@ export function Workforce() {
   }
   return <div className={styles.content}>
     <PageHeader title="Workforce" subtitle="Organize people and agents. Issue explicit mandates for the work they represent." />
-    <form className={styles.scope} onSubmit={e => { e.preventDefault(); if (!mutation.isPending && !pending) { setScope({ namespace: namespace.trim(), tenant: tenant.trim() }); setReceipt(null); setError('') } }}>
-      <Input label="Namespace" value={namespace} onChange={e => setNamespace(e.target.value)} required disabled={!!pending} />
-      <Input label="Tenant" value={tenant} onChange={e => setTenant(e.target.value)} required disabled={!!pending} />
-      <Button loading={query.isFetching} disabled={mutation.isPending || !!pending}>Inspect workforce</Button>
-    </form>
+    <Button loading={query.isFetching} onClick={() => void query.refetch()}>Refresh</Button>
     {query.error && <p className={styles.error} role="alert">{query.error.message}</p>}
     {receipt && <div className={styles.card} role="status"><strong>Workforce change recorded</strong><p className={styles.muted}>{receipt.reason} · generation {receipt.generation}</p></div>}
     {view && <>

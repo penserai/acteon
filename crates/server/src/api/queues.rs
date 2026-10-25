@@ -4,8 +4,9 @@
 //! execute them, and report results. Chain `worker` steps and workflow
 //! continuation tasks flow through the same queues.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -126,8 +127,10 @@ impl From<&WorkerTask> for WorkerTaskDto {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct EnqueueTaskRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Action type for worker handler dispatch.
     pub action_type: String,
@@ -143,8 +146,10 @@ pub struct EnqueueTaskRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PollQueueRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Maximum tasks to lease in one poll (default 1).
     #[serde(default)]
@@ -168,8 +173,10 @@ pub struct PollQueueResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct HeartbeatRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Lease token returned by poll.
     pub lease_token: String,
@@ -182,8 +189,10 @@ pub struct HeartbeatRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CompleteTaskRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Lease token returned by poll.
     pub lease_token: String,
@@ -198,8 +207,10 @@ pub struct CompleteTaskRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct FailTaskRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Lease token returned by poll.
     pub lease_token: String,
@@ -219,8 +230,10 @@ fn default_true() -> bool {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct TaskQueryParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
     /// Optional status filter (`pending`, `leased`, `completed`, `failed`,
     /// `cancelled`).
@@ -246,7 +259,7 @@ pub async fn enqueue_task(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(queue): Path<String>,
-    Json(req): Json<EnqueueTaskRequest>,
+    ScopedJson(req): ScopedJson<EnqueueTaskRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -291,7 +304,7 @@ pub async fn poll_queue(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(queue): Path<String>,
-    Json(req): Json<PollQueueRequest>,
+    ScopedJson(req): ScopedJson<PollQueueRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -337,7 +350,7 @@ pub async fn heartbeat_task(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(task_id): Path<String>,
-    Json(req): Json<HeartbeatRequest>,
+    ScopedJson(req): ScopedJson<HeartbeatRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -378,7 +391,7 @@ pub async fn complete_task(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(task_id): Path<String>,
-    Json(req): Json<CompleteTaskRequest>,
+    ScopedJson(req): ScopedJson<CompleteTaskRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -420,7 +433,7 @@ pub async fn fail_task(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(task_id): Path<String>,
-    Json(req): Json<FailTaskRequest>,
+    ScopedJson(req): ScopedJson<FailTaskRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -461,7 +474,7 @@ pub async fn get_task(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(task_id): Path<String>,
-    Query(params): Query<TaskQueryParams>,
+    ScopedQuery(params): ScopedQuery<TaskQueryParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -502,7 +515,7 @@ pub async fn list_tasks(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(queue): Path<String>,
-    Query(params): Query<TaskQueryParams>,
+    ScopedQuery(params): ScopedQuery<TaskQueryParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -523,3 +536,11 @@ pub async fn list_tasks(
         Err(e) => queue_error_response(&e),
     }
 }
+
+crate::auth::context::scoped_body!(
+    CompleteTaskRequest,
+    EnqueueTaskRequest,
+    FailTaskRequest,
+    HeartbeatRequest,
+    PollQueueRequest
+);

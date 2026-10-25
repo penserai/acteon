@@ -23,6 +23,26 @@ pub struct DeadLetterEntry {
 #[error("dead-letter persistence failed: {0}")]
 pub struct DeadLetterError(pub String);
 
+/// Exact credential context and permitted provider/action pairs for a DLQ read.
+#[derive(Debug, Clone)]
+pub struct DeadLetterSelection {
+    pub scope: acteon_core::TenantContext,
+    /// Each pair permits one provider and action type; `*` matches any value.
+    pub operations: Vec<(String, String)>,
+}
+
+impl DeadLetterSelection {
+    #[must_use]
+    pub fn matches(&self, action: &Action) -> bool {
+        self.scope
+            .matches(action.namespace.as_str(), action.tenant.as_str())
+            && self.operations.iter().any(|(provider, action_type)| {
+                (provider == "*" || provider == action.provider.as_str())
+                    && (action_type == "*" || action_type == &action.action_type)
+            })
+    }
+}
+
 /// Trait for dead-letter queue backends.
 ///
 /// Implementations must be `Send + Sync` for use across async tasks.
@@ -43,6 +63,12 @@ pub trait DeadLetterSink: Send + Sync {
 
     /// Drain all entries from the queue, returning them.
     async fn drain(&self) -> Vec<DeadLetterEntry>;
+
+    /// Atomically remove only matching entries, preserving all other entries.
+    async fn drain_selected(&self, selection: &DeadLetterSelection) -> Vec<DeadLetterEntry>;
+
+    /// Count entries inside this exact context and operation grant set.
+    async fn len_selected(&self, selection: &DeadLetterSelection) -> usize;
 
     /// Remove entries older than the sink's configured retention window.
     ///
@@ -151,6 +177,25 @@ impl DeadLetterQueue {
         std::mem::take(&mut *guard)
     }
 
+    /// Atomically remove authorized entries without touching other tenants.
+    pub fn drain_selected(&self, selection: &DeadLetterSelection) -> Vec<DeadLetterEntry> {
+        let mut guard = self.entries.lock().expect("dlq mutex poisoned");
+        let (selected, retained) = std::mem::take(&mut *guard)
+            .into_iter()
+            .partition(|entry| selection.matches(&entry.action));
+        *guard = retained;
+        selected
+    }
+
+    pub fn len_selected(&self, selection: &DeadLetterSelection) -> usize {
+        self.entries
+            .lock()
+            .expect("dlq mutex poisoned")
+            .iter()
+            .filter(|entry| selection.matches(&entry.action))
+            .count()
+    }
+
     /// Return the number of entries currently in the queue.
     pub fn len(&self) -> usize {
         self.entries.lock().expect("dlq mutex poisoned").len()
@@ -182,6 +227,14 @@ impl DeadLetterSink for DeadLetterQueue {
 
     async fn drain(&self) -> Vec<DeadLetterEntry> {
         DeadLetterQueue::drain(self)
+    }
+
+    async fn drain_selected(&self, selection: &DeadLetterSelection) -> Vec<DeadLetterEntry> {
+        Self::drain_selected(self, selection)
+    }
+
+    async fn len_selected(&self, selection: &DeadLetterSelection) -> usize {
+        Self::len_selected(self, selection)
     }
 
     async fn cleanup_expired(&self) -> usize {
@@ -302,6 +355,40 @@ mod tests {
             .expect("manual clock advance");
         assert_eq!(dlq.cleanup_expired(), 0);
         assert_eq!(dlq.len(), 1);
+    }
+
+    #[test]
+    fn selected_drain_preserves_other_contexts_and_operations() {
+        let queue = DeadLetterQueue::new();
+        for (ns, tenant, provider, action_type) in [
+            ("prod", "bank-a", "email", "alert"),
+            ("prod", "bank-b", "email", "alert"),
+            ("stage", "bank-a", "email", "alert"),
+            ("prod", "bank-a", "sms", "alert"),
+            ("prod", "bank-a", "email", "receipt"),
+        ] {
+            queue.push(
+                Action::new(ns, tenant, provider, action_type, serde_json::Value::Null),
+                "failed".into(),
+                1,
+            );
+        }
+        let selection = DeadLetterSelection {
+            scope: acteon_core::TenantContext::new("prod", "bank-a"),
+            operations: vec![("email".into(), "alert".into())],
+        };
+        assert_eq!(queue.len_selected(&selection), 1);
+        let selected = queue.drain_selected(&selection);
+        assert_eq!(selected.len(), 1);
+        assert!(selection.matches(&selected[0].action));
+        assert_eq!(queue.len_selected(&selection), 0);
+        assert_eq!(queue.len(), 4);
+        assert!(
+            queue
+                .drain()
+                .iter()
+                .all(|entry| !selection.matches(&entry.action))
+        );
     }
 
     #[allow(dead_code)]

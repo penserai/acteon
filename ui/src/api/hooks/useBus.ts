@@ -34,8 +34,6 @@ export interface ListBusTopicsResponse {
 
 export interface CreateBusTopicReq {
   name: string
-  namespace: string
-  tenant: string
   partitions?: number
   replication_factor?: number
   retention_ms?: number
@@ -43,11 +41,11 @@ export interface CreateBusTopicReq {
   labels?: Record<string, string>
 }
 
-export function useBusTopics(filter: { namespace?: string; tenant?: string } = {}) {
+export function useBusTopics() {
   return useQuery({
-    queryKey: ['bus', 'topics', filter],
+    queryKey: ['bus', 'topics'],
     queryFn: async () => {
-      const res = await apiGet<ListBusTopicsResponse>('/v1/bus/topics', filter)
+      const res = await apiGet<ListBusTopicsResponse>('/v1/bus/topics')
       return res.topics
     },
     refetchInterval: 10_000,
@@ -65,9 +63,9 @@ export function useCreateBusTopic() {
 export function useDeleteBusTopic() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ namespace, tenant, name }: { namespace: string; tenant: string; name: string }) =>
+    mutationFn: ({ name }: { name: string }) =>
       apiDelete<void>(
-        `/v1/bus/topics/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(name)}`,
+        `/v1/bus/topics/${encodeURIComponent(name)}`,
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'topics'] }),
   })
@@ -98,8 +96,6 @@ export interface ListBusSubscriptionsResponse {
 export interface CreateBusSubscriptionReq {
   id: string
   topic: string
-  namespace: string
-  tenant: string
   starting_offset?: string
   ack_mode?: string
   dead_letter_topic?: string
@@ -123,7 +119,7 @@ export interface BusLag {
 }
 
 export function useBusSubscriptions(
-  filter: { namespace?: string; tenant?: string; topic?: string } = {},
+  filter: { topic?: string } = {},
 ) {
   return useQuery({
     queryKey: ['bus', 'subscriptions', filter],
@@ -196,7 +192,7 @@ export interface ListBusAgentsResponse {
 }
 
 export function useBusAgents(
-  filter: { namespace?: string; tenant?: string; status?: string; admin_state?: string } = {},
+  filter: { status?: string; admin_state?: string } = {},
 ) {
   return useQuery({
     queryKey: ['bus', 'agents', filter],
@@ -214,9 +210,9 @@ export function useBusAgents(
 export function useDeleteBusAgent() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ namespace, tenant, agentId }: { namespace: string; tenant: string; agentId: string }) =>
+    mutationFn: ({ agentId }: { agentId: string }) =>
       apiDelete<void>(
-        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}`,
+        `/v1/bus/agents/${encodeURIComponent(agentId)}`,
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'agents'] }),
   })
@@ -235,46 +231,40 @@ export function useSetBusAgentAdminState() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       agentId,
       body,
     }: {
-      namespace: string
-      tenant: string
       agentId: string
       body: SetBusAgentAdminState
     }) =>
       apiPut<BusAgent>(
-        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/admin-state`,
+        `/v1/bus/agents/${encodeURIComponent(agentId)}/admin-state`,
         body,
       ),
     onSuccess: (_data, vars) => {
       void qc.invalidateQueries({ queryKey: ['bus', 'agents'] })
       void qc.invalidateQueries({
-        queryKey: ['bus', 'agent', vars.namespace, vars.tenant, vars.agentId],
+        queryKey: ['bus', 'agent', vars.agentId],
       })
     },
   })
 }
 
 // Single-agent fetch used by the detail page.
-export function useBusAgent(namespace?: string, tenant?: string, agentId?: string) {
+export function useBusAgent(agentId?: string) {
   return useQuery({
-    queryKey: ['bus', 'agent', namespace, tenant, agentId],
+    queryKey: ['bus', 'agent', agentId],
     queryFn: () =>
       apiGet<BusAgent>(
-        `/v1/bus/agents/${encodeURIComponent(namespace!)}/${encodeURIComponent(tenant!)}/${encodeURIComponent(agentId!)}`,
+        `/v1/bus/agents/${encodeURIComponent(agentId!)}`,
       ),
-    enabled: !!namespace && !!tenant && !!agentId,
+    enabled: !!agentId,
     refetchInterval: 5_000,
   })
 }
 
 export interface RegisterBusAgentReq {
   agent_id: string
-  namespace: string
-  tenant: string
   display_name?: string
   capabilities?: string[]
   inbox_topic?: string
@@ -310,23 +300,23 @@ export interface AgentCard {
   [key: string]: unknown
 }
 
-export function useBusAgentCard(namespace?: string, tenant?: string, agentId?: string) {
+export function useBusAgentCard(agentId?: string) {
   return useQuery({
-    queryKey: ['bus', 'agent', namespace, tenant, agentId, 'card'],
+    queryKey: ['bus', 'agent', agentId, 'card'],
     queryFn: async () => {
       // 404 means "no card yet" — return null instead of throwing so
       // the detail page can render its empty state without an error
       // banner.
       try {
         return await apiGet<AgentCard>(
-          `/v1/bus/agents/${encodeURIComponent(namespace!)}/${encodeURIComponent(tenant!)}/${encodeURIComponent(agentId!)}/card`,
+          `/v1/bus/agents/${encodeURIComponent(agentId!)}/card`,
         )
       } catch (e) {
         if (e instanceof Error && /404/.test(e.message)) return null
         throw e
       }
     },
-    enabled: !!namespace && !!tenant && !!agentId,
+    enabled: !!agentId,
   })
 }
 
@@ -334,23 +324,19 @@ export function useUpsertBusAgentCard() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       agentId,
       card,
     }: {
-      namespace: string
-      tenant: string
       agentId: string
       card: AgentCard
     }) =>
       apiPut<AgentCard>(
-        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/card`,
-        card,
+        `/v1/bus/agents/${encodeURIComponent(agentId)}/card`,
+        cardInput(card),
       ),
     onSuccess: (_d, v) => {
       void qc.invalidateQueries({
-        queryKey: ['bus', 'agent', v.namespace, v.tenant, v.agentId, 'card'],
+        queryKey: ['bus', 'agent', v.agentId, 'card'],
       })
       void qc.invalidateQueries({ queryKey: ['bus', 'agents'] })
     },
@@ -361,20 +347,16 @@ export function useDeleteBusAgentCard() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       agentId,
     }: {
-      namespace: string
-      tenant: string
       agentId: string
     }) =>
       apiDelete<void>(
-        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/card`,
+        `/v1/bus/agents/${encodeURIComponent(agentId)}/card`,
       ),
     onSuccess: (_d, v) => {
       void qc.invalidateQueries({
-        queryKey: ['bus', 'agent', v.namespace, v.tenant, v.agentId, 'card'],
+        queryKey: ['bus', 'agent', v.agentId, 'card'],
       })
       void qc.invalidateQueries({ queryKey: ['bus', 'agents'] })
     },
@@ -421,7 +403,7 @@ export interface BusReplayResponse {
 }
 
 export function useBusConversations(
-  filter: { namespace?: string; tenant?: string; state?: string; participant?: string } = {},
+  filter: { state?: string; participant?: string } = {},
 ) {
   return useQuery({
     queryKey: ['bus', 'conversations', filter],
@@ -434,35 +416,31 @@ export function useBusConversations(
 }
 
 export function useBusConversation(
-  namespace: string | undefined,
-  tenant: string | undefined,
   id: string | undefined,
 ) {
   return useQuery({
-    queryKey: ['bus', 'conversations', namespace, tenant, id],
+    queryKey: ['bus', 'conversations', id],
     queryFn: () =>
       apiGet<BusConversation>(
-        `/v1/bus/conversations/${encodeURIComponent(namespace ?? '')}/${encodeURIComponent(tenant ?? '')}/${encodeURIComponent(id ?? '')}`,
+        `/v1/bus/conversations/${encodeURIComponent(id ?? '')}`,
       ),
-    enabled: !!(namespace && tenant && id),
+    enabled: !!id,
     refetchInterval: 10_000,
   })
 }
 
 export function useBusConversationMessages(
-  namespace: string | undefined,
-  tenant: string | undefined,
   id: string | undefined,
   params: { limit?: number; as_agent?: string } = {},
 ) {
   return useQuery({
-    queryKey: ['bus', 'conversations', namespace, tenant, id, 'messages', params],
+    queryKey: ['bus', 'conversations', id, 'messages', params],
     queryFn: () =>
       apiGet<BusReplayResponse>(
-        `/v1/bus/conversations/${encodeURIComponent(namespace ?? '')}/${encodeURIComponent(tenant ?? '')}/${encodeURIComponent(id ?? '')}/messages`,
+        `/v1/bus/conversations/${encodeURIComponent(id ?? '')}/messages`,
         params,
       ),
-    enabled: !!(namespace && tenant && id),
+    enabled: !!id,
     // Threads update as agents post; poll faster than the list view.
     refetchInterval: 5_000,
   })
@@ -503,18 +481,16 @@ export interface ListBusApprovalsResponse {
 }
 
 export function useBusApprovals(
-  namespace: string | undefined,
-  tenant: string | undefined,
   filter: { status?: BusApprovalStatus; conversation_id?: string } = {},
 ) {
   return useQuery({
-    queryKey: ['bus', 'approvals', namespace, tenant, filter],
+    queryKey: ['bus', 'approvals', filter],
     queryFn: () =>
       apiGet<ListBusApprovalsResponse>(
-        `/v1/bus/approvals/${encodeURIComponent(namespace ?? '')}/${encodeURIComponent(tenant ?? '')}`,
+        '/v1/bus/approvals',
         filter,
       ),
-    enabled: !!(namespace && tenant),
+    enabled: true,
     // Approvals are operator-actioned — short refresh interval so a
     // pending request shows up within seconds of a parking POST.
     refetchInterval: 5_000,
@@ -522,17 +498,15 @@ export function useBusApprovals(
 }
 
 export function useBusApproval(
-  namespace: string | undefined,
-  tenant: string | undefined,
   id: string | undefined,
 ) {
   return useQuery({
-    queryKey: ['bus', 'approvals', namespace, tenant, id],
+    queryKey: ['bus', 'approvals', id],
     queryFn: () =>
       apiGet<BusApprovalView>(
-        `/v1/bus/approvals/${encodeURIComponent(namespace ?? '')}/${encodeURIComponent(tenant ?? '')}/${encodeURIComponent(id ?? '')}`,
+        `/v1/bus/approvals/${encodeURIComponent(id ?? '')}`,
       ),
-    enabled: !!(namespace && tenant && id),
+    enabled: !!id,
     refetchInterval: 5_000,
   })
 }
@@ -546,18 +520,14 @@ export function useApproveBusApproval() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       id,
       decision,
     }: {
-      namespace: string
-      tenant: string
       id: string
       decision: BusApprovalDecision
     }) =>
       apiPost(
-        `/v1/bus/approvals/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(id)}/approve`,
+        `/v1/bus/approvals/${encodeURIComponent(id)}/approve`,
         decision,
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'approvals'] }),
@@ -568,20 +538,23 @@ export function useRejectBusApproval() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       id,
       decision,
     }: {
-      namespace: string
-      tenant: string
       id: string
       decision: BusApprovalDecision
     }) =>
       apiPost(
-        `/v1/bus/approvals/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(id)}/reject`,
+        `/v1/bus/approvals/${encodeURIComponent(id)}/reject`,
         decision,
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'approvals'] }),
   })
+}
+
+function cardInput(card: AgentCard) {
+  const input: Partial<AgentCard> = { ...card }
+  delete input.namespace
+  delete input.tenant
+  return input
 }

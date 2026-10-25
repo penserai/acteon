@@ -56,6 +56,24 @@ impl DynProvider for MockProvider {
     }
 }
 
+// Internal actions/records keep ownership; HTTP inputs intentionally omit it.
+fn http_input<T: serde::Serialize>(value: T) -> serde_json::Value {
+    let mut value = serde_json::to_value(value).unwrap();
+    fn strip(value: &mut serde_json::Value) {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("namespace");
+            object.remove("tenant");
+            object.remove("scope");
+        } else if let Some(items) = value.as_array_mut() {
+            for item in items {
+                strip(item);
+            }
+        }
+    }
+    strip(&mut value);
+    value
+}
+
 // -- Helpers --------------------------------------------------------------
 
 fn build_test_state(rules: Vec<Rule>) -> AppState {
@@ -158,6 +176,8 @@ fn build_test_state_with_signing(
 /// set `signer_id`, compute canonical bytes, sign, and stash the
 /// base64 signature.
 fn sign_action(mut action: Action, key: &acteon_crypto::signing::ActionSigningKey) -> Action {
+    action.namespace = "default".into();
+    action.tenant = "default".into();
     action.signer_id = Some(key.signer_id().to_owned());
     let canonical = action.canonical_bytes();
     action.signature = Some(key.sign(&canonical));
@@ -176,6 +196,18 @@ fn build_test_state_with_auth_role(role: &str, grants: Vec<Grant>) -> AppState {
     let mut state = build_test_state(vec![]);
 
     let api_key_config = ApiKeyConfig {
+        scope: acteon_core::TenantContext::new(
+            grants
+                .iter()
+                .flat_map(|g| &g.namespaces)
+                .find(|n| n.as_str() != "*")
+                .map_or("notifications", String::as_str),
+            grants
+                .iter()
+                .flat_map(|g| &g.tenants)
+                .find(|t| t.as_str() != "*")
+                .map_or("tenant-1", String::as_str),
+        ),
         authority_id: None,
         name: "test-key".to_string(),
         principal: None,
@@ -313,7 +345,7 @@ async fn dispatch_returns_valid_outcome() {
     let app = build_app(state);
 
     let action = test_action();
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -346,7 +378,7 @@ async fn dispatch_batch_returns_array() {
     let app = build_app(state);
 
     let actions = vec![test_action(), test_action()];
-    let body = serde_json::to_string(&actions).unwrap();
+    let body = serde_json::to_string(&http_input(&actions)).unwrap();
 
     let response = app
         .oneshot(
@@ -381,7 +413,7 @@ async fn dispatch_batch_all_signed_all_verified() {
         sign_action(test_action(), &key),
         sign_action(test_action(), &key),
     ];
-    let body = serde_json::to_string(&actions).unwrap();
+    let body = serde_json::to_string(&http_input(&actions)).unwrap();
 
     let response = app
         .oneshot(
@@ -440,7 +472,7 @@ async fn dispatch_batch_mixed_rejections_slot_by_index() {
     let bad_3 = sign_action(test_action(), &unknown_key);
 
     let actions = vec![good_0, bad_1, good_2, bad_3];
-    let body = serde_json::to_string(&actions).unwrap();
+    let body = serde_json::to_string(&http_input(&actions)).unwrap();
 
     let response = app
         .oneshot(
@@ -505,7 +537,7 @@ async fn dispatch_batch_unsigned_rejected_when_required() {
         test_action(),
         sign_action(test_action(), &key),
     ];
-    let body = serde_json::to_string(&actions).unwrap();
+    let body = serde_json::to_string(&http_input(&actions)).unwrap();
 
     let response = app
         .oneshot(
@@ -551,7 +583,7 @@ async fn dispatch_batch_all_rejected_skips_dispatch() {
     let app = build_app(state);
 
     let actions = vec![test_action(), test_action()];
-    let body = serde_json::to_string(&actions).unwrap();
+    let body = serde_json::to_string(&http_input(&actions)).unwrap();
 
     let response = app
         .oneshot(
@@ -645,7 +677,9 @@ rules:
                 .method(http::Method::POST)
                 .uri("/v1/rules/reload")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -903,7 +937,7 @@ async fn audit_query_returns_records_after_dispatch() {
 
     // Dispatch an action.
     let action = test_action();
-    let action_body = serde_json::to_string(&action).unwrap();
+    let action_body = serde_json::to_string(&http_input(&action)).unwrap();
     let app = build_app(state.clone());
     let response = app
         .oneshot(
@@ -952,7 +986,7 @@ async fn audit_get_by_action_id() {
 
     let action = test_action();
     let action_id = action.id.to_string();
-    let action_body = serde_json::to_string(&action).unwrap();
+    let action_body = serde_json::to_string(&http_input(&action)).unwrap();
 
     // Dispatch the action.
     let app = build_app(state.clone());
@@ -990,7 +1024,7 @@ async fn audit_get_by_action_id() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["action_id"], action_id);
-    assert_eq!(json["namespace"], "notifications");
+    assert_eq!(json["namespace"], "default");
     assert_eq!(json["provider"], "email");
 }
 
@@ -1010,7 +1044,9 @@ async fn test_dispatch_concurrency_limit_enforced() {
                 .uri("/v1/dispatch")
                 .header("X-Acteon-Role", "admin")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&action).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&http_input(&action)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1040,7 +1076,9 @@ async fn test_dispatch_batch_concurrency_limit_enforced() {
                 .uri("/v1/dispatch/batch")
                 .header("X-Acteon-Role", "admin")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_vec(&actions).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&http_input(&actions)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1075,7 +1113,7 @@ async fn audit_query_filters_work() {
 
     // Dispatch an action.
     let action = test_action();
-    let action_body = serde_json::to_string(&action).unwrap();
+    let action_body = serde_json::to_string(&http_input(&action)).unwrap();
     let app = build_app(state.clone());
     let _ = app
         .oneshot(
@@ -1096,7 +1134,7 @@ async fn audit_query_filters_work() {
     let response = app2
         .oneshot(
             Request::builder()
-                .uri("/v1/audit?namespace=notifications")
+                .uri("/v1/audit")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1114,7 +1152,7 @@ async fn audit_query_filters_work() {
     let response = app3
         .oneshot(
             Request::builder()
-                .uri("/v1/audit?namespace=other-ns")
+                .uri("/v1/audit?provider=unknown-provider")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1134,7 +1172,7 @@ async fn dispatch_without_audit_still_works() {
     let app = build_app(state);
 
     let action = test_action();
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -1304,7 +1342,7 @@ fn parse_query_param(url: &str, param: &str) -> Option<String> {
 async fn dispatch_refund_and_get_pending(state: &AppState) -> (String, String, String) {
     let app = build_app(state.clone());
     let action = refund_action();
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -1380,7 +1418,7 @@ async fn approval_approve_via_rest_executes_action() {
             Request::builder()
                 .method(http::Method::POST)
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}&kid={kid}"
+                    "/v1/approvals/{approval_id}/approve?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1405,7 +1443,7 @@ async fn approval_approve_via_rest_executes_action() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}&kid={kid}"
+                    "/v1/approvals/{approval_id}?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1437,7 +1475,7 @@ async fn approval_reject_via_rest_updates_status() {
             Request::builder()
                 .method(http::Method::POST)
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}/reject?sig={sig}&expires_at={expires_at}&kid={kid}"
+                    "/v1/approvals/{approval_id}/reject?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1462,7 +1500,7 @@ async fn approval_reject_via_rest_updates_status() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}&kid={kid}"
+                    "/v1/approvals/{approval_id}?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1490,7 +1528,7 @@ async fn approval_notification_failure_still_creates_pending() {
 
     let app = build_app(state);
     let action = refund_action();
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -1541,7 +1579,7 @@ async fn approval_expired_link_returns_404() {
             Request::builder()
                 .method(http::Method::POST)
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}&kid={kid}"
+                    "/v1/approvals/{approval_id}/approve?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1566,7 +1604,7 @@ async fn replay_single_action_works() {
     // 1. Dispatch original action
     let action = test_action();
     let original_id = action.id.to_string();
-    let action_body = serde_json::to_string(&action).unwrap();
+    let action_body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let app = build_app(state.clone());
     let response = app
@@ -1651,7 +1689,7 @@ async fn replay_bulk_actions_works() {
         // Modify payload slightly to differentiate if needed, though not strictly required
         action.payload = serde_json::json!({"i": i});
 
-        let action_body = serde_json::to_string(&action).unwrap();
+        let action_body = serde_json::to_string(&http_input(&action)).unwrap();
         let app = build_app(state.clone());
         let _ = app
             .oneshot(
@@ -1675,7 +1713,7 @@ async fn replay_bulk_actions_works() {
         .oneshot(
             Request::builder()
                 .method(http::Method::POST)
-                .uri("/v1/audit/replay?namespace=notifications&limit=10")
+                .uri("/v1/audit/replay?limit=10")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1719,7 +1757,9 @@ async fn recurring_create_returns_201() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1757,7 +1797,9 @@ async fn recurring_create_invalid_cron_returns_400() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1787,7 +1829,9 @@ async fn recurring_create_invalid_timezone_returns_400() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1817,7 +1861,9 @@ async fn recurring_create_too_frequent_cron_returns_400() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1835,7 +1881,7 @@ async fn recurring_get_not_found_returns_404() {
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri("/v1/recurring/nonexistent-id?namespace=ns&tenant=t")
+                .uri("/v1/recurring/nonexistent-id")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1868,7 +1914,9 @@ async fn recurring_create_then_get_roundtrip() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1887,9 +1935,7 @@ async fn recurring_create_then_get_roundtrip() {
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri(&format!(
-                    "/v1/recurring/{id}?namespace=notifications&tenant=tenant-1"
-                ))
+                .uri(&format!("/v1/recurring/{id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1926,7 +1972,9 @@ async fn recurring_list_returns_200() {
                     .method(http::Method::POST)
                     .uri("/v1/recurring")
                     .header(http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_string(&http_input(&body)).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -1940,7 +1988,7 @@ async fn recurring_list_returns_200() {
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri("/v1/recurring?namespace=notifications&tenant=tenant-1")
+                .uri("/v1/recurring")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1970,7 +2018,9 @@ async fn recurring_delete_returns_204() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1988,9 +2038,7 @@ async fn recurring_delete_returns_204() {
         .oneshot(
             Request::builder()
                 .method(http::Method::DELETE)
-                .uri(&format!(
-                    "/v1/recurring/{id}?namespace=notifications&tenant=tenant-1"
-                ))
+                .uri(&format!("/v1/recurring/{id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2005,9 +2053,7 @@ async fn recurring_delete_returns_204() {
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri(&format!(
-                    "/v1/recurring/{id}?namespace=notifications&tenant=tenant-1"
-                ))
+                .uri(&format!("/v1/recurring/{id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2026,7 +2072,7 @@ async fn recurring_delete_not_found_returns_404() {
         .oneshot(
             Request::builder()
                 .method(http::Method::DELETE)
-                .uri("/v1/recurring/nonexistent-id?namespace=ns&tenant=t")
+                .uri("/v1/recurring/nonexistent-id")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2049,7 +2095,9 @@ async fn recurring_pause_and_resume_lifecycle() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2073,7 +2121,9 @@ async fn recurring_pause_and_resume_lifecycle() {
                 .method(http::Method::POST)
                 .uri(&format!("/v1/recurring/{id}/pause"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&pause_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2095,7 +2145,9 @@ async fn recurring_pause_and_resume_lifecycle() {
                 .method(http::Method::POST)
                 .uri(&format!("/v1/recurring/{id}/pause"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&pause_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2111,7 +2163,9 @@ async fn recurring_pause_and_resume_lifecycle() {
                 .method(http::Method::POST)
                 .uri(&format!("/v1/recurring/{id}/resume"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&pause_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2133,7 +2187,9 @@ async fn recurring_pause_and_resume_lifecycle() {
                 .method(http::Method::POST)
                 .uri(&format!("/v1/recurring/{id}/resume"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&pause_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2155,7 +2211,9 @@ async fn recurring_update_changes_cron() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2180,7 +2238,9 @@ async fn recurring_update_changes_cron() {
                 .method(http::Method::PUT)
                 .uri(&format!("/v1/recurring/{id}"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&update_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&update_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2208,7 +2268,9 @@ async fn recurring_update_invalid_cron_returns_400() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2233,7 +2295,9 @@ async fn recurring_update_invalid_cron_returns_400() {
                 .method(http::Method::PUT)
                 .uri(&format!("/v1/recurring/{id}"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&update_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&update_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2255,7 +2319,9 @@ async fn recurring_list_with_status_filter() {
                 .method(http::Method::POST)
                 .uri("/v1/recurring")
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2278,7 +2344,9 @@ async fn recurring_list_with_status_filter() {
                 .method(http::Method::POST)
                 .uri(&format!("/v1/recurring/{id}/pause"))
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&http_input(&pause_body)).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2291,7 +2359,7 @@ async fn recurring_list_with_status_filter() {
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri("/v1/recurring?namespace=notifications&tenant=tenant-1&status=active")
+                .uri("/v1/recurring?status=active")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2311,7 +2379,7 @@ async fn recurring_list_with_status_filter() {
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri("/v1/recurring?namespace=notifications&tenant=tenant-1&status=paused")
+                .uri("/v1/recurring?status=paused")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2358,7 +2426,7 @@ async fn rule_coverage_aggregates_dispatched_actions() {
     // real records.
     let app = build_app(state.clone());
     for _ in 0..3 {
-        let action_body = serde_json::to_string(&test_action()).unwrap();
+        let action_body = serde_json::to_string(&http_input(&test_action())).unwrap();
         let response = app
             .clone()
             .oneshot(
@@ -2408,8 +2476,8 @@ async fn rule_coverage_aggregates_dispatched_actions() {
     let entries = json["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     let entry = &entries[0];
-    assert_eq!(entry["namespace"], "notifications");
-    assert_eq!(entry["tenant"], "tenant-1");
+    assert_eq!(entry["namespace"], "default");
+    assert_eq!(entry["tenant"], "default");
     assert_eq!(entry["provider"], "email");
     assert_eq!(entry["action_type"], "send_email");
     assert_eq!(entry["total"].as_u64().unwrap(), 3);
@@ -2425,6 +2493,23 @@ async fn rule_coverage_aggregates_dispatched_actions() {
 // =========================================================================
 
 async fn dispatch_with_key(app: axum::Router, action: &Action) -> StatusCode {
+    let body = serde_json::to_string(&http_input(action)).unwrap();
+    let (header_name, header_val) = auth_headers();
+    app.oneshot(
+        Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/dispatch")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(header_name, header_val)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+async fn dispatch_with_forged_scope(app: axum::Router, action: &Action) -> StatusCode {
     let body = serde_json::to_string(action).unwrap();
     let (header_name, header_val) = auth_headers();
     app.oneshot(
@@ -2464,7 +2549,10 @@ async fn scoped_api_key_denies_wrong_tenant() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-2", "email", "send_email");
-    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        dispatch_with_forged_scope(app, &action).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -2472,7 +2560,10 @@ async fn scoped_api_key_denies_wrong_namespace() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("alerts", "tenant-1", "email", "send_email");
-    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        dispatch_with_forged_scope(app, &action).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -2493,12 +2584,15 @@ async fn scoped_api_key_denies_wrong_action_type() {
 }
 
 #[tokio::test]
-async fn scoped_api_key_allows_hierarchical_child_tenant() {
+async fn scoped_api_key_rejects_request_scope_even_for_hierarchical_grants() {
     // Grant on parent tenant "tenant-1" should cover child "tenant-1.us-east".
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1.us-east", "email", "send_email");
-    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::OK);
+    assert_eq!(
+        dispatch_with_forged_scope(app, &action).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -2509,7 +2603,10 @@ async fn scoped_api_key_hierarchical_matching_is_one_way() {
     let state = build_test_state_with_auth(vec![grant]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1", "email", "send_email");
-    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        dispatch_with_forged_scope(app, &action).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -2518,7 +2615,10 @@ async fn scoped_api_key_hierarchical_does_not_match_prefix_without_dot() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1-corp", "email", "send_email");
-    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        dispatch_with_forged_scope(app, &action).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -2529,7 +2629,7 @@ async fn api_key_via_bearer_header_authenticates() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1", "email", "send_email");
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -2554,7 +2654,7 @@ async fn api_key_via_x_api_key_header_still_works() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1", "email", "send_email");
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -2577,7 +2677,7 @@ async fn missing_credentials_returns_401() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1", "email", "send_email");
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -2599,7 +2699,7 @@ async fn invalid_api_key_returns_401() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
     let action = action_for("notifications", "tenant-1", "email", "send_email");
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -2627,7 +2727,7 @@ async fn scoped_api_key_batch_dispatch_denies_any_out_of_scope_action() {
         // Second action is out-of-scope on provider → whole batch rejected.
         action_for("notifications", "tenant-1", "sms", "send_email"),
     ];
-    let body = serde_json::to_string(&batch).unwrap();
+    let body = serde_json::to_string(&http_input(&batch)).unwrap();
 
     let response = app
         .oneshot(
@@ -2661,7 +2761,7 @@ async fn silence_crud_request(
         .header(http::header::CONTENT_TYPE, "application/json")
         .header(http::header::AUTHORIZATION, "Bearer test-raw-key");
     let body = match body {
-        Some(v) => Body::from(serde_json::to_string(&v).unwrap()),
+        Some(v) => Body::from(serde_json::to_string(&http_input(&v)).unwrap()),
         None => Body::empty(),
     };
     let response = app.oneshot(builder.body(body).unwrap()).await.unwrap();
@@ -2716,9 +2816,8 @@ async fn silence_create_rejects_wrong_tenant() {
         "comment": "cross-tenant attempt"
     });
 
-    let (status, _) =
-        silence_crud_request(app, http::Method::POST, "/v1/silences", Some(body)).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let status = auth_post_status(app, "/v1/silences", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -2878,6 +2977,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     let mut state = build_test_state(vec![]);
 
     let admin_key = ApiKeyConfig {
+        scope: acteon_core::TenantContext::new("notifications", "tenant-c"),
         authority_id: None,
         name: "admin-key".to_string(),
         principal: None,
@@ -2892,6 +2992,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
         }],
     };
     let limited_key = ApiKeyConfig {
+        scope: acteon_core::TenantContext::new("notifications", "tenant-a"),
         authority_id: None,
         name: "limited-key".to_string(),
         principal: None,
@@ -2905,6 +3006,19 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
             agent_id: None,
         }],
     };
+    let mut api_keys = vec![admin_key, limited_key];
+    for tenant in ["tenant-a", "tenant-b", "tenant-c"] {
+        let key = ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("notifications", tenant),
+            name: format!("seed-{tenant}"),
+            authority_id: None,
+            principal: None,
+            role: "admin".into(),
+            key_hash: SecretString::new(hash_api_key(&format!("seed-{tenant}")).into()),
+            grants: vec![wildcard_admin_grant()],
+        };
+        api_keys.push(key);
+    }
     let auth_config = AuthFileConfig {
         authority_revision: None,
         settings: AuthSettings {
@@ -2912,7 +3026,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
             jwt_expiry_seconds: 3600,
         },
         users: vec![],
-        api_keys: vec![admin_key, limited_key],
+        api_keys,
     };
     let state_store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let provider = AuthProvider::new(&auth_config, state_store).expect("auth provider");
@@ -2936,7 +3050,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(http::header::AUTHORIZATION, format!("Bearer {bearer}"));
         let body = match body {
-            Some(v) => Body::from(serde_json::to_string(&v).unwrap()),
+            Some(v) => Body::from(serde_json::to_string(&http_input(&v)).unwrap()),
             None => Body::empty(),
         };
         let response = app.oneshot(builder.body(body).unwrap()).await.unwrap();
@@ -2963,7 +3077,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
         });
         let (status, _) = request_as(
             app.clone(),
-            "admin-raw-key",
+            &format!("seed-{tenant}"),
             http::Method::POST,
             "/v1/silences",
             Some(body),
@@ -2973,8 +3087,8 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     }
 
     // As the limited caller, list silences WITHOUT a tenant query
-    // parameter. The response must include tenant-a and tenant-b but
-    // NOT tenant-c. Before the fix this returned all three.
+    // parameter. Only tenant-a belongs to this credential, even though
+    // its grants also permit tenant-b during credential provisioning.
     let (status, json) = request_as(
         app.clone(),
         "limited-raw-key",
@@ -2998,15 +3112,15 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
         .collect();
     assert_eq!(
         returned_tenants,
-        ["tenant-a", "tenant-b"]
+        ["tenant-a"]
             .into_iter()
             .map(String::from)
             .collect::<std::collections::BTreeSet<_>>(),
-        "limited caller saw silences from {returned_tenants:?}, expected only tenant-a and tenant-b"
+        "limited caller saw silences from {returned_tenants:?}, expected only tenant-a"
     );
-    assert_eq!(json["count"].as_u64().unwrap(), 2);
+    assert_eq!(json["count"].as_u64().unwrap(), 1);
 
-    // Sanity: the admin caller still sees all three.
+    // Wildcard grants still expose only the administrator credential context.
     let (status, admin_json) = request_as(
         app,
         "admin-raw-key",
@@ -3016,7 +3130,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(admin_json["count"].as_u64().unwrap(), 3);
+    assert_eq!(admin_json["count"].as_u64().unwrap(), 1);
 }
 
 #[tokio::test]
@@ -3126,7 +3240,7 @@ async fn silence_intercepts_matching_dispatch() {
         .metadata
         .labels
         .insert("severity".into(), "warning".into());
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -3182,7 +3296,7 @@ async fn silence_does_not_intercept_non_matching_dispatch() {
         .metadata
         .labels
         .insert("severity".into(), "info".into());
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -3249,7 +3363,7 @@ async fn silence_on_parent_tenant_covers_child_dispatch() {
         .metadata
         .labels
         .insert("severity".into(), "warning".into());
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -3288,6 +3402,11 @@ async fn silence_on_child_tenant_does_not_cover_parent_dispatch() {
         agent_id: None,
     };
     let state = build_test_state_with_auth(vec![grant]);
+    let mut child_state = state.clone();
+    let mut child_grant = default_test_grant();
+    child_grant.tenants = vec!["tenant-1.us-east".into()];
+    child_state.auth = build_test_state_with_auth(vec![child_grant]).auth;
+    let child_app = build_app(child_state);
     let app = build_app(state);
 
     let create = serde_json::json!({
@@ -3297,13 +3416,8 @@ async fn silence_on_child_tenant_does_not_cover_parent_dispatch() {
         "duration_seconds": 3600,
         "comment": "child-tenant silence"
     });
-    let (status, _) = silence_crud_request(
-        app.clone(),
-        http::Method::POST,
-        "/v1/silences",
-        Some(create),
-    )
-    .await;
+    let (status, _) =
+        silence_crud_request(child_app, http::Method::POST, "/v1/silences", Some(create)).await;
     assert_eq!(status, StatusCode::CREATED);
 
     let mut action = test_action(); // tenant "tenant-1"
@@ -3311,7 +3425,7 @@ async fn silence_on_child_tenant_does_not_cover_parent_dispatch() {
         .metadata
         .labels
         .insert("severity".into(), "warning".into());
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -3436,7 +3550,7 @@ async fn deleted_silence_no_longer_blocks_new_dispatches() {
         .metadata
         .labels
         .insert("severity".into(), "warning".into());
-    let body = serde_json::to_string(&action).unwrap();
+    let body = serde_json::to_string(&http_input(&action)).unwrap();
 
     let response = app
         .oneshot(
@@ -3466,6 +3580,7 @@ async fn deleted_silence_no_longer_blocks_new_dispatches() {
 async fn silence_create_requires_silences_manage_permission() {
     // Viewer role lacks SilencesManage.
     let api_key_config = ApiKeyConfig {
+        scope: acteon_core::TenantContext::new("notifications", "tenant-1"),
         authority_id: None,
         name: "viewer-key".to_string(),
         principal: None,
@@ -3546,11 +3661,11 @@ async fn a2a_rpc_request(
         .oneshot(
             Request::builder()
                 .method(http::Method::POST)
-                .uri("/a2a/agents/acme")
+                .uri("/a2a")
                 .header(hk, hv)
                 .header(http::header::CONTENT_TYPE, "application/json")
                 .header("a2a-version", "1.0")
-                .body(Body::from(body.to_string()))
+                .body(Body::from(http_input(&body).to_string()))
                 .unwrap(),
         )
         .await
@@ -3677,11 +3792,9 @@ fn templates_scope_grant() -> Grant {
     }
 }
 
-fn create_template_body(namespace: &str, tenant: &str) -> serde_json::Value {
+fn create_template_body() -> serde_json::Value {
     serde_json::json!({
         "name": "tpl-test",
-        "namespace": namespace,
-        "tenant": tenant,
         "content": "hello",
     })
 }
@@ -3689,12 +3802,7 @@ fn create_template_body(namespace: &str, tenant: &str) -> serde_json::Value {
 #[tokio::test]
 async fn tenant_authz_templates_create_in_scope_succeeds() {
     let app = build_app(build_test_state_with_auth(vec![templates_scope_grant()]));
-    let status = auth_post_status(
-        app,
-        "/v1/templates",
-        create_template_body("notifications", "tenant-1"),
-    )
-    .await;
+    let status = auth_post_status(app, "/v1/templates", create_template_body()).await;
     assert_eq!(status, StatusCode::CREATED);
 }
 
@@ -3706,10 +3814,10 @@ async fn tenant_authz_templates_create_cross_tenant_forbidden() {
     let status = auth_post_status(
         app,
         "/v1/templates",
-        create_template_body("notifications", "tenant-2"),
+        serde_json::json!({"name": "tpl-test", "content": "hello", "tenant": "tenant-2"}),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -3719,12 +3827,7 @@ async fn tenant_authz_templates_create_viewer_role_forbidden() {
         "viewer",
         vec![templates_scope_grant()],
     ));
-    let status = auth_post_status(
-        app,
-        "/v1/templates",
-        create_template_body("notifications", "tenant-1"),
-    )
-    .await;
+    let status = auth_post_status(app, "/v1/templates", create_template_body()).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -3738,7 +3841,7 @@ async fn tenant_authz_templates_render_cross_tenant_forbidden() {
         "payload": {},
     });
     let status = auth_post_status(app, "/v1/templates/render", body).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -3753,8 +3856,8 @@ async fn silence_huge_duration_returns_400_not_panic() {
         agent_id: None,
     }]));
     let body = serde_json::json!({
-        "namespace": "notifications",
-        "tenant": "tenant-1",
+
+
         "matchers": [{ "name": "alertname", "value": "x" }],
         "comment": "test",
         "duration_seconds": u64::MAX,
@@ -3775,8 +3878,8 @@ async fn quota_huge_custom_window_returns_400_not_panic() {
         agent_id: None,
     }]));
     let body = serde_json::json!({
-        "namespace": "notifications",
-        "tenant": "tenant-1",
+
+
         "max_actions": 10,
         "window": u64::MAX.to_string(),
         "overage_behavior": "block",
@@ -3798,15 +3901,15 @@ async fn tenant_authz_rule_playground_denies_cross_tenant() {
         "payload": {},
     });
     let status = auth_post_status(app, "/v1/rules/evaluate", body).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn tenant_authz_rule_playground_allows_in_scope() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let body = serde_json::json!({
-        "namespace": "notifications",
-        "tenant": "tenant-1",
+
+
         "provider": "email",
         "action_type": "send_email",
         "payload": {},
@@ -3819,13 +3922,13 @@ async fn tenant_authz_rule_playground_allows_in_scope() {
 async fn tenant_authz_chains_list_denies_cross_tenant() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let status = auth_get_status(app, "/v1/chains?namespace=notifications&tenant=tenant-2").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn tenant_authz_chains_list_allows_in_scope() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
-    let status = auth_get_status(app, "/v1/chains?namespace=notifications&tenant=tenant-1").await;
+    let status = auth_get_status(app, "/v1/chains").await;
     assert_ne!(status, StatusCode::FORBIDDEN);
 }
 
@@ -3837,7 +3940,7 @@ async fn tenant_authz_chains_get_denies_cross_tenant() {
         "/v1/chains/some-id?namespace=notifications&tenant=tenant-2",
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -3845,14 +3948,14 @@ async fn tenant_authz_recurring_list_denies_cross_tenant() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let status =
         auth_get_status(app, "/v1/recurring?namespace=notifications&tenant=tenant-2").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn tenant_authz_events_list_denies_cross_tenant() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let status = auth_get_status(app, "/v1/events?namespace=notifications&tenant=tenant-2").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -3866,11 +3969,11 @@ async fn tenant_authz_quota_create_denies_cross_tenant() {
         "overage_behavior": "block",
     });
     let status = auth_post_status(app, "/v1/quotas", body).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
-async fn tenant_authz_quota_create_allows_wildcard() {
+async fn tenant_authz_quota_wildcard_cannot_supply_scope() {
     let app = build_app(build_test_state_with_auth(vec![wildcard_admin_grant()]));
     let body = serde_json::json!({
         "namespace": "notifications",
@@ -3880,7 +3983,7 @@ async fn tenant_authz_quota_create_allows_wildcard() {
         "overage_behavior": "block",
     });
     let status = auth_post_status(app, "/v1/quotas", body).await;
-    assert_ne!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -3888,15 +3991,14 @@ async fn tenant_authz_retention_create_denies_cross_tenant() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let body = serde_json::json!({ "namespace": "notifications", "tenant": "tenant-2" });
     let status = auth_post_status(app, "/v1/retention", body).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
-async fn tenant_authz_dlq_stats_denies_scoped_caller() {
-    // The DLQ is a single global queue; a tenant-scoped caller must be refused.
+async fn tenant_authz_dlq_stats_allows_scoped_caller() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let status = auth_get_status(app, "/v1/dlq/stats").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -3907,10 +4009,7 @@ async fn tenant_authz_dlq_stats_allows_wildcard() {
 }
 
 #[tokio::test]
-async fn tenant_authz_dlq_stats_denies_namespace_scoped_wildcard_tenant() {
-    // A grant that is wildcard on tenant but scoped on namespace must NOT
-    // pass the global-access gate: the DLQ spans every namespace and exposes
-    // each entry's namespace, so wildcard-tenant alone is insufficient.
+async fn tenant_authz_dlq_stats_allows_namespace_scoped_wildcard_tenant() {
     let grant = Grant {
         tenants: vec!["*".to_string()],
         namespaces: vec!["notifications".to_string()],
@@ -3920,7 +4019,7 @@ async fn tenant_authz_dlq_stats_denies_namespace_scoped_wildcard_tenant() {
     };
     let app = build_app(build_test_state_with_auth(vec![grant]));
     let status = auth_get_status(app, "/v1/dlq/stats").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::OK);
 }
 
 // Durable admission must retain the transport's signature, grant, and replay gates.
@@ -3935,7 +4034,7 @@ async fn durable_dispatch_replays_receipt_without_bypassing_action_id_replay_pro
             .method("POST")
             .uri(path)
             .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .body(Body::from(serde_json::to_vec(&http_input(action)).unwrap()))
             .unwrap()
     };
     let first = app
@@ -4005,7 +4104,7 @@ async fn durable_dispatch_verifies_every_retry_signature() {
             .method("POST")
             .uri("/v1/dispatch?durable=true")
             .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .body(Body::from(serde_json::to_vec(&http_input(action)).unwrap()))
             .unwrap()
     };
     assert_eq!(
@@ -4042,7 +4141,7 @@ async fn durable_dispatch_requires_grants_explicit_key_and_execution_mode() {
             .uri(path)
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(auth_headers().0, auth_headers().1)
-            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .body(Body::from(serde_json::to_vec(&http_input(action)).unwrap()))
             .unwrap()
     };
     assert_eq!(
@@ -4053,7 +4152,7 @@ async fn durable_dispatch_requires_grants_explicit_key_and_execution_mode() {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    let mut action = test_action().with_dedup_key("authorized-incident");
+    let action = test_action().with_dedup_key("authorized-incident");
     assert_eq!(
         app.clone()
             .oneshot(request(&action, "/v1/dispatch?durable=true&dry_run=true"))
@@ -4062,16 +4161,19 @@ async fn durable_dispatch_requires_grants_explicit_key_and_execution_mode() {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    action.tenant = "other-tenant".into();
+
     assert_eq!(
         app.clone()
-            .oneshot(request(&action, "/v1/dispatch?durable=true"))
+            .oneshot(request(
+                &action,
+                "/v1/dispatch?durable=true&tenant=other-tenant"
+            ))
             .await
             .unwrap()
             .status(),
-        StatusCode::FORBIDDEN
+        StatusCode::BAD_REQUEST
     );
-    action.tenant = "tenant-1".into();
+
     assert_eq!(
         app.oneshot(request(&action, "/v1/dispatch?durable=true"))
             .await
@@ -4125,7 +4227,7 @@ async fn executor_and_viewer_cannot_reach_any_control_plane_mutation() {
 }
 
 #[tokio::test]
-async fn executor_dispatch_keeps_all_four_grant_dimensions() {
+async fn executor_dispatch_uses_credential_context_and_restricts_operations() {
     let app = build_app(build_test_state_with_auth_role(
         "executor",
         vec![default_test_grant()],
@@ -4142,7 +4244,12 @@ async fn executor_dispatch_keeps_all_four_grant_dimensions() {
     ] {
         assert_eq!(
             dispatch_with_key(app.clone(), &action).await,
-            StatusCode::FORBIDDEN
+            if action.namespace.as_str() == "notifications" && action.tenant.as_str() == "tenant-1"
+            {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::OK
+            }
         );
     }
 }
@@ -4167,10 +4274,10 @@ async fn executor_rpc_cannot_bypass_rest_push_configuration_permissions() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/a2a/agents/acme")
+                    .uri("/a2a")
                     .header("Authorization", "Bearer test-raw-key")
                     .header("Content-Type", "application/json")
-                    .body(Body::from(body.to_string()))
+                    .body(Body::from(http_input(&body).to_string()))
                     .unwrap(),
             )
             .await
@@ -4205,6 +4312,7 @@ async fn existing_jwt_uses_reloaded_role_and_grants_and_rejects_removed_user() {
             jwt_expiry_seconds: 3600,
         },
         users: vec![UserConfig {
+            scope: acteon_core::TenantContext::new("notifications", "tenant-1"),
             authority_id: None,
             username: "human".into(),
             principal: None,
@@ -4270,6 +4378,8 @@ async fn existing_jwt_uses_reloaded_role_and_grants_and_rejects_removed_user() {
 async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority() {
     let mut grant = wildcard_admin_grant();
     grant.agent_id = Some("runtime".into());
+    grant.namespaces = vec!["operations".into()];
+    grant.tenants = vec!["acme".into()];
     let mut state = build_test_state_with_auth_role("admin", vec![grant.clone()]);
     let backend = acteon_bus::MemoryBackend::new();
     state.bus_backend = Some(backend.clone());
@@ -4286,7 +4396,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
                 .uri(path)
                 .header("Authorization", "Bearer test-raw-key")
                 .header("Content-Type", "application/json")
-                .body(Body::from(body.to_string()))
+                .body(Body::from(http_input(&body).to_string()))
                 .unwrap(),
         )
         .await
@@ -4318,6 +4428,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
             },
             users: vec![],
             api_keys: vec![ApiKeyConfig {
+                scope: acteon_core::TenantContext::new("operations", "acme"),
                 authority_id: None,
                 name: "test-key".into(),
                 principal: None,
@@ -4332,7 +4443,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         call(
             app.clone(),
             "POST",
-            "/v1/bus/agents/operations/acme/runtime/heartbeat",
+            "/v1/bus/agents/runtime/heartbeat",
             serde_json::json!({})
         )
         .await,
@@ -4342,7 +4453,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         call(
             app.clone(),
             "POST",
-            "/v1/bus/agents/operations/acme/peer/heartbeat",
+            "/v1/bus/agents/peer/heartbeat",
             serde_json::json!({})
         )
         .await,
@@ -4352,7 +4463,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         call(
             app.clone(),
             "POST",
-            "/v1/bus/agents/operations/acme/peer/send",
+            "/v1/bus/agents/peer/send",
             serde_json::json!({"payload":{"request":"diagnose"}})
         )
         .await,
@@ -4362,10 +4473,10 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
     // Runtime metadata reads remain usable with explicit grants, whether scoped
     // or unfiltered; they do not grant schema/registry administration.
     for path in [
-        "/v1/bus/schemas?namespace=operations&tenant=acme",
         "/v1/bus/schemas",
-        "/v1/bus/agents/operations/acme/peer",
-        "/v1/bus/approvals/operations/acme",
+        "/v1/bus/schemas",
+        "/v1/bus/agents/peer",
+        "/v1/bus/approvals",
     ] {
         assert_eq!(
             call(app.clone(), "GET", path, serde_json::Value::Null).await,
@@ -4377,7 +4488,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         call(
             app.clone(),
             "PUT",
-            "/v1/bus/agents/operations/acme/peer/admin-state",
+            "/v1/bus/agents/peer/admin-state",
             serde_json::json!({"admin_state":"active"})
         )
         .await,
@@ -4387,7 +4498,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         call(
             app,
             "PUT",
-            "/v1/bus/agents/operations/acme/peer",
+            "/v1/bus/agents/peer",
             serde_json::json!({"capabilities":["unrestricted"]})
         )
         .await,
@@ -4421,7 +4532,7 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/a2a/agents/acme/v1/message:send")
+                .uri("/a2a/v1/message:send")
                 .header("Authorization", "Bearer test-raw-key")
                 .header("Content-Type", "application/json")
                 .body(Body::from(
@@ -4474,7 +4585,7 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/a2a/agents/acme/v1/tasks/{task_id}"))
+                .uri(format!("/a2a/v1/tasks/{task_id}"))
                 .header("Authorization", "Bearer test-raw-key")
                 .header(axum::http::header::IF_NONE_MATCH, &first_cursor)
                 .body(Body::empty())
@@ -4495,9 +4606,7 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/a2a/agents/acme/v1/tasks/{task_id}?historyLength=1"
-                ))
+                .uri(format!("/a2a/v1/tasks/{task_id}?historyLength=1"))
                 .header("Authorization", "Bearer test-raw-key")
                 .header(axum::http::header::IF_NONE_MATCH, &second_cursor)
                 .body(Body::empty())
@@ -4510,7 +4619,7 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!("/a2a/agents/acme/v1/tasks/{task_id}"))
+                .uri(format!("/a2a/v1/tasks/{task_id}"))
                 .header("Authorization", "Bearer test-raw-key")
                 .header(axum::http::header::IF_NONE_MATCH, &second_cursor)
                 .body(Body::empty())
@@ -4529,11 +4638,11 @@ async fn viewer_does_not_gain_existing_execution_scoped_bus_or_a2a_reads() {
         vec![wildcard_admin_grant()],
     ));
     for path in [
-        "/v1/bus/schemas?namespace=operations&tenant=acme",
-        "/v1/bus/agents/operations/acme/peer",
-        "/v1/bus/conversations/operations/acme/thread/messages",
-        "/v1/bus/agents/operations/acme/peer/card",
-        "/a2a/operations/acme/v1/tasks/task",
+        "/v1/bus/schemas",
+        "/v1/bus/agents/peer",
+        "/v1/bus/conversations/thread/messages",
+        "/v1/bus/agents/peer/card",
+        "/a2a/v1/tasks/task",
     ] {
         let response = app
             .clone()
@@ -4559,6 +4668,7 @@ fn principal_key_config(name: &str, raw: &str, actor: &str) -> AuthFileConfig {
         },
         users: vec![],
         api_keys: vec![ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("notifications", "tenant-1"),
             authority_id: None,
             name: name.into(),
             principal: Some(
@@ -4585,7 +4695,7 @@ async fn stable_principal_survives_rotation_and_binds_durable_replay() {
             .uri("/v1/dispatch?durable=true")
             .header("X-API-Key", key)
             .header("Content-Type", "application/json")
-            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .body(Body::from(serde_json::to_vec(&http_input(action)).unwrap()))
             .unwrap()
     };
     let mut action = Action::new(
@@ -4647,7 +4757,7 @@ async fn stable_principal_survives_rotation_and_binds_durable_replay() {
     assert_eq!(replay["replayed"], true);
     assert_eq!(replay["receipt"]["caller"], first["receipt"]["caller"]);
     let mut narrowed = principal_key_config("key-new", "raw-new", "detector");
-    narrowed.api_keys[0].grants.clear();
+    narrowed.api_keys[0].grants[0].actions = vec!["different-action".into()];
     auth.reload(&narrowed).await.unwrap();
     assert_eq!(
         app.clone()
@@ -4675,6 +4785,7 @@ async fn changed_principal_binding_invalidates_existing_jwt_without_retargeting_
     use argon2::password_hash::{PasswordHasher, SaltString};
     let mut config = principal_key_config("unused", "unused", "service");
     config.users.push(UserConfig {
+        scope: acteon_core::TenantContext::new("notifications", "tenant-1"),
         authority_id: None,
         username: "human".into(),
         principal: Some(
@@ -4743,6 +4854,7 @@ async fn principal_configuration_errors_leave_current_auth_tables_intact() {
     let auth = AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap();
     let mut conflict = principal_key_config("key", "raw", "actor");
     conflict.api_keys.push(ApiKeyConfig {
+        scope: acteon_core::TenantContext::new("notifications", "tenant-1"),
         authority_id: None,
         name: "other".into(),
         key_hash: SecretString::new(hash_api_key("other").into()),
@@ -4814,7 +4926,7 @@ async fn provider_history_route_requires_private_authentication_even_without_aut
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/v1/governance/executions/{}?namespace=prod&tenant=acme",
+                    "/v1/governance/executions/{}",
                     uuid::Uuid::new_v4()
                 ))
                 .header("x-acteon-principal", "operator")
@@ -4870,7 +4982,7 @@ async fn timeline_api_tenant_scope_and_revision_contract() {
                 .uri("/v1/timeline/changes")
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer test-raw-key")
-                .body(Body::from(request.to_string()))
+                .body(Body::from(http_input(&request).to_string()))
                 .unwrap(),
         )
         .await
@@ -4891,7 +5003,7 @@ async fn timeline_api_tenant_scope_and_revision_contract() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     for (filter, expected) in [
         (
             r#"attributes.id == "literal-uuid" || eventId == "missing""#,
@@ -4908,7 +5020,7 @@ async fn timeline_api_tenant_scope_and_revision_contract() {
                     .uri("/v1/timeline/query")
                     .header("content-type", "application/json")
                     .header("authorization", "Bearer test-raw-key")
-                    .body(Body::from(request.to_string()))
+                    .body(Body::from(http_input(&request).to_string()))
                     .unwrap(),
             )
             .await

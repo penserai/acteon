@@ -992,16 +992,15 @@ impl ActeonClient {
     /// agent. Only an opaque verifier request handle crosses this API.
     pub async fn agent_service_request_authorization(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         authorization_request_id: &str,
     ) -> Result<Task, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/authorization:request",
-            segment(namespace)?,
-            segment(tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/authorization:request",
             segment(agent)?,
             segment(task_id)?,
         );
@@ -1036,9 +1035,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/authorization:resolve",
-            segment(&receipt.namespace)?,
-            segment(&receipt.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/authorization:resolve",
             segment(&receipt.agent)?,
             segment(&receipt.task_id)?,
         );
@@ -1076,9 +1073,7 @@ impl ActeonClient {
             return Err(Error::Configuration("invalid exact peer skill".into()));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers",
-            segment(&source.namespace)?,
-            segment(&source.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/peers",
             segment(&source.agent)?,
             segment(&source.task_id)?,
         );
@@ -1141,9 +1136,7 @@ impl ActeonClient {
         message: &TaskMessage,
     ) -> Result<AgentPeerSendReceipt, Error> {
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/message:send",
-            segment(&source.namespace)?,
-            segment(&source.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/peers/{}/{}/message:send",
             segment(&source.agent)?,
             segment(&source.task_id)?,
             segment(target)?,
@@ -1174,9 +1167,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}:refresh",
-            segment(&source.namespace)?,
-            segment(&source.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}:refresh",
             segment(&source.agent)?,
             segment(&source.task_id)?,
             segment(target)?,
@@ -1236,9 +1227,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}:cancel",
-            segment(&source.namespace)?,
-            segment(&source.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}:cancel",
             segment(&source.agent)?,
             segment(&source.task_id)?,
             segment(target)?,
@@ -1284,9 +1273,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}/message:send",
-            segment(&source.namespace)?,
-            segment(&source.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}/message:send",
             segment(&source.agent)?,
             segment(&source.task_id)?,
             segment(target)?,
@@ -1326,9 +1313,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}/authorization:resolve",
-            segment(&source.namespace)?,
-            segment(&source.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}/authorization:resolve",
             segment(&source.agent)?,
             segment(&source.task_id)?,
             segment(target)?,
@@ -1349,11 +1334,12 @@ impl ActeonClient {
     /// model data. On response loss, reuse that same message identity.
     pub async fn agent_service_send_message(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         message: &TaskMessage,
     ) -> Result<AgentServiceReceipt, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         self.agent_service_send_message_inner(namespace, tenant, agent, message, None)
             .await
     }
@@ -1362,12 +1348,13 @@ impl ActeonClient {
     /// references; the server recovers authority and verifies current permits.
     pub async fn agent_service_send_message_with_parent(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         message: &TaskMessage,
         parent: AgentServiceParent<'_>,
     ) -> Result<AgentServiceReceipt, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         self.agent_service_send_message_inner(namespace, tenant, agent, message, Some(parent))
             .await
     }
@@ -1377,48 +1364,31 @@ impl ActeonClient {
     /// outside prompts if the caller will later observe or continue the Task.
     pub async fn agent_service_send_streaming_message(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         message: &TaskMessage,
     ) -> Result<AgentServiceA2aStream, Error> {
-        self.agent_service_send_streaming_message_inner(namespace, tenant, agent, message, None)
+        self.agent_service_send_streaming_message_inner(agent, message, None)
             .await
     }
 
     /// Stream a bounded descendant invocation under a verified parent context.
     pub async fn agent_service_send_streaming_message_with_parent(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         message: &TaskMessage,
         parent: AgentServiceParent<'_>,
     ) -> Result<AgentServiceA2aStream, Error> {
-        self.agent_service_send_streaming_message_inner(
-            namespace,
-            tenant,
-            agent,
-            message,
-            Some(parent),
-        )
-        .await
+        self.agent_service_send_streaming_message_inner(agent, message, Some(parent))
+            .await
     }
 
     async fn agent_service_send_streaming_message_inner(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         message: &TaskMessage,
         parent: Option<AgentServiceParent<'_>>,
     ) -> Result<AgentServiceA2aStream, Error> {
-        let path = format!(
-            "/a2a/{}/{}/agents/{}",
-            segment(namespace)?,
-            segment(tenant)?,
-            segment(agent)?
-        );
+        let path = format!("/a2a/agents/{}", segment(agent)?);
         let request_id = serde_json::json!(format!("stream:{}", message.message_id));
         let mut request = self
             .add_auth(self.stream_client.post(format!("{}{path}", self.base_url)))
@@ -1464,12 +1434,7 @@ impl ActeonClient {
                 "invalid agent service source context".into(),
             ));
         }
-        let path = format!(
-            "/a2a/{}/{}/agents/{}",
-            segment(&receipt.namespace)?,
-            segment(&receipt.tenant)?,
-            segment(&receipt.agent)?
-        );
+        let path = format!("/a2a/agents/{}", segment(&receipt.agent)?);
         let request_id = serde_json::json!(format!("subscribe:{}", receipt.task_id));
         let response = self
             .add_auth(self.stream_client.post(format!("{}{path}", self.base_url)))
@@ -1498,12 +1463,7 @@ impl ActeonClient {
                 "invalid agent service source context".into(),
             ));
         }
-        let path = format!(
-            "/a2a/{}/{}/agents/{}",
-            segment(&receipt.namespace)?,
-            segment(&receipt.tenant)?,
-            segment(&receipt.agent)?
-        );
+        let path = format!("/a2a/agents/{}", segment(&receipt.agent)?);
         let request_id = serde_json::json!(format!("cancel:{}", receipt.task_id));
         let response = self
             .add_auth(self.client.post(format!("{}{path}", self.base_url)))
@@ -1555,12 +1515,13 @@ impl ActeonClient {
     /// is required when the authenticated principal is itself an agent.
     pub async fn agent_service_list_tasks(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         options: &AgentServiceListOptions,
         source: Option<&AgentServiceReceipt>,
     ) -> Result<AgentServiceTaskPage, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         if options
             .page_size
             .is_some_and(|value| !(1..=100).contains(&value))
@@ -1573,12 +1534,7 @@ impl ActeonClient {
                 "invalid agent service ListTasks pagination".into(),
             ));
         }
-        let path = format!(
-            "/a2a/{}/{}/agents/{}",
-            segment(namespace)?,
-            segment(tenant)?,
-            segment(agent)?
-        );
+        let path = format!("/a2a/agents/{}", segment(agent)?);
         let mut request = self
             .add_auth(self.client.post(format!("{}{path}", self.base_url)))
             .header("a2a-version", A2A_PROTOCOL_VERSION);
@@ -1670,12 +1626,7 @@ impl ActeonClient {
         params: Value,
         source: Option<&AgentServiceReceipt>,
     ) -> Result<Value, Error> {
-        let path = format!(
-            "/a2a/{}/{}/agents/{}",
-            segment(namespace)?,
-            segment(tenant)?,
-            segment(agent)?
-        );
+        let path = format!("/a2a/agents/{}", segment(agent)?);
         let mut request = self
             .add_auth(self.client.post(format!("{}{path}", self.base_url)))
             .header("a2a-version", A2A_PROTOCOL_VERSION);
@@ -1730,13 +1681,14 @@ impl ActeonClient {
     /// credential must have operations-management authority.
     pub async fn agent_service_create_push_config(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         input: &AgentServicePushConfigInput,
         source: Option<&AgentServiceReceipt>,
     ) -> Result<AgentServicePushConfig, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         if task_id.is_empty()
             || input.url.is_empty()
             || input.token.as_ref().is_some_and(|token| token.len() > 4096)
@@ -1773,13 +1725,14 @@ impl ActeonClient {
     /// Read one exact-agent push configuration, including its secret material.
     pub async fn agent_service_get_push_config(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         config_id: &str,
         source: Option<&AgentServiceReceipt>,
     ) -> Result<AgentServicePushConfig, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         let result = self
             .agent_service_push_rpc(
                 namespace,
@@ -1798,14 +1751,15 @@ impl ActeonClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn agent_service_list_push_configs(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         page_size: Option<u32>,
         page_token: Option<&str>,
         source: Option<&AgentServiceReceipt>,
     ) -> Result<AgentServicePushConfigPage, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         if page_size.is_some_and(|size| !(1..=100).contains(&size))
             || page_token.is_some_and(|token| token.len() > 8192)
         {
@@ -1838,13 +1792,14 @@ impl ActeonClient {
     /// delete is idempotent at the protocol boundary.
     pub async fn agent_service_delete_push_config(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         config_id: &str,
         source: Option<&AgentServiceReceipt>,
     ) -> Result<(), Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         let result = self
             .agent_service_push_rpc(
                 namespace,
@@ -1872,12 +1827,7 @@ impl ActeonClient {
         message: &TaskMessage,
         parent: Option<AgentServiceParent<'_>>,
     ) -> Result<AgentServiceReceipt, Error> {
-        let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/message:send",
-            segment(namespace)?,
-            segment(tenant)?,
-            segment(agent)?
-        );
+        let path = format!("/a2a/agents/{}/v1/message:send", segment(agent)?);
         let mut request = self
             .add_auth(self.client.post(format!("{}{path}", self.base_url)))
             .header("a2a-version", A2A_PROTOCOL_VERSION);
@@ -1940,9 +1890,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/stop",
-            segment(&receipt.namespace)?,
-            segment(&receipt.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/stop",
             segment(&receipt.agent)?,
             segment(&receipt.task_id)?
         );
@@ -2008,9 +1956,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}",
-            segment(&receipt.namespace)?,
-            segment(&receipt.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}",
             segment(&receipt.agent)?,
             segment(&receipt.task_id)?
         );
@@ -2049,9 +1995,7 @@ impl ActeonClient {
             ));
         }
         let path = format!(
-            "/a2a/{}/{}/agents/{}/v1/tasks/{}/message:send",
-            segment(&receipt.namespace)?,
-            segment(&receipt.tenant)?,
+            "/a2a/agents/{}/v1/tasks/{}/message:send",
             segment(&receipt.agent)?,
             segment(&receipt.task_id)?
         );
@@ -2155,6 +2099,11 @@ mod tests {
                 );
                 async move {
                     assert_eq!(request.headers()["authorization"], "Bearer caller-key");
+                    if request.uri().path() == "/v1/auth/identity" {
+                        return Json(serde_json::json!({"credential_id":"caller-key", "auth_method":"api_key",
+                            "role":"operator", "principal":null, "scope":{"namespace":"prod","tenant":"acme"}
+                        })).into_response();
+                    }
                     assert_eq!(request.headers()["a2a-version"], "1.0");
                     let path = percent_encoding::percent_decode_str(request.uri().path())
                         .decode_utf8()
@@ -2188,7 +2137,7 @@ mod tests {
                     let raw = to_bytes(request.into_body(), 2 * 1024 * 1024)
                         .await
                         .unwrap();
-                    if path == "/a2a/prod/acme/agents/notifier" {
+                    if path == "/a2a/agents/notifier" {
                         let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                         let method = body["method"].as_str().unwrap();
                         if method == "ListTasks" {
@@ -2390,7 +2339,7 @@ mod tests {
         let message = TaskMessage::text("m1", acteon_core::TaskRole::User, "one");
         let mut sent = fixture
             .client
-            .agent_service_send_streaming_message("prod", "acme", "notifier", &message)
+            .agent_service_send_streaming_message("notifier", &message)
             .await
             .unwrap();
         assert!(sent.source_context().is_some_and(valid_source));
@@ -2398,7 +2347,7 @@ mod tests {
 
         let receipt = fixture
             .client
-            .agent_service_send_message("prod", "acme", "notifier", &message)
+            .agent_service_send_message("notifier", &message)
             .await
             .unwrap();
         let mut subscribed = fixture
@@ -2424,8 +2373,6 @@ mod tests {
         let page = fixture
             .client
             .agent_service_list_tasks(
-                "prod",
-                "acme",
                 "notifier",
                 &AgentServiceListOptions {
                     status: Some(TaskState::Submitted),
@@ -2536,8 +2483,6 @@ mod tests {
         let source = fixture
             .client
             .agent_service_send_message(
-                "prod",
-                "acme",
                 "notifier",
                 &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
             )
@@ -2635,8 +2580,6 @@ mod tests {
         let receipt = fixture
             .client
             .agent_service_send_message(
-                "prod",
-                "acme",
                 "notifier",
                 &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
             )
@@ -2670,8 +2613,6 @@ mod tests {
         let receipt = fixture
             .client
             .agent_service_send_message(
-                "prod",
-                "acme",
                 "notifier",
                 &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
             )
@@ -2679,13 +2620,7 @@ mod tests {
             .unwrap();
         fixture
             .client
-            .agent_service_request_authorization(
-                "prod",
-                "acme",
-                "notifier",
-                receipt.task_id(),
-                "opaque-flow-42",
-            )
+            .agent_service_request_authorization("notifier", receipt.task_id(), "opaque-flow-42")
             .await
             .unwrap();
         fixture
@@ -2707,10 +2642,10 @@ mod tests {
         let (first, second) = tokio::join!(
             fixture
                 .client
-                .agent_service_send_message("prod", "acme", "notifier", &first),
+                .agent_service_send_message("notifier", &first),
             fixture
                 .client
-                .agent_service_send_message("prod", "acme", "notifier", &second)
+                .agent_service_send_message("notifier", &second)
         );
         let mut first = first.unwrap();
         first.task.id = "tampered-model-id".into();
@@ -2756,6 +2691,13 @@ mod tests {
         let app = Router::new().fallback(any(move |request: Request| {
             let wire = expected.clone();
             async move {
+                if request.uri().path() == "/v1/auth/identity" {
+                    assert!(request.headers().get(AGENT_EXECUTION_CONTEXT_HEADER).is_none());
+                    assert!(request.headers().get(EXECUTION_PERMITS_HEADER).is_none());
+                    return Json(serde_json::json!({"credential_id":"caller-key", "auth_method":"api_key",
+                        "role":"operator", "principal":null, "scope":{"namespace":"prod","tenant":"acme"}
+                    })).into_response();
+                }
                 assert!(request.headers().get(AGENT_SOURCE_CONTEXT_HEADER).is_none());
                 assert_eq!(
                     request.headers()[AGENT_EXECUTION_CONTEXT_HEADER],
@@ -2801,8 +2743,6 @@ mod tests {
             serde_json::from_value(wire["parent"]["permits"].clone()).unwrap();
         client
             .agent_service_send_message_with_parent(
-                "prod",
-                "acme",
                 "notifier",
                 &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
                 AgentServiceParent {
@@ -2863,14 +2803,14 @@ mod tests {
         assert!(matches!(
             fixture
                 .client
-                .agent_service_send_message("prod", "acme", "notifier", &message)
+                .agent_service_send_message("notifier", &message)
                 .await,
             Err(Error::Deserialization(_))
         ));
         for status in [403, 404, 409, 429, 503, 307] {
             fixture.status.store(status, Ordering::SeqCst);
             assert!(
-                matches!(fixture.client.agent_service_send_message("prod", "acme", "notifier", &message).await, Err(Error::Http { status: actual, .. }) if actual == status)
+                matches!(fixture.client.agent_service_send_message("notifier", &message).await, Err(Error::Http { status: actual, .. }) if actual == status)
             );
         }
         assert_eq!(fixture.calls.lock().unwrap().len(), 7);
@@ -2881,8 +2821,6 @@ mod tests {
         let receipt = f
             .client
             .agent_service_send_message(
-                "prod",
-                "acme",
                 "notifier",
                 &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
             )

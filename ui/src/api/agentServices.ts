@@ -47,8 +47,8 @@ function segment(value: string): string {
   if (!value || value === '.' || value === '..') throw new Error('Invalid service route')
   return encodeURIComponent(value)
 }
-function base(namespace: string, tenant: string, agent: string): string {
-  return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}/v1`
+function base(agent: string): string {
+  return `/a2a/agents/${segment(agent)}/v1`
 }
 function source(value: string | null): string {
   if (!value || value.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('Admission receipt unavailable. Retry the same request to recover it.')
@@ -61,7 +61,7 @@ async function task(response: Response, namespace: string, tenant: string, id?: 
   return value
 }
 export async function sendServiceMessage(namespace: string, tenant: string, agent: string, messageId: string, text: string): Promise<ServiceReceipt> {
-  const response = await apiResponse(base(namespace, tenant, agent) + '/message:send', {
+  const response = await apiResponse(base(agent) + '/message:send', {
     method: 'POST', redirect: 'error',
     headers: { 'a2a-version': '1.0' },
     body: JSON.stringify({ message: { role: 'user', messageId, parts: [{ kind: 'text', text }] } }),
@@ -70,14 +70,14 @@ export async function sendServiceMessage(namespace: string, tenant: string, agen
   return Object.freeze({ namespace, tenant, agent, taskId: accepted.id, task: accepted, sourceContext: source(response.headers.get(SOURCE_HEADER)) })
 }
 export async function observeServiceTask(receipt: ServiceReceipt): Promise<ServiceTask> {
-  const response = await apiResponse(base(receipt.namespace, receipt.tenant, receipt.agent) + '/tasks/' + segment(receipt.taskId), {
+  const response = await apiResponse(base(receipt.agent) + '/tasks/' + segment(receipt.taskId), {
     redirect: 'error', headers: { 'a2a-version': '1.0', [SOURCE_HEADER]: source(receipt.sourceContext) },
   })
   return task(response, receipt.namespace, receipt.tenant, receipt.taskId)
 }
 
 export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true; cancellationConfirmed: boolean; providerAbort?: ServiceProviderAbort }> {
-  const response = await apiResponse(base(receipt.namespace, receipt.tenant, receipt.agent) + '/tasks/' + segment(receipt.taskId) + '/stop', {
+  const response = await apiResponse(base(receipt.agent) + '/tasks/' + segment(receipt.taskId) + '/stop', {
     method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0', [SOURCE_HEADER]: source(receipt.sourceContext) },
   })
   if (response.headers.get('a2a-version') !== '1.0') throw new Error('Unsupported agent service response')
@@ -90,10 +90,10 @@ export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: 
   return { task: stopped, futureStartsBlocked: true, cancellationConfirmed: value.cancellation_confirmed, ...(abort ? { providerAbort: abort } : {}) }
 }
 
-export async function listServiceTasks(namespace: string, tenant: string, agent: string, pageToken = ''): Promise<ServiceTaskPage> {
+export async function listServiceTasks(agent: string, pageToken = ''): Promise<ServiceTaskPage> {
   if (pageToken.length > 8192) throw new Error('Task page token is too large')
   const requestId = `list:${agent}`
-  const response = await apiResponse(`/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}`, {
+  const response = await apiResponse(`/a2a/agents/${segment(agent)}`, {
     method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0' },
     body: JSON.stringify({
       jsonrpc: '2.0', id: requestId, method: 'ListTasks',

@@ -9,8 +9,7 @@ package com.acteon.client.models;
  * to fetch the next page in O(limit) time. Treat the cursor as opaque.
  */
 public class AuditQuery {
-    private String namespace;
-    private String tenant;
+
     private String provider;
     private String actionType;
     private String outcome;
@@ -21,12 +20,6 @@ public class AuditQuery {
     public static Builder builder() {
         return new Builder();
     }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
@@ -47,8 +40,7 @@ public class AuditQuery {
     public void setCursor(String cursor) { this.cursor = cursor; }
 
     public static class Builder {
-        private String namespace;
-        private String tenant;
+
         private String provider;
         private String actionType;
         private String outcome;
@@ -56,8 +48,6 @@ public class AuditQuery {
         private Integer offset;
         private String cursor;
 
-        public Builder namespace(String namespace) { this.namespace = namespace; return this; }
-        public Builder tenant(String tenant) { this.tenant = tenant; return this; }
         public Builder provider(String provider) { this.provider = provider; return this; }
         public Builder actionType(String actionType) { this.actionType = actionType; return this; }
         public Builder outcome(String outcome) { this.outcome = outcome; return this; }
@@ -67,8 +57,7 @@ public class AuditQuery {
 
         public AuditQuery build() {
             AuditQuery query = new AuditQuery();
-            query.namespace = this.namespace;
-            query.tenant = this.tenant;
+
             query.provider = this.provider;
             query.actionType = this.actionType;
             query.outcome = this.outcome;

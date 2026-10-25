@@ -2,6 +2,7 @@
 //!
 //! Provides the current compliance status and audit hash chain verification.
 
+use crate::auth::context::ScopedJson;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -35,9 +36,11 @@ pub struct ComplianceStatusResponse {
 pub struct VerifyChainRequest {
     /// Namespace to verify.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant to verify.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Optional: only verify records dispatched at or after this time.
     #[serde(default)]
@@ -111,7 +114,7 @@ pub async fn get_compliance_status(State(state): State<AppState>) -> impl IntoRe
 )]
 pub async fn verify_audit_chain(
     State(state): State<AppState>,
-    Json(req): Json<VerifyChainRequest>,
+    ScopedJson(req): ScopedJson<VerifyChainRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let gateway = state.gateway.read().await;
     let result = gateway
@@ -142,3 +145,5 @@ pub async fn verify_audit_chain(
         )),
     }
 }
+
+crate::auth::context::scoped_body!(VerifyChainRequest);

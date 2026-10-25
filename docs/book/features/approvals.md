@@ -17,11 +17,11 @@ sequenceDiagram
     G->>H: Send notification with URLs
 
     alt Approved
-        H->>G: POST /approve (HMAC-signed)
+        H->>G: POST /approve (authenticated operator)
         G->>G: Execute original action
         G->>S: Update approval status
     else Rejected
-        H->>G: POST /reject (HMAC-signed)
+        H->>G: POST /reject (authenticated operator)
         G->>S: Update approval status
     else Expired
         Note over G,S: TTL expires
@@ -30,7 +30,7 @@ sequenceDiagram
 ```
 
 1. An action matching a `request_approval` rule creates an approval record
-2. HMAC-signed approve/reject URLs are generated
+2. Approval URLs are generated; decisions require an operator credential
 3. A notification is sent to reviewers
 4. The action is held until approved, rejected, or expired
 
@@ -69,8 +69,8 @@ rules:
   "PendingApproval": {
   "approval_id": "apr-abc123",
   "expires_at": "2026-01-15T11:00:00Z",
-  "approve_url": "/v1/approvals/ns/tenant-1/apr-abc123/approve?sig=...",
-  "reject_url": "/v1/approvals/ns/tenant-1/apr-abc123/reject?sig=...",
+  "approve_url": "/v1/approvals/apr-abc123/approve",
+  "reject_url": "/v1/approvals/apr-abc123/reject",
   "notification_sent": true
   }
 }
@@ -78,23 +78,20 @@ rules:
 
 ## Approval URLs
 
-Approval and rejection URLs are HMAC-signed to prevent tampering. The signature includes:
-
-- Namespace and tenant
-- Approval ID
-- Expiration timestamp
-- Action: "approve" or "reject"
+Approval decisions require an authenticated operator or admin credential in the
+approval's namespace and tenant. URL signatures do not authorize HTTP access.
+The server checks ownership and expiration before executing a decision.
 
 ### Approving an Action
 
 ```bash
-curl -X POST "http://localhost:8080/v1/approvals/ns/tenant-1/apr-abc123/approve?sig=SIGNATURE&expires_at=TIMESTAMP"
+curl -X POST -H "Authorization: Bearer $ACTEON_OPERATOR_TOKEN" "http://localhost:8080/v1/approvals/apr-abc123/approve"
 ```
 
 ### Rejecting an Action
 
 ```bash
-curl -X POST "http://localhost:8080/v1/approvals/ns/tenant-1/apr-abc123/reject?sig=SIGNATURE&expires_at=TIMESTAMP"
+curl -X POST -H "Authorization: Bearer $ACTEON_OPERATOR_TOKEN" "http://localhost:8080/v1/approvals/apr-abc123/reject"
 ```
 
 ## API Endpoints
@@ -102,13 +99,13 @@ curl -X POST "http://localhost:8080/v1/approvals/ns/tenant-1/apr-abc123/reject?s
 ### List Pending Approvals
 
 ```bash
-curl "http://localhost:8080/v1/approvals?namespace=ns&tenant=tenant-1"
+curl -H "Authorization: Bearer $ACTEON_OPERATOR_TOKEN" "http://localhost:8080/v1/approvals"
 ```
 
 ### Get Approval Status
 
 ```bash
-curl "http://localhost:8080/v1/approvals/ns/tenant-1/apr-abc123?sig=SIGNATURE&expires_at=TIMESTAMP"
+curl -H "Authorization: Bearer $ACTEON_OPERATOR_TOKEN" "http://localhost:8080/v1/approvals/apr-abc123"
 ```
 
 ## Approval States
@@ -130,16 +127,16 @@ stateDiagram-v2
 
     ```rust
     // Approve
-    client.approve("ns", "tenant-1", "apr-abc123", "sig", 1791032400).await?;
+    client.approve("apr-abc123").await?;
 
     // Reject
-    client.reject("ns", "tenant-1", "apr-abc123", "sig", 1791032400).await?;
+    client.reject("apr-abc123").await?;
 
     // List pending
-    let approvals = client.list_approvals("ns", "tenant-1").await?;
+    let approvals = client.list_approvals().await?;
 
     // Get status
-    let status = client.get_approval("ns", "tenant-1", "apr-abc123", "sig", 1791032400).await?;
+    let status = client.get_approval("apr-abc123").await?;
     ```
 
 ## Use Cases

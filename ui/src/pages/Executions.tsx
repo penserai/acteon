@@ -31,8 +31,6 @@ const col = createDataTableColumnHelper<ExecutionSummary>()
 export function Executions() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const [ns, setNs] = useState(searchParams.get('namespace') ?? '')
-  const [tenant, setTenant] = useState(searchParams.get('tenant') ?? '')
   const [chainName, setChainName] = useState(searchParams.get('chain_name') ?? '')
   const [attr, setAttr] = useState(searchParams.get('attr') ?? '')
   const statusFilter = searchParams.get('status') ?? ''
@@ -45,8 +43,6 @@ export function Executions() {
   }
 
   const { data: executions, isLoading } = useExecutions({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     chain_name: chainName.trim() || undefined,
     status: statusFilter || undefined,
     attr: attr.includes('=') ? attr.trim() : undefined,
@@ -93,22 +89,6 @@ export function Executions() {
       <PageHeader title="Executions" />
 
       <div className={styles.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => {
-            setNs(e.target.value)
-            setParam('namespace', e.target.value)
-          }}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => {
-            setTenant(e.target.value)
-            setParam('tenant', e.target.value)
-          }}
-        />
         <Select
           options={STATUS_OPTIONS}
           value={statusFilter}
@@ -136,7 +116,7 @@ export function Executions() {
         data={executions ?? []}
         columns={columns}
         loading={isLoading}
-        onRowClick={(row) => navigate(`/chains/${row.execution_id}?namespace=${encodeURIComponent(ns)}&tenant=${encodeURIComponent(tenant)}`)}
+        onRowClick={(row) => navigate(`/chains/${row.execution_id}`)}
         emptyTitle="No executions"
         emptyDescription="Enter a namespace and tenant to list chain executions, including terminal ones."
       />

@@ -47,12 +47,12 @@ The `DryRun` outcome contains:
 curl -X POST 'http://localhost:8080/v1/dispatch?dry_run=true' \
   -H 'Content-Type: application/json' \
   -d '{
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {"to": "user@example.com"}
-  }'
+  "provider": "email",
+  "action_type": "send_email",
+  "payload": {
+    "to": "user@example.com"
+  }
+}'
 ```
 
 ```json
@@ -186,9 +186,17 @@ independently and none are executed:
 curl -X POST 'http://localhost:8080/v1/dispatch/batch?dry_run=true' \
   -H 'Content-Type: application/json' \
   -d '[
-    {"namespace": "ns", "tenant": "t1", "provider": "email", "action_type": "send", "payload": {}},
-    {"namespace": "ns", "tenant": "t1", "provider": "email", "action_type": "spam", "payload": {}}
-  ]'
+  {
+    "provider": "email",
+    "action_type": "send",
+    "payload": {}
+  },
+  {
+    "provider": "email",
+    "action_type": "spam",
+    "payload": {}
+  }
+]'
 ```
 
 ```json

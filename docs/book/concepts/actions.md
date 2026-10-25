@@ -61,14 +61,14 @@ let action = Action::new(
 ### JSON Representation
 
 A complete action sent to the dispatch API includes an ID and creation timestamp.
+The server supplies namespace and tenant from the authenticated credential.
+The `Action` type above is the internal record; HTTP clients use `ActionRequest`.
 SDK constructors can supply these fields:
 
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440001",
   "created_at": "2026-01-01T00:00:00Z",
-  "namespace": "notifications",
-  "tenant": "tenant-1",
   "provider": "email",
   "action_type": "send_email",
   "payload": {
@@ -88,8 +88,8 @@ SDK constructors can supply these fields:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `namespace` | Yes | Logical grouping for isolation |
-| `tenant` | Yes | Multi-tenant identifier |
+| `namespace` | Server-assigned | Credential namespace on stored records |
+| `tenant` | Server-assigned | Credential tenant on stored records |
 | `provider` | Yes | Target provider name |
 | `action_type` | Yes | Action discriminator for rule matching |
 | `payload` | Yes | Arbitrary JSON payload passed to the provider |

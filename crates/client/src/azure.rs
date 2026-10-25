@@ -9,14 +9,14 @@
 //! use acteon_client::azure;
 //!
 //! // Upload a blob
-//! let action = azure::blob::upload("storage", "tenant-1")
+//! let action = azure::blob::upload()
 //!     .blob_name("data.json")
 //!     .body(r#"{"hello":"world"}"#)
 //!     .content_type("application/json")
 //!     .build();
 //!
 //! // Send an event to Event Hubs
-//! let action = azure::eventhubs::send_event("events", "tenant-1")
+//! let action = azure::eventhubs::send_event()
 //!     .body(serde_json::json!({"key": "value"}))
 //!     .build();
 //! ```
@@ -27,14 +27,12 @@
 
 /// Helpers for creating Azure Blob Storage actions.
 pub mod blob {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for an Azure Blob Storage `upload_blob` action.
-    pub fn upload(namespace: impl Into<String>, tenant: impl Into<String>) -> BlobUploadBuilder {
+    pub fn upload() -> BlobUploadBuilder {
         BlobUploadBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             blob_name: String::new(),
             container: None,
             body: None,
@@ -46,13 +44,8 @@ pub mod blob {
     }
 
     /// Create a builder for an Azure Blob Storage `download_blob` action.
-    pub fn download(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> BlobDownloadBuilder {
+    pub fn download() -> BlobDownloadBuilder {
         BlobDownloadBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             blob_name: String::new(),
             container: None,
             dedup_key: None,
@@ -60,10 +53,8 @@ pub mod blob {
     }
 
     /// Create a builder for an Azure Blob Storage `delete_blob` action.
-    pub fn delete(namespace: impl Into<String>, tenant: impl Into<String>) -> BlobDeleteBuilder {
+    pub fn delete() -> BlobDeleteBuilder {
         BlobDeleteBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             blob_name: String::new(),
             container: None,
             dedup_key: None,
@@ -73,8 +64,6 @@ pub mod blob {
     /// Builder for an Azure Blob Storage `upload_blob` action.
     #[derive(Debug)]
     pub struct BlobUploadBuilder {
-        namespace: String,
-        tenant: String,
         blob_name: String,
         container: Option<String>,
         body: Option<String>,
@@ -127,19 +116,19 @@ pub mod blob {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Azure Blob Storage `upload_blob` Action.
+        /// Build the Azure Blob Storage `upload_blob` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `blob_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.blob_name.is_empty(),
                 "Azure Blob blob_name must be set"
@@ -171,9 +160,7 @@ pub mod blob {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "azure-blob",
                 "upload_blob",
                 serde_json::Value::Object(payload),
@@ -190,8 +177,6 @@ pub mod blob {
     /// Builder for an Azure Blob Storage `download_blob` action.
     #[derive(Debug)]
     pub struct BlobDownloadBuilder {
-        namespace: String,
-        tenant: String,
         blob_name: String,
         container: Option<String>,
         dedup_key: Option<String>,
@@ -212,19 +197,19 @@ pub mod blob {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Azure Blob Storage `download_blob` Action.
+        /// Build the Azure Blob Storage `download_blob` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `blob_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.blob_name.is_empty(),
                 "Azure Blob blob_name must be set"
@@ -240,9 +225,7 @@ pub mod blob {
                 payload.insert("container".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "azure-blob",
                 "download_blob",
                 serde_json::Value::Object(payload),
@@ -259,8 +242,6 @@ pub mod blob {
     /// Builder for an Azure Blob Storage `delete_blob` action.
     #[derive(Debug)]
     pub struct BlobDeleteBuilder {
-        namespace: String,
-        tenant: String,
         blob_name: String,
         container: Option<String>,
         dedup_key: Option<String>,
@@ -281,19 +262,19 @@ pub mod blob {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Azure Blob Storage `delete_blob` Action.
+        /// Build the Azure Blob Storage `delete_blob` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `blob_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.blob_name.is_empty(),
                 "Azure Blob blob_name must be set"
@@ -309,9 +290,7 @@ pub mod blob {
                 payload.insert("container".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "azure-blob",
                 "delete_blob",
                 serde_json::Value::Object(payload),
@@ -332,17 +311,12 @@ pub mod blob {
 
 /// Helpers for creating Azure Event Hubs actions.
 pub mod eventhubs {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for an Azure Event Hubs `send_event` action.
-    pub fn send_event(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> EventHubsSendBuilder {
+    pub fn send_event() -> EventHubsSendBuilder {
         EventHubsSendBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             body: serde_json::Value::Object(serde_json::Map::new()),
             event_hub_name: None,
             partition_id: None,
@@ -352,13 +326,8 @@ pub mod eventhubs {
     }
 
     /// Create a builder for an Azure Event Hubs `send_batch` action.
-    pub fn send_batch(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> EventHubsSendBatchBuilder {
+    pub fn send_batch() -> EventHubsSendBatchBuilder {
         EventHubsSendBatchBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             events: Vec::new(),
             event_hub_name: None,
             dedup_key: None,
@@ -368,8 +337,6 @@ pub mod eventhubs {
     /// Builder for an Azure Event Hubs `send_event` action.
     #[derive(Debug)]
     pub struct EventHubsSendBuilder {
-        namespace: String,
-        tenant: String,
         body: serde_json::Value,
         event_hub_name: Option<String>,
         partition_id: Option<String>,
@@ -406,15 +373,15 @@ pub mod eventhubs {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Azure Event Hubs `send_event` Action.
-        pub fn build(self) -> Action {
+        /// Build the Azure Event Hubs `send_event` `ActionRequest`.
+        pub fn build(self) -> ActionRequest {
             let mut payload = serde_json::Map::new();
             payload.insert("body".to_string(), self.body);
 
@@ -432,9 +399,7 @@ pub mod eventhubs {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "azure-eventhubs",
                 "send_event",
                 serde_json::Value::Object(payload),
@@ -451,8 +416,6 @@ pub mod eventhubs {
     /// Builder for an Azure Event Hubs `send_batch` action.
     #[derive(Debug)]
     pub struct EventHubsSendBatchBuilder {
-        namespace: String,
-        tenant: String,
         events: Vec<serde_json::Value>,
         event_hub_name: Option<String>,
         dedup_key: Option<String>,
@@ -473,19 +436,19 @@ pub mod eventhubs {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Azure Event Hubs `send_batch` Action.
+        /// Build the Azure Event Hubs `send_batch` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `events` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.events.is_empty(),
                 "Event Hubs events must not be empty"
@@ -501,9 +464,7 @@ pub mod eventhubs {
                 payload.insert("event_hub_name".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "azure-eventhubs",
                 "send_batch",
                 serde_json::Value::Object(payload),
@@ -529,7 +490,7 @@ mod tests {
 
     #[test]
     fn blob_upload_basic() {
-        let a = blob::upload("ns", "t1")
+        let a = blob::upload()
             .blob_name("data.json")
             .body(r#"{"hello":"world"}"#)
             .build();
@@ -545,7 +506,7 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("env".to_string(), "staging".to_string());
 
-        let a = blob::upload("ns", "t1")
+        let a = blob::upload()
             .blob_name("data.bin")
             .container("my-container")
             .body_base64("SGVsbG8gV29ybGQ=")
@@ -564,7 +525,7 @@ mod tests {
 
     #[test]
     fn blob_download_basic() {
-        let a = blob::download("ns", "t1").blob_name("data.json").build();
+        let a = blob::download().blob_name("data.json").build();
 
         assert_eq!(a.provider.as_str(), "azure-blob");
         assert_eq!(a.action_type, "download_blob");
@@ -573,7 +534,7 @@ mod tests {
 
     #[test]
     fn blob_download_with_container() {
-        let a = blob::download("ns", "t1")
+        let a = blob::download()
             .blob_name("data.json")
             .container("my-container")
             .build();
@@ -583,7 +544,7 @@ mod tests {
 
     #[test]
     fn blob_delete_basic() {
-        let a = blob::delete("ns", "t1").blob_name("data.json").build();
+        let a = blob::delete().blob_name("data.json").build();
 
         assert_eq!(a.provider.as_str(), "azure-blob");
         assert_eq!(a.action_type, "delete_blob");
@@ -592,7 +553,7 @@ mod tests {
 
     #[test]
     fn blob_delete_with_container() {
-        let a = blob::delete("ns", "t1")
+        let a = blob::delete()
             .blob_name("data.json")
             .container("my-container")
             .dedup_key("del-dedup")
@@ -605,19 +566,19 @@ mod tests {
     #[test]
     #[should_panic(expected = "Azure Blob blob_name must be set")]
     fn blob_upload_panics_without_blob_name() {
-        blob::upload("ns", "t1").build();
+        blob::upload().build();
     }
 
     #[test]
     #[should_panic(expected = "Azure Blob blob_name must be set")]
     fn blob_download_panics_without_blob_name() {
-        blob::download("ns", "t1").build();
+        blob::download().build();
     }
 
     #[test]
     #[should_panic(expected = "Azure Blob blob_name must be set")]
     fn blob_delete_panics_without_blob_name() {
-        blob::delete("ns", "t1").build();
+        blob::delete().build();
     }
 
     // =========================================================================
@@ -626,7 +587,7 @@ mod tests {
 
     #[test]
     fn eventhubs_send_basic() {
-        let a = eventhubs::send_event("ns", "t1")
+        let a = eventhubs::send_event()
             .body(serde_json::json!({"key": "value"}))
             .build();
 
@@ -640,7 +601,7 @@ mod tests {
         let mut props = HashMap::new();
         props.insert("source".to_string(), "my-app".to_string());
 
-        let a = eventhubs::send_event("ns", "t1")
+        let a = eventhubs::send_event()
             .body(serde_json::json!({"data": 42}))
             .event_hub_name("my-hub")
             .partition_id("0")
@@ -661,7 +622,7 @@ mod tests {
             serde_json::json!({"body": "event2"}),
         ];
 
-        let a = eventhubs::send_batch("ns", "t1").events(events).build();
+        let a = eventhubs::send_batch().events(events).build();
 
         assert_eq!(a.provider.as_str(), "azure-eventhubs");
         assert_eq!(a.action_type, "send_batch");
@@ -673,7 +634,7 @@ mod tests {
     fn eventhubs_send_batch_with_hub_name() {
         let events = vec![serde_json::json!({"body": "event1"})];
 
-        let a = eventhubs::send_batch("ns", "t1")
+        let a = eventhubs::send_batch()
             .events(events)
             .event_hub_name("my-hub")
             .dedup_key("batch-dedup")
@@ -686,6 +647,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "Event Hubs events must not be empty")]
     fn eventhubs_send_batch_panics_without_events() {
-        eventhubs::send_batch("ns", "t1").build();
+        eventhubs::send_batch().build();
     }
 }

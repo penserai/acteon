@@ -8,8 +8,7 @@ export interface GovernancePermitDeclaration {
   id: string; revision: number; subject: PrincipalIdentity; routes: GovernanceRoute[];
   valid_from_ms: number; limits: GovernanceLimits;
 }
-export interface PublishGovernancePermitRequest {
-  namespace: string; tenant: string; change_id: string; expected_revision: number;
+export interface PublishGovernancePermitRequest { change_id: string; expected_revision: number;
   permit: GovernancePermitDeclaration; reason: string;
 }
 export interface FederationGrantCeilingDeclaration {
@@ -23,12 +22,10 @@ export interface FederationTrustDeclaration {
   max_revocation_staleness_ms: number; max_clock_skew_ms: number;
   valid_from_ms: number; deadline_ms: number; approved: FederationGrantCeilingDeclaration[];
 }
-export interface PublishFederationTrustRequest {
-  namespace: string; tenant: string; change_id: string; expected_revision: number;
+export interface PublishFederationTrustRequest { change_id: string; expected_revision: number;
   trust: FederationTrustDeclaration; reason: string;
 }
-export interface RevokeFederationTrustRequest {
-  namespace: string; tenant: string; change_id: string; trust_id: string;
+export interface RevokeFederationTrustRequest { change_id: string; trust_id: string;
   expected_revision: number; reason: string;
 }
 export interface SignedFederationEnvelopeDeclaration { payload: string; signature: string; }
@@ -63,11 +60,9 @@ export interface FederationDeliveryAbandonment {
   disposition_id: string; operator: PrincipalIdentity; authority_incarnation: string;
   authority_generation: number; reason: string; recorded_at_ms: number;
 }
-export interface AbandonFederationDeliveryRequest {
-  namespace: string; tenant: string; disposition_id: string; reason: string;
+export interface AbandonFederationDeliveryRequest { disposition_id: string; reason: string;
 }
-export interface ReconcileFederationDeliveryRequest {
-  namespace: string; tenant: string; proof_base64: string;
+export interface ReconcileFederationDeliveryRequest { proof_base64: string;
 }
 export interface FederationDeliveryFinalityEvidence {
   stage: "import" | "invoke"; accepted: boolean; verifier_revision: string;
@@ -102,8 +97,7 @@ export type GovernanceIntervention =
   | { kind: "revoke_subject"; subject: PrincipalIdentity }
   | { kind: "revoke_permit"; permit_id: string; expected_revision: number }
   | { kind: "revoke_credential"; credential_id: string; expected_revision: number };
-export interface GovernanceInterventionRequest {
-  namespace: string; tenant: string; change_id: string; change: GovernanceIntervention; reason: string;
+export interface GovernanceInterventionRequest { change_id: string; change: GovernanceIntervention; reason: string;
 }
 export interface GovernanceChangeReceipt {
   namespace: string; tenant: string; change_id: string; actor: string; reason: string; generation: number; pending: boolean;
@@ -204,10 +198,8 @@ export function parseProviderExecutionHistory(data: ProviderExecutionHistoryWire
   };
 }
 
-
 export type RegistryProjection = "agent" | "card";
-export interface GovernanceRegistryMutationRequest {
-  namespace: string; tenant: string; agent_id: string; change_id: string;
+export interface GovernanceRegistryMutationRequest { agent_id: string; change_id: string;
   expected_registry_revision: number; projection: RegistryProjection;
   expected_projection_version: number | null; value: Record<string, unknown> | null; reason: string;
 }
@@ -232,9 +224,9 @@ export function parseRegistryProjection(data: unknown, namespace: string, tenant
     || (r.value !== null && (typeof r.value !== "object" || Array.isArray(r.value)))) throw new Error("registry observation identity or version mismatch");
   return r;
 }
-export function parseRegistryMutationReceipt(data: unknown, request: GovernanceRegistryMutationRequest): GovernanceRegistryMutationReceipt {
+export function parseRegistryMutationReceipt(data: unknown, request: GovernanceRegistryMutationRequest, scope: import("./models.js").TenantContext): GovernanceRegistryMutationReceipt {
   const r = data as GovernanceRegistryMutationReceipt;
-  if (!r || r.namespace !== request.namespace || r.tenant !== request.tenant || r.agent_id !== request.agent_id || r.change_id !== request.change_id || r.projection !== request.projection
+  if (!r || r.namespace !== scope.namespace || r.tenant !== scope.tenant || r.agent_id !== request.agent_id || r.change_id !== request.change_id || r.projection !== request.projection
     || r.expected_registry_revision !== request.expected_registry_revision || !Number.isSafeInteger(r.expected_registry_revision) || r.expected_registry_revision < 0
     || r.delivery_complete !== true || r.applied !== true || typeof r.actor !== "string" || !r.actor
     || typeof r.input_digest !== "string" || !/^[0-9a-f]{64}$/.test(r.input_digest)) throw new Error("unmatched or incomplete registry mutation receipt");

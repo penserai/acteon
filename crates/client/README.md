@@ -9,7 +9,7 @@ The generated operation catalog exposes all 228 finite HTTP operations, includin
 ```rust
 let status = client.platform_request(
     acteon_client::PlatformOperation::BusStagesStatus,
-    &[("namespace", "observability"), ("tenant", "demo"), ("id", "log-detector")],
+    &[("id", "log-detector")],
     &[], None,
 ).await?;
 ```
@@ -42,7 +42,7 @@ acteon-core = { path = "../acteon-core" }      # for Action type
 
 ```rust
 use acteon_client::ActeonClient;
-use acteon_core::Action;
+use acteon_client::ActionRequest;
 
 #[tokio::main]
 async fn main() -> Result<(), acteon_client::Error> {
@@ -55,9 +55,7 @@ async fn main() -> Result<(), acteon_client::Error> {
     }
 
     // Dispatch an action
-    let action = Action::new(
-        "notifications",
-        "tenant-1",
+    let action = ActionRequest::new(
         "email",
         "send_notification",
         serde_json::json!({
@@ -118,7 +116,6 @@ use acteon_client::AuditQuery;
 
 // Query audit records
 let query = AuditQuery {
-    tenant: Some("tenant-1".to_string()),
     limit: Some(10),
     ..Default::default()
 };
@@ -147,10 +144,10 @@ let client = ActeonClientBuilder::new("http://localhost:8080")
 ```
 
 API keys are sent via the `Authorization: Bearer <key>` header. The server
-accepts both JWTs and raw API keys on that header. API keys are scoped by
-tenant, namespace, provider, and action type on the server side — see the
+accepts both JWTs and raw API keys on that header. Credentials establish an exact namespace and tenant; grants restrict
+provider and action type on the server side — see the
 [API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
-documentation for the grant model and hierarchical tenant matching.
+documentation for credential context and grants.
 
 ### Custom reqwest Client
 

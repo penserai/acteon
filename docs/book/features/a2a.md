@@ -7,8 +7,8 @@ execution metadata inside the platform. Existing pre-1.0 method names and the
 older stored-card view remain available during migration.
 
 The protocol has two deliberate addressing levels. The tenant endpoint at
-`/a2a/{namespace}/{tenant}` is a durable interoperable Task service. The exact
-agent endpoint at `/a2a/{namespace}/{tenant}/agents/{agent}` invokes one
+`/a2a` is a durable interoperable Task service. The exact
+agent endpoint at `/a2a/agents/{agent}` invokes one
 operator-qualified agent runtime under Acteon's execution authority. An
 aggregate tenant card is useful for discovery, but it is never used to choose a
 runtime implicitly.
@@ -27,7 +27,7 @@ share the same auth, the same audit trail, and the same gateway.
 
 ## URL surface
 
-Every endpoint lives under `/a2a/{namespace}/{tenant}/…`. All endpoints
+Every endpoint lives under `/a2a/…`. All endpoints
 require the standard `Dispatch` permission grant on `(namespace,
 tenant)` *except* the unauthenticated discovery endpoint.
 
@@ -36,7 +36,7 @@ tenant)` *except* the unauthenticated discovery endpoint.
 A single endpoint dispatches by method name in the envelope:
 
 ```text
-POST /a2a/{namespace}/{tenant}
+POST /a2a
 Content-Type: application/json
 
 { "jsonrpc": "2.0", "method": "GetTask", "params": {…}, "id": 1 }
@@ -85,7 +85,7 @@ Publish an individual agent card whose JSON-RPC interface URL names the exact
 agent endpoint:
 
 ```text
-POST /a2a/{namespace}/{tenant}/agents/{agent}
+POST /a2a/agents/{agent}
 ```
 
 `SendMessage` at this address does more than create a Task row. Acteon verifies
@@ -205,21 +205,21 @@ These resource-shaped routes support Acteon SDKs and governed peer operations.
 They are not advertised as an A2A 1.0 `HTTP+JSON` interface in the public card:
 
 ```text
-POST   /a2a/{ns}/{tenant}/v1/message:send
-GET    /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}
-POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
-POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
-POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
-POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send
-POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve
-POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send
-GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
-POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
-GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/events            # SSE
-POST   /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs
-GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs
-GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
-DELETE /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
+POST   /a2a/v1/message:send
+GET    /a2a/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}
+POST   /a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
+POST   /a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
+POST   /a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
+POST   /a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send
+POST   /a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve
+POST   /a2a/agents/{agent}/v1/tasks/{id}/message:send
+GET    /a2a/v1/tasks/{id}
+POST   /a2a/v1/tasks/{id}:cancel
+GET    /a2a/v1/tasks/{id}/events            # SSE
+POST   /a2a/v1/tasks/{id}/pushNotificationConfigs
+GET    /a2a/v1/tasks/{id}/pushNotificationConfigs
+GET    /a2a/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
+DELETE /a2a/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 ```
 
 The agent-service routes are Acteon's governed peer tools. Discovery returns
@@ -281,11 +281,11 @@ Acteon's federation boundary adds two protected routes for independently
 administered Acteon domains:
 
 ```text
-POST /a2a/{ns}/{tenant}/federation/envelopes:import
-POST /a2a/{ns}/{tenant}/federation/agents/{agent}/v1/message:send
-POST /a2a/{ns}/{tenant}/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:send
-POST /a2a/{ns}/{tenant}/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:observe
-POST /a2a/{ns}/{tenant}/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:replay
+POST /a2a/federation/envelopes:import
+POST /a2a/federation/agents/{agent}/v1/message:send
+POST /a2a/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:send
+POST /a2a/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:observe
+POST /a2a/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:replay
 ```
 
 The first route authenticates a configured foreign peer, verifies its
@@ -326,7 +326,7 @@ Managers with independent `can_reconcile = true` authority can list a bounded
 page of outbound delivery evidence:
 
 ```text
-GET /v1/governance/federation/deliveries?namespace=prod&tenant=acme&limit=50
+GET /v1/governance/federation/deliveries&limit=50
 ```
 
 The cursor is the last returned delivery UUID. Each item identifies the source,
@@ -380,8 +380,8 @@ rejected without another provider call. See the
 ### Discovery (unauthenticated)
 
 ```text
-GET    /a2a/{ns}/{tenant}/.well-known/agent.json
-GET    /a2a/{ns}/{tenant}/.well-known/agent-card.json
+GET    /a2a/.well-known/agent.json
+GET    /a2a/.well-known/agent-card.json
 ```
 
 The `agent-card.json` route returns the schema-closed A2A 1.0 projection used by
@@ -439,7 +439,7 @@ incorrectly validate a trimmed response.
 ### Send your first message
 
 ```bash
-curl -X POST https://acteon.example.com/a2a/agents/demo \
+curl -X POST https://acteon.example.com/a2a \
   -H 'Authorization: Bearer YOUR_KEY' \
   -H 'Content-Type: application/json' \
   -H 'A2A-Version: 1.0' \
@@ -478,7 +478,7 @@ continuation is legal.
 ### Cancel a Task
 
 ```bash
-curl -X POST https://acteon.example.com/a2a/agents/demo/v1/tasks/task-alpha:cancel
+curl -X POST https://acteon.example.com/a2a/v1/tasks/task-alpha:cancel
 ```
 
 The cancel verb is split off in-handler (axum routes whole segments).
@@ -619,7 +619,7 @@ Acteon's native event feed remains available for clients that want internal
 event envelopes instead of official A2A `StreamResponse` frames:
 
 ```text
-GET /a2a/{ns}/{tenant}/v1/tasks/{id}/events
+GET /a2a/v1/tasks/{id}/events
 Accept: text/event-stream
 ```
 
@@ -652,7 +652,7 @@ For consumers that prefer push over pull, register a webhook with the official
 method on either the tenant Task service or an exact governed agent:
 
 ```bash
-curl -X POST .../a2a/prod/acme/agents/notifier \
+curl -X POST .../a2a/agents/notifier \
   -H 'A2A-Version: 1.0' \
   -d '{
     "jsonrpc": "2.0", "id": 1,
@@ -754,9 +754,9 @@ starts enforce that marker. A legacy callback row that reappears becomes an
 operator-visible failure instead of being silently accepted.
 
 ```text
-GET    /v1/a2a/{namespace}/{tenant}/push-dlq
-GET    /v1/a2a/{namespace}/{tenant}/push-dlq/{entry_id}
-DELETE /v1/a2a/{namespace}/{tenant}/push-dlq/{entry_id}
+GET    /v1/a2a/push-dlq
+GET    /v1/a2a/push-dlq/{entry_id}
+DELETE /v1/a2a/push-dlq/{entry_id}
 ```
 
 Counters for both delivery outcomes are also exported via
@@ -776,7 +776,7 @@ Each tenant can publish an `AgentCard` (per-agent) that the
 discovery endpoint exposes:
 
 ```text
-GET /a2a/agents/demo/.well-known/agent.json
+GET /a2a/.well-known/agent.json
 ```
 
 | Cards published | Card returned |
@@ -841,7 +841,7 @@ admission from execution.
 A configured peer first submits a signed delegation envelope to:
 
 ```text
-POST /a2a/{namespace}/{tenant}/federation/envelopes:import
+POST /a2a/federation/envelopes:import
 ```
 
 The peer must authenticate as the exact local principal assigned to its foreign
@@ -858,7 +858,7 @@ The peer can then submit one exact signed invocation and A2A message to the
 imported agent:
 
 ```text
-POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send
+POST /a2a/federation/agents/{agent}/v1/message:send
 ```
 
 The invocation signs the import ID and digest, replay nonce, complete typed A2A

@@ -58,6 +58,7 @@ bus = ["dep:acteon-bus", "acteon-timeline/bus"]
 timeline-archive = ["acteon-timeline/archive"]
 
 [dependencies]
+url.workspace = true
 acteon-timeline.workspace = true
 acteon-http.workspace = true
 acteon-audit = { workspace = true, features = ["openapi"] }

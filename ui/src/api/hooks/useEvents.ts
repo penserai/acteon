@@ -2,14 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiGet, apiPost } from '../client'
 import type { EventState } from '../../types'
 
-export function useEvents(params: { namespace?: string; tenant?: string }) {
+export function useEvents() {
   return useQuery({
-    queryKey: ['events', params],
+    queryKey: ['events'],
     queryFn: async () => {
-      const res = await apiGet<{ count: number; events: EventState[] }>('/v1/events', params)
+      const res = await apiGet<{ count: number; events: EventState[] }>('/v1/events')
       return res.events
     },
-    enabled: !!params.namespace && !!params.tenant,
   })
 }
 
@@ -24,8 +23,8 @@ export function useEventDetail(fingerprint: string | undefined) {
 export function useTransitionEvent() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ fingerprint, namespace, tenant, to }: { fingerprint: string; namespace: string; tenant: string; to: string }) =>
-      apiPost(`/v1/events/${encodeURIComponent(fingerprint)}/transition`, { to, namespace, tenant }),
+    mutationFn: ({ fingerprint, to }: { fingerprint: string; to: string }) =>
+      apiPost(`/v1/events/${encodeURIComponent(fingerprint)}/transition`, { to }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['events'] }),
   })
 }

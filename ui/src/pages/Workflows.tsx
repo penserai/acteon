@@ -39,8 +39,6 @@ const col = createDataTableColumnHelper<WorkflowExecutionSummary>()
 
 export function Workflows() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [ns, setNs] = useState(searchParams.get('namespace') ?? '')
-  const [tenant, setTenant] = useState(searchParams.get('tenant') ?? '')
   const [workflow, setWorkflow] = useState(searchParams.get('workflow') ?? '')
   const statusFilter = searchParams.get('status') ?? ''
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -58,8 +56,6 @@ export function Workflows() {
   }
 
   const { data: executions, isLoading } = useWorkflowExecutions({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     workflow: workflow.trim() || undefined,
     status: statusFilter || undefined,
   })
@@ -68,10 +64,7 @@ export function Workflows() {
     () => executions?.find((e) => e.execution_id === selectedId),
     [executions, selectedId],
   )
-  const { data: history } = useExecutionHistory(selected?.execution_id, {
-    namespace: ns,
-    tenant,
-  })
+  const { data: history } = useExecutionHistory(selected?.execution_id)
   const cancel = useCancelWorkflow()
   const signal = useSignalWorkflow()
   const { toast } = useToast()
@@ -104,8 +97,6 @@ export function Workflows() {
     cancel.mutate(
       {
         executionId: selected.execution_id,
-        namespace: ns,
-        tenant,
         reason: cancelReason.trim() || undefined,
       },
       {
@@ -134,8 +125,6 @@ export function Workflows() {
       {
         executionId: selected.execution_id,
         signalName: signalName.trim(),
-        namespace: ns,
-        tenant,
         payload,
       },
       {
@@ -157,22 +146,6 @@ export function Workflows() {
       <PageHeader title="Workflows" />
 
       <div className={styles.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => {
-            setNs(e.target.value)
-            setParam('namespace', e.target.value)
-          }}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => {
-            setTenant(e.target.value)
-            setParam('tenant', e.target.value)
-          }}
-        />
         <Select
           options={STATUS_OPTIONS}
           value={statusFilter}

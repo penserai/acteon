@@ -58,8 +58,6 @@ export function Actions() {
   const searchId = searchParams.get('action_id') ?? ''
 
   const query: AuditQuery = useMemo(() => ({
-    namespace: searchParams.get('namespace') ?? undefined,
-    tenant: searchParams.get('tenant') ?? undefined,
     outcome: searchParams.get('outcome') ?? undefined,
     action_type: searchParams.get('action_type') ?? undefined,
     signer_id: searchParams.get('signer_id') ?? undefined,
@@ -129,16 +127,6 @@ export function Actions() {
           options={[{ value: '', label: 'All Outcomes' }, ...outcomeOptions]}
           value={query.outcome ?? ''}
           onChange={(e) => setFilter('outcome', e.target.value)}
-        />
-        <Input
-          placeholder="Namespace"
-          value={query.namespace ?? ''}
-          onChange={(e) => setFilter('namespace', e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={query.tenant ?? ''}
-          onChange={(e) => setFilter('tenant', e.target.value)}
         />
         <Input
           placeholder="Signer ID"

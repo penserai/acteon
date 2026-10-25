@@ -93,7 +93,7 @@ cannot be discarded (409), so a worker never loses the original during repair.
 These endpoints read the durable checkpoint even when Kafka is unavailable. They
 never open consumers, acquire processing leases, or create missing stages.
 
-| Method | Path suffix under `/v1/bus/stages/{namespace}/{tenant}/{id}` | Result |
+| Method | Path suffix under `/v1/bus/stages/{id}` | Result |
 |---|---|---|
 | GET | (none) | Counters, checkpoint generation, pending outputs, retained count, lease expiry, retry/halt status |
 | GET | `/quarantine?limit=50&after=UUID` | Metadata only; at most 100 entries, with `next_after` cursor |
@@ -146,7 +146,7 @@ quarantine stays retained until the repaired input, processor state, outputs,
 and completed audit are saved in one CAS checkpoint. Source positions stay
 unchanged. Outputs flow through the same durable outbox as normal processing.
 
-`POST /v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay`
+`POST /v1/bus/stages/{id}/quarantine/{entry}/replay`
 requires an admin/operator role and a distinct `provider=bus`,
 `action=stage_replay` grant. Topic management and discard grants do not authorize
 re-execution. The body contains a non-nil `request_id` UUID, a nonempty `reason`
@@ -165,7 +165,7 @@ after completion. Changing any of those values under the same UUID returns 409.
 Only one active request per input is allowed. A failed request can be followed
 by a new explicit request ID while its original remains retained.
 
-Read `GET /v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request_id}` with a
+Read `GET /v1/bus/stages/{id}/replays/{request_id}` with a
 `stage_read` grant. Its payload-free audit records the operator, reason, original
 position, processor version, pinned contract digest, original/repaired payload
 digests, attempts, retry time, error, outcome time, and completed generation.

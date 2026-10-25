@@ -1,5 +1,9 @@
 # acteon-client (Go)
 
+Each credential belongs to one exact namespace and tenant. SDK requests omit
+tenant metadata; the server derives it from the JWT or API key. See the
+[request contract](https://penserai.github.io/acteon/api/tenant-context/).
+
 Go client for the Acteon action gateway.
 
 ## Complete platform API
@@ -8,7 +12,7 @@ The generated operation catalog exposes all 223 finite HTTP operations, includin
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
-    map[string]string{"namespace": "observability", "tenant": "demo", "id": "log-detector"},
+    map[string]string{"id": "log-detector"},
     nil)
 if err != nil { return err }
 fmt.Println(string(status))
@@ -20,7 +24,7 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 
 ## Typed governance management
 
-Use `Governance`, `PublishGovernancePermit`, and `InterveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+Use `Governance`, `PublishGovernancePermit`, and `InterveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the credential’s namespace and tenant; an executor credential alone does not grant management authority.
 
 Cross-domain execution uses `PublishFederationTrust`,
 `RevokeFederationTrust`, `FederationCapabilities`, `ImportFederationEnvelope`, and
@@ -31,7 +35,7 @@ authority without dispatching work. Invocation sends the exact signed intent
 and message, validates the returned task scope and ID, and does not retry
 automatically. Accepted source tasks use `ExportFederatedMessage`,
 `ObserveFederatedExport`, and `ReplayFederatedExport`; the client returns a
-typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `FederationDeliveryEvidence` for typed sanitized pages and `AbandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
+typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `FederationDeliveryEvidence` for typed sanitized pages and `AbandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only delivery identity and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 
@@ -68,8 +72,6 @@ func main() {
 
     // Dispatch an action
     action := acteon.NewAction(
-        "notifications",
-        "tenant-1",
         "email",
         "send_notification",
         map[string]any{"to": "user@example.com", "subject": "Hello"},
@@ -201,7 +203,7 @@ Available `time` fields: `hour` (0–23), `minute`, `second`, `day`, `month`, `y
 
 ```go
 // Query audit records
-query := &acteon.AuditQuery{Tenant: "tenant-1", Limit: 10}
+query := &acteon.AuditQuery{Limit: 10}
 page, err := client.QueryAudit(ctx, query)
 fmt.Printf("Found %d records\n", page.Total)
 for _, record := range page.Records {
@@ -218,10 +220,10 @@ if record != nil {
 ## Configuration
 
 API keys are sent via the `Authorization: Bearer <key>` header. The server
-accepts both JWTs and raw API keys on that header. API keys are scoped by
-tenant, namespace, provider, and action type on the server side — see the
+accepts both JWTs and raw API keys on that header. Each API key has one exact namespace and tenant; grants restrict
+provider and action type on the server side — see the
 [API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
-documentation for the grant model and hierarchical tenant matching.
+documentation for credential context and the grant model.
 
 ```go
 client := acteon.NewClient(

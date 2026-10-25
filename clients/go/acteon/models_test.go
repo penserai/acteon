@@ -62,8 +62,7 @@ func TestCreateSilenceRequestOmitsEmpty(t *testing.T) {
 	// duration-seconds-only case — ends_at and starts_at should be absent from the JSON.
 	dur := int64(3600)
 	req := &CreateSilenceRequest{
-		Namespace:       "prod",
-		Tenant:          "acme",
+
 		Matchers:        []SilenceMatcher{{Name: "severity", Value: "warning", Op: "equal"}},
 		Comment:         "deploy window",
 		DurationSeconds: &dur,
@@ -131,14 +130,23 @@ func TestWebhookPayloadToPayloadWithHeaders(t *testing.T) {
 }
 
 func TestNewWebhookAction(t *testing.T) {
-	action := NewWebhookAction("ns", "t1", "https://example.com/hook", map[string]any{"key": "value"})
+	action := NewWebhookAction("https://example.com/hook", map[string]any{"key": "value"})
 
-	if action.Namespace != "ns" {
-		t.Errorf("expected namespace ns, got %s", action.Namespace)
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if action.Tenant != "t1" {
-		t.Errorf("expected tenant t1, got %s", action.Tenant)
+	var wire map[string]any
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
 	}
+	if _, ok := wire["namespace"]; ok {
+		t.Fatal("request contains namespace")
+	}
+	if _, ok := wire["tenant"]; ok {
+		t.Fatal("request contains tenant")
+	}
+
 	if action.Provider != "webhook" {
 		t.Errorf("expected provider webhook, got %s", action.Provider)
 	}
@@ -170,7 +178,7 @@ func TestNewWebhookActionWithOptions(t *testing.T) {
 }
 
 func TestWithWebhookMethod(t *testing.T) {
-	action := NewWebhookAction("ns", "t1", "https://example.com/hook", map[string]any{})
+	action := NewWebhookAction("https://example.com/hook", map[string]any{})
 	action.WithWebhookMethod("PATCH")
 
 	if action.Payload["method"] != "PATCH" {
@@ -179,7 +187,7 @@ func TestWithWebhookMethod(t *testing.T) {
 }
 
 func TestWithWebhookHeaders(t *testing.T) {
-	action := NewWebhookAction("ns", "t1", "https://example.com/hook", map[string]any{})
+	action := NewWebhookAction("https://example.com/hook", map[string]any{})
 	action.WithWebhookHeaders(map[string]string{"X-Key": "val"})
 
 	headers := action.Payload["headers"].(map[string]string)
@@ -189,7 +197,7 @@ func TestWithWebhookHeaders(t *testing.T) {
 }
 
 func TestWebhookActionChaining(t *testing.T) {
-	action := NewWebhookAction("ns", "t1", "https://example.com/hook", map[string]any{"msg": "test"}).
+	action := NewWebhookAction("https://example.com/hook", map[string]any{"msg": "test"}).
 		WithWebhookMethod("DELETE").
 		WithWebhookHeaders(map[string]string{"X-Trace": "123"}).
 		WithDedupKey("dedup-1").

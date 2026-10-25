@@ -35,8 +35,6 @@ pub struct TestCase {
 /// Action parameters sent to the rule evaluation endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TestAction {
-    pub namespace: String,
-    pub tenant: String,
     pub provider: String,
     pub action_type: String,
     #[serde(default = "default_payload")]
@@ -126,8 +124,6 @@ pub async fn run_test_suite(
 
         let eval_result = ops
             .evaluate_rules(
-                tc.action.namespace.clone(),
-                tc.action.tenant.clone(),
                 tc.action.provider.clone(),
                 tc.action.action_type.clone(),
                 tc.action.payload.clone(),
@@ -202,8 +198,6 @@ mod tests {
 tests:
   - name: "allow normal email"
     action:
-      namespace: notifications
-      tenant: acme
       provider: email
       action_type: send_email
       payload: { to: "user@example.com" }
@@ -223,8 +217,6 @@ tests:
 tests:
   - name: "spam is suppressed"
     action:
-      namespace: notifications
-      tenant: acme
       provider: email
       action_type: spam
       payload: {}
@@ -245,8 +237,6 @@ tests:
 tests:
   - name: "empty payload"
     action:
-      namespace: ns
-      tenant: t
       provider: p
       action_type: at
     expect:
@@ -268,8 +258,6 @@ tests:
 tests:
   - name: "case 1"
     action:
-      namespace: ns
-      tenant: t
       provider: p
       action_type: a
       payload: {}
@@ -277,8 +265,6 @@ tests:
       verdict: allow
   - name: "case 2"
     action:
-      namespace: ns
-      tenant: t
       provider: p
       action_type: b
       payload: {}

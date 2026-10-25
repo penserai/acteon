@@ -184,8 +184,6 @@ class _WorkflowsClientMixin:
 
     def start_workflow(
         self,
-        namespace: str,
-        tenant: str,
         workflow: str,
         queue: str,
         input: Any,
@@ -195,8 +193,6 @@ class _WorkflowsClientMixin:
         """Start a new workflow execution.
 
         Args:
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             workflow: The registered workflow name.
             queue: The task queue continuation tasks are delivered on.
             input: Arbitrary JSON input handed to the workflow function.
@@ -209,13 +205,7 @@ class _WorkflowsClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns a validation error.
         """
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "workflow": workflow,
-            "queue": queue,
-            "input": input,
-        }
+        body: dict[str, Any] = {"workflow": workflow, "queue": queue, "input": input}
         if search_attributes is not None:
             body["search_attributes"] = search_attributes
         resp = self._request("POST", "/v1/workflows/start", json=body)
@@ -223,19 +213,11 @@ class _WorkflowsClientMixin:
         return WorkflowExecution.from_dict(resp.json())
 
     def list_workflow_executions(
-        self,
-        namespace: str,
-        tenant: str,
-        *,
-        workflow: str | None = None,
-        status: str | None = None,
-        limit: int | None = None,
+        self, *, workflow: str | None = None, status: str | None = None, limit: int | None = None
     ) -> list[WorkflowExecution]:
         """List workflow executions, optionally filtered.
 
         Args:
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             workflow: Optional workflow-name filter.
             status: Optional status filter (``running``,
                 ``waiting_timer``, ``waiting_signal``, ``completed``,
@@ -249,7 +231,7 @@ class _WorkflowsClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        params: dict[str, Any] = {}
         if workflow is not None:
             params["workflow"] = workflow
         if status is not None:
@@ -260,9 +242,7 @@ class _WorkflowsClientMixin:
         _raise_for_status(resp)
         return [WorkflowExecution.from_dict(e) for e in resp.json().get("executions", [])]
 
-    def get_workflow_execution(
-        self, execution_id: str, namespace: str, tenant: str
-    ) -> WorkflowExecution | None:
+    def get_workflow_execution(self, execution_id: str) -> WorkflowExecution | None:
         """Get a single workflow execution by ID.
 
         Returns:
@@ -275,22 +255,14 @@ class _WorkflowsClientMixin:
         resp = self._request(
             "GET",
             f"/v1/workflows/executions/{_seg(execution_id)}",
-            params={"namespace": namespace, "tenant": tenant},
+            params={},
         )
         if resp.status_code == 404:
             return None
         _raise_for_status(resp)
         return WorkflowExecution.from_dict(resp.json())
 
-    def signal_workflow(
-        self,
-        execution_id: str,
-        name: str,
-        namespace: str,
-        tenant: str,
-        *,
-        payload: Any = None,
-    ) -> None:
+    def signal_workflow(self, execution_id: str, name: str, *, payload: Any = None) -> None:
         """Deliver a named signal to a workflow execution.
 
         If the execution is waiting on the signal, the server records
@@ -300,15 +272,13 @@ class _WorkflowsClientMixin:
         Args:
             execution_id: The execution ID.
             name: The signal name.
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             payload: Optional JSON payload delivered to the workflow.
 
         Raises:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {}
         if payload is not None:
             body["payload"] = payload
         resp = self._request(
@@ -318,27 +288,18 @@ class _WorkflowsClientMixin:
         )
         _raise_for_status(resp)
 
-    def cancel_workflow(
-        self,
-        execution_id: str,
-        namespace: str,
-        tenant: str,
-        *,
-        reason: str | None = None,
-    ) -> None:
+    def cancel_workflow(self, execution_id: str, *, reason: str | None = None) -> None:
         """Cancel a workflow execution.
 
         Args:
             execution_id: The execution ID.
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             reason: Optional human-readable cancellation reason.
 
         Raises:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {}
         if reason is not None:
             body["reason"] = reason
         resp = self._request(
@@ -349,12 +310,7 @@ class _WorkflowsClientMixin:
         _raise_for_status(resp)
 
     def record_workflow_checkpoint(
-        self,
-        execution_id: str,
-        namespace: str,
-        tenant: str,
-        name: str,
-        data: Any,
+        self, execution_id: str, name: str, data: Any
     ) -> WorkflowCheckpoint:
         """Record a named checkpoint on a workflow execution.
 
@@ -365,8 +321,6 @@ class _WorkflowsClientMixin:
 
         Args:
             execution_id: The execution ID.
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             name: The checkpoint name (unique within the execution).
             data: Arbitrary JSON data to store.
 
@@ -380,12 +334,7 @@ class _WorkflowsClientMixin:
         resp = self._request(
             "POST",
             f"/v1/workflows/executions/{_seg(execution_id)}/checkpoints",
-            json={
-                "namespace": namespace,
-                "tenant": tenant,
-                "name": name,
-                "data": data,
-            },
+            json={"name": name, "data": data},
         )
         _raise_for_status(resp)
         return WorkflowCheckpoint.from_dict(resp.json())
@@ -393,8 +342,6 @@ class _WorkflowsClientMixin:
     def start_child_workflow(
         self,
         execution_id: str,
-        namespace: str,
-        tenant: str,
         checkpoint: str,
         workflow: str,
         input: Any,
@@ -409,8 +356,6 @@ class _WorkflowsClientMixin:
 
         Args:
             execution_id: The parent execution ID.
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             checkpoint: The checkpoint name recording the spawn.
             workflow: The child workflow name.
             input: Arbitrary JSON input for the child.
@@ -424,13 +369,7 @@ class _WorkflowsClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "checkpoint": checkpoint,
-            "workflow": workflow,
-            "input": input,
-        }
+        body: dict[str, Any] = {"checkpoint": checkpoint, "workflow": workflow, "input": input}
         if queue is not None:
             body["queue"] = queue
         if parent_close_policy is not None:
@@ -443,15 +382,11 @@ class _WorkflowsClientMixin:
         _raise_for_status(resp)
         return json_string(resp.json()["child_execution_id"])
 
-    def get_execution_history(
-        self, execution_id: str, namespace: str, tenant: str
-    ) -> ExecutionHistory:
+    def get_execution_history(self, execution_id: str) -> ExecutionHistory:
         """Get the recorded event history of a workflow execution.
 
         Args:
             execution_id: The execution ID.
-            namespace: The execution namespace.
-            tenant: The execution tenant.
 
         Returns:
             The execution history.
@@ -463,7 +398,7 @@ class _WorkflowsClientMixin:
         resp = self._request(
             "GET",
             f"/v1/executions/{_seg(execution_id)}/history",
-            params={"namespace": namespace, "tenant": tenant},
+            params={},
         )
         _raise_for_status(resp)
         return ExecutionHistory.from_dict(resp.json())
@@ -495,8 +430,6 @@ class _AsyncWorkflowsClientMixin:
 
     async def start_workflow(
         self,
-        namespace: str,
-        tenant: str,
         workflow: str,
         queue: str,
         input: Any,
@@ -504,13 +437,7 @@ class _AsyncWorkflowsClientMixin:
         search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowExecution:
         """Start a new workflow execution. See the sync mixin."""
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "workflow": workflow,
-            "queue": queue,
-            "input": input,
-        }
+        body: dict[str, Any] = {"workflow": workflow, "queue": queue, "input": input}
         if search_attributes is not None:
             body["search_attributes"] = search_attributes
         resp = await self._request("POST", "/v1/workflows/start", json=body)
@@ -518,16 +445,10 @@ class _AsyncWorkflowsClientMixin:
         return WorkflowExecution.from_dict(resp.json())
 
     async def list_workflow_executions(
-        self,
-        namespace: str,
-        tenant: str,
-        *,
-        workflow: str | None = None,
-        status: str | None = None,
-        limit: int | None = None,
+        self, *, workflow: str | None = None, status: str | None = None, limit: int | None = None
     ) -> list[WorkflowExecution]:
         """List workflow executions. See the sync mixin."""
-        params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        params: dict[str, Any] = {}
         if workflow is not None:
             params["workflow"] = workflow
         if status is not None:
@@ -538,31 +459,21 @@ class _AsyncWorkflowsClientMixin:
         _raise_for_status(resp)
         return [WorkflowExecution.from_dict(e) for e in resp.json().get("executions", [])]
 
-    async def get_workflow_execution(
-        self, execution_id: str, namespace: str, tenant: str
-    ) -> WorkflowExecution | None:
+    async def get_workflow_execution(self, execution_id: str) -> WorkflowExecution | None:
         """Get a single execution by ID, or None on 404. See the sync mixin."""
         resp = await self._request(
             "GET",
             f"/v1/workflows/executions/{_seg(execution_id)}",
-            params={"namespace": namespace, "tenant": tenant},
+            params={},
         )
         if resp.status_code == 404:
             return None
         _raise_for_status(resp)
         return WorkflowExecution.from_dict(resp.json())
 
-    async def signal_workflow(
-        self,
-        execution_id: str,
-        name: str,
-        namespace: str,
-        tenant: str,
-        *,
-        payload: Any = None,
-    ) -> None:
+    async def signal_workflow(self, execution_id: str, name: str, *, payload: Any = None) -> None:
         """Deliver a named signal to an execution. See the sync mixin."""
-        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {}
         if payload is not None:
             body["payload"] = payload
         resp = await self._request(
@@ -572,16 +483,9 @@ class _AsyncWorkflowsClientMixin:
         )
         _raise_for_status(resp)
 
-    async def cancel_workflow(
-        self,
-        execution_id: str,
-        namespace: str,
-        tenant: str,
-        *,
-        reason: str | None = None,
-    ) -> None:
+    async def cancel_workflow(self, execution_id: str, *, reason: str | None = None) -> None:
         """Cancel a workflow execution. See the sync mixin."""
-        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {}
         if reason is not None:
             body["reason"] = reason
         resp = await self._request(
@@ -592,23 +496,13 @@ class _AsyncWorkflowsClientMixin:
         _raise_for_status(resp)
 
     async def record_workflow_checkpoint(
-        self,
-        execution_id: str,
-        namespace: str,
-        tenant: str,
-        name: str,
-        data: Any,
+        self, execution_id: str, name: str, data: Any
     ) -> WorkflowCheckpoint:
         """Record a named checkpoint (idempotent by name). See the sync mixin."""
         resp = await self._request(
             "POST",
             f"/v1/workflows/executions/{_seg(execution_id)}/checkpoints",
-            json={
-                "namespace": namespace,
-                "tenant": tenant,
-                "name": name,
-                "data": data,
-            },
+            json={"name": name, "data": data},
         )
         _raise_for_status(resp)
         return WorkflowCheckpoint.from_dict(resp.json())
@@ -616,8 +510,6 @@ class _AsyncWorkflowsClientMixin:
     async def start_child_workflow(
         self,
         execution_id: str,
-        namespace: str,
-        tenant: str,
         checkpoint: str,
         workflow: str,
         input: Any,
@@ -626,13 +518,7 @@ class _AsyncWorkflowsClientMixin:
         parent_close_policy: str | None = None,
     ) -> str:
         """Start a child execution (idempotent by checkpoint). See the sync mixin."""
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "checkpoint": checkpoint,
-            "workflow": workflow,
-            "input": input,
-        }
+        body: dict[str, Any] = {"checkpoint": checkpoint, "workflow": workflow, "input": input}
         if queue is not None:
             body["queue"] = queue
         if parent_close_policy is not None:
@@ -645,14 +531,12 @@ class _AsyncWorkflowsClientMixin:
         _raise_for_status(resp)
         return json_string(resp.json()["child_execution_id"])
 
-    async def get_execution_history(
-        self, execution_id: str, namespace: str, tenant: str
-    ) -> ExecutionHistory:
+    async def get_execution_history(self, execution_id: str) -> ExecutionHistory:
         """Get the recorded event history. See the sync mixin."""
         resp = await self._request(
             "GET",
             f"/v1/executions/{_seg(execution_id)}/history",
-            params={"namespace": namespace, "tenant": tenant},
+            params={},
         )
         _raise_for_status(resp)
         return ExecutionHistory.from_dict(resp.json())
@@ -691,8 +575,6 @@ class WorkflowContext:
     def __init__(
         self,
         client: Any,
-        namespace: str,
-        tenant: str,
         execution_id: str,
         input: Any,
         checkpoints: dict[str, Any],
@@ -703,15 +585,11 @@ class WorkflowContext:
             client: An :class:`~acteon_client.client.ActeonClient`
                 (anything exposing ``record_workflow_checkpoint`` and
                 ``start_child_workflow``).
-            namespace: The execution namespace.
-            tenant: The execution tenant.
             execution_id: The workflow execution ID.
             input: The workflow input.
             checkpoints: Recorded checkpoint data keyed by name.
         """
         self._client = client
-        self._namespace = namespace
-        self._tenant = tenant
         self._execution_id = execution_id
         self._input = input
         self._checkpoints = checkpoints
@@ -759,9 +637,7 @@ class WorkflowContext:
         if key in self._checkpoints:
             return self._checkpoints[key]
         result = fn()
-        checkpoint = self._client.record_workflow_checkpoint(
-            self._execution_id, self._namespace, self._tenant, key, result
-        )
+        checkpoint = self._client.record_workflow_checkpoint(self._execution_id, key, result)
         self._checkpoints[key] = checkpoint.data
         return checkpoint.data
 
@@ -837,8 +713,6 @@ class WorkflowContext:
             return json_string(self._checkpoints[key]["child_id"])
         child_id = self._client.start_child_workflow(
             self._execution_id,
-            self._namespace,
-            self._tenant,
             key,
             workflow,
             input,

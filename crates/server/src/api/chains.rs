@@ -1,5 +1,6 @@
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -29,8 +30,10 @@ fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ChainQueryParams {
     /// Namespace to filter by.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant to filter by.
+    #[param(ignore)]
     pub tenant: String,
     /// Optional status filter: `"running"`, `"completed"`, `"failed"`, `"cancelled"`, `"timed_out"`, `"waiting_sub_chain"`.
     pub status: Option<String>,
@@ -40,8 +43,10 @@ pub struct ChainQueryParams {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ChainNamespaceParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
 }
 
@@ -49,8 +54,10 @@ pub struct ChainNamespaceParams {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ChainCancelRequest {
     /// Namespace of the chain.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant of the chain.
+    #[schema(ignore)]
     pub tenant: String,
     /// Optional reason for cancellation.
     #[serde(default)]
@@ -216,7 +223,7 @@ pub(crate) fn status_to_string(s: &ChainStatus) -> String {
 pub async fn list_chains(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ChainQueryParams>,
+    ScopedQuery(params): ScopedQuery<ChainQueryParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -278,7 +285,7 @@ pub async fn get_chain(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
-    Query(params): Query<ChainNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<ChainNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -393,7 +400,7 @@ pub async fn cancel_chain(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
-    Json(params): Json<ChainCancelRequest>,
+    ScopedJson(params): ScopedJson<ChainCancelRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -472,7 +479,7 @@ pub async fn get_chain_dag(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
-    Query(params): Query<ChainNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<ChainNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -967,7 +974,7 @@ pub async fn get_chain_history(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
-    Query(params): Query<ChainNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<ChainNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -1046,3 +1053,5 @@ pub async fn get_chain_history(
             .into_response(),
     }
 }
+
+crate::auth::context::scoped_body!(ChainCancelRequest);

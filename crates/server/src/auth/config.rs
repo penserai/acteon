@@ -35,6 +35,8 @@ fn default_jwt_expiry() -> u64 {
 #[derive(Debug, Deserialize)]
 pub struct UserConfig {
     pub username: String,
+    /// Exact request scope, embedded in issued JWTs.
+    pub scope: acteon_core::TenantContext,
     /// Stable logical credential ID, independent of username and actor.
     #[serde(default)]
     pub authority_id: Option<String>,
@@ -239,6 +241,8 @@ actions = ["*"]
 /// An API key principal that authenticates via `X-API-Key` header.
 #[derive(Debug, Deserialize)]
 pub struct ApiKeyConfig {
+    /// Exact request scope resolved from this key's trusted configuration.
+    pub scope: acteon_core::TenantContext,
     pub name: String,
     /// Stable logical credential ID; rotating hashes may retain this ID.
     #[serde(default)]

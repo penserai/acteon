@@ -861,70 +861,65 @@ AWS SDK errors are classified into the standard `ProviderError` enum:
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "alerts",
-    "tenant": "acme-corp",
-    "provider": "alert-fanout",
-    "action_type": "publish",
-    "payload": {
-      "message": "Critical alert: CPU at 99%",
-      "subject": "CPU Alert"
-    }
-  }'
+  "provider": "alert-fanout",
+  "action_type": "publish",
+  "payload": {
+    "message": "Critical alert: CPU at 99%",
+    "subject": "CPU Alert"
+  }
+}'
 
 # Invoke Lambda
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "processing",
-    "tenant": "acme-corp",
-    "provider": "anomaly-detector",
-    "action_type": "invoke",
+  "provider": "anomaly-detector",
+  "action_type": "invoke",
+  "payload": {
     "payload": {
-      "payload": {"device_id": "sensor-001", "value": 92}
+      "device_id": "sensor-001",
+      "value": 92
     }
-  }'
+  }
+}'
 
 # Upload to S3
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "archive",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "put_object",
-    "payload": {
-      "key": "reports/2026/02/daily.json",
-      "body": "{\"total\": 42}",
-      "content_type": "application/json"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "put_object",
+  "payload": {
+    "key": "reports/2026/02/daily.json",
+    "body": "{\"total\": 42}",
+    "content_type": "application/json"
+  }
+}'
 
 # Start EC2 instances
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "compute",
-    "tenant": "acme-corp",
-    "provider": "compute",
-    "action_type": "start_instances",
-    "payload": {
-      "instance_ids": ["i-0abc123def456789a"]
-    }
-  }'
+  "provider": "compute",
+  "action_type": "start_instances",
+  "payload": {
+    "instance_ids": [
+      "i-0abc123def456789a"
+    ]
+  }
+}'
 
 # Scale up an Auto Scaling Group
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "scaling",
-    "tenant": "acme-corp",
-    "provider": "scaling",
-    "action_type": "set_desired_capacity",
-    "payload": {
-      "auto_scaling_group_name": "web-tier-asg",
-      "desired_capacity": 6
-    }
-  }'
+  "provider": "scaling",
+  "action_type": "set_desired_capacity",
+  "payload": {
+    "auto_scaling_group_name": "web-tier-asg",
+    "desired_capacity": 6
+  }
+}'
 ```
 
 ## Example: Rust Client

@@ -1,5 +1,6 @@
+use crate::auth::context::ScopedQuery;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
@@ -18,21 +19,19 @@ use super::schemas::ErrorResponse;
     summary = "Query audit records",
     description = "Search audit records with optional filters for namespace, tenant, provider, outcome, verdict, time range, and pagination.",
     params(
-        ("namespace" = Option<String>, Query, description = "Filter by namespace"),
-        ("tenant" = Option<String>, Query, description = "Filter by tenant"),
-        ("provider" = Option<String>, Query, description = "Filter by provider"),
-        ("action_type" = Option<String>, Query, description = "Filter by action type"),
-        ("outcome" = Option<String>, Query, description = "Filter by outcome"),
-        ("verdict" = Option<String>, Query, description = "Filter by verdict"),
-        ("matched_rule" = Option<String>, Query, description = "Filter by matched rule name"),
-        ("chain_id" = Option<String>, Query, description = "Filter by chain execution ID"),
-        ("signer_id" = Option<String>, Query, description = "Filter by the signer_id stamped on signed actions. Unsigned records never match."),
-        ("kid" = Option<String>, Query, description = "Filter by the key identifier (kid) stamped on signed actions. Combine with signer_id to pin to a specific (signer, key) pair across a rotation window."),
-        ("from" = Option<String>, Query, description = "Start of time range (RFC 3339)"),
-        ("to" = Option<String>, Query, description = "End of time range (RFC 3339)"),
-        ("limit" = Option<u32>, Query, description = "Max records to return (default 50, max 1000)"),
-        ("offset" = Option<u32>, Query, description = "Number of records to skip — prefer `cursor` for deep pagination"),
-        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor returned by the previous page"),
+        ("provider" = Option<String>, description = "Filter by provider"),
+        ("action_type" = Option<String>, description = "Filter by action type"),
+        ("outcome" = Option<String>, description = "Filter by outcome"),
+        ("verdict" = Option<String>, description = "Filter by verdict"),
+        ("matched_rule" = Option<String>, description = "Filter by matched rule name"),
+        ("chain_id" = Option<String>, description = "Filter by chain execution ID"),
+        ("signer_id" = Option<String>, description = "Filter by the signer_id stamped on signed actions. Unsigned records never match."),
+        ("kid" = Option<String>, description = "Filter by the key identifier (kid) stamped on signed actions. Combine with signer_id to pin to a specific (signer, key) pair across a rotation window."),
+        ("from" = Option<String>, description = "Start of time range (RFC 3339)"),
+        ("to" = Option<String>, description = "End of time range (RFC 3339)"),
+        ("limit" = Option<u32>, description = "Max records to return (default 50, max 1000)"),
+        ("offset" = Option<u32>, description = "Number of records to skip — prefer `cursor` for deep pagination"),
+        ("cursor" = Option<String>, description = "Opaque pagination cursor returned by the previous page"),
     ),
     responses(
         (status = 200, description = "Audit records matching query", body = acteon_audit::AuditPage),
@@ -43,7 +42,7 @@ use super::schemas::ErrorResponse;
 pub async fn query_audit(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(mut query): Query<AuditQuery>,
+    ScopedQuery(mut query): ScopedQuery<AuditQuery>,
 ) -> impl IntoResponse {
     let Some(ref audit) = state.audit else {
         return (

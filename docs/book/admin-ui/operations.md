@@ -8,7 +8,7 @@ The operations pages let you interact with the gateway: dispatching actions, ins
 
 The **Alerting** page is a unified command center for on-call workflows. It surfaces the four alerting primitives that would otherwise live on separate pages in a single view.
 
-At the top, enter a **namespace** and **tenant** to scope the events and groups cards (silences and provider health load without filters). Four stat cards summarize the current state, and the panels below expand each one into a live list. The screenshot above shows the `prod / acme` scope with:
+The header displays the credential’s **namespace** and **tenant** as read-only context. Events, groups, and silences load in that context. Four stat cards summarize the current state, and the panels below expand each one into a live list. The screenshot above shows the `prod / acme` scope with:
 
 - **0 active events** — the empty state, because no `state_machine` rule is matching this namespace/tenant. When the lifecycle is tracked, this card fills with firing events and a state badge per row.
 - **4 active groups** — the `group-alerts-by-service` rule has batched incoming alerts into 4 pending groups (checkout-api: 5 events, payment-service: 4 events, auth-service: 2 events, events-consumer: 2 events). Each row links through to the **Groups** page.
@@ -19,9 +19,9 @@ At the top, enter a **namespace** and **tenant** to scope the events and groups 
 
 | Card | Data source | Filter scope | Empty state |
 |------|-------------|--------------|-------------|
-| Active events | `GET /v1/events` | Requires `namespace` + `tenant` | "Enter a namespace and tenant to load active events" |
-| Active groups | `GET /v1/groups` | Requires `namespace` + `tenant` | "Enter a namespace and tenant to load active groups" |
-| Active silences | `GET /v1/silences` | Auto-injects single-tenant scope; otherwise filters post-hoc to the caller's tenant grants | "No active silences" |
+| Active events | `GET /v1/events` | Credential context | "No active events" |
+| Active groups | `GET /v1/groups` | Credential context | "No active groups" |
+| Active silences | `GET /v1/silences` | Credential context | "No active silences" |
 | Alerting provider health | `GET /v1/providers/health` | Filtered to known alerting provider names | Link to Settings → Providers |
 
 ### What the API returns
@@ -29,7 +29,7 @@ At the top, enter a **namespace** and **tenant** to scope the events and groups 
 The stat cards and lists render the same JSON the REST API emits. The active groups card maps directly from:
 
 ```json
-// GET /v1/groups?namespace=prod&tenant=acme
+// GET /v1/groups
 {
   "total": 4,
   "groups": [
@@ -260,13 +260,13 @@ Browse actions that failed after exhausting all retries. The DLQ page lets you i
 
 ![Recurring Actions](assets/recurring-actions.png)
 
-Manage [recurring actions](../features/recurring-actions.md) -- cron-scheduled actions that fire on a recurring basis. The list view shows all recurring actions filtered by namespace and tenant, with their schedule, status, next execution time, and execution count.
+Manage [recurring actions](../features/recurring-actions.md) -- cron-scheduled actions that fire on a recurring basis. The list view shows recurring actions in the credential context, with their schedule, status, next execution time, and execution count.
 
 ### Creating a Recurring Action
 
 ![Create Recurring Action](assets/recurring-actions-create.png)
 
-Click **Create** to open the creation dialog. Fill in the namespace, tenant, cron expression (with preset shortcuts), timezone, provider, action type, and JSON payload. Optional settings include a description, end date, and maximum execution limit.
+Click **Create** to open the creation dialog. Fill in the cron expression (with preset shortcuts), timezone, provider, action type, and JSON payload. Optional settings include a description, end date, and maximum execution limit.
 
 ### Viewing Details
 
@@ -289,7 +289,7 @@ In HIPAA mode, all three features are enabled:
 
 ### Verifying Hash Chain Integrity
 
-When hash chaining is enabled, the verification panel lets you check the integrity of the audit chain for any namespace/tenant pair.
+When hash chaining is enabled, the verification panel lets you check the integrity of the audit chain for the credential’s namespace/tenant pair.
 
 A valid chain:
 
@@ -305,4 +305,4 @@ See [Compliance Mode](../features/compliance-mode.md) for full documentation.
 
 ![Event Stream](assets/stream.png)
 
-A live event stream powered by SSE. Watch actions flow through the gateway in real time with filters for namespace, tenant, and event type. Use the **Pause** / **Resume** button to freeze the stream for inspection.
+A live event stream powered by SSE. Watch actions flow through the gateway in real time with filters for event type. Use the **Pause** / **Resume** button to freeze the stream for inspection.

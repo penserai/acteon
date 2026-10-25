@@ -11,12 +11,6 @@ public class CreateTimeIntervalRequest {
     @JsonProperty("name")
     private final String name;
 
-    @JsonProperty("namespace")
-    private final String namespace;
-
-    @JsonProperty("tenant")
-    private final String tenant;
-
     @JsonProperty("time_ranges")
     private final List<TimeRange> timeRanges;
 
@@ -26,23 +20,15 @@ public class CreateTimeIntervalRequest {
     @JsonProperty("description")
     private final String description;
 
-    public CreateTimeIntervalRequest(
-            String name,
-            String namespace,
-            String tenant,
-            List<TimeRange> timeRanges,
-            String location,
-            String description) {
+    public CreateTimeIntervalRequest(String name, List<TimeRange> timeRanges, String location, String description) {
         this.name = name;
-        this.namespace = namespace;
-        this.tenant = tenant;
+
         this.timeRanges = timeRanges;
         this.location = location;
         this.description = description;
     }
 
-    public CreateTimeIntervalRequest(
-            String name, String namespace, String tenant, List<TimeRange> timeRanges) {
-        this(name, namespace, tenant, timeRanges, null, null);
+    public CreateTimeIntervalRequest(String name, List<TimeRange> timeRanges) {
+        this(name, timeRanges, null, null);
     }
 }

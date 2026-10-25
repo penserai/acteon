@@ -16,7 +16,7 @@ messages to that agent by id without managing a topic per agent.
 | Core type | `acteon_core::Agent` — `{agent_id, namespace, tenant, display_name, capabilities, inbox_topic, heartbeat_ttl_ms, last_heartbeat_at, labels, created_at, updated_at}`; derived `AgentStatus` |
 | State | `KeyKind::BusAgent`; key id = `agent_id` |
 | Shared inbox | Default `{namespace}.{tenant}.agents-inbox`, auto-created on first agent registration. All agents in the same `(namespace, tenant)` share it; messages are keyed by `agent_id` so Kafka gives per-agent FIFO for free. |
-| HTTP | `POST/GET /v1/bus/agents`, `GET|PUT|DELETE /v1/bus/agents/{ns}/{t}/{id}`, `POST /v1/bus/agents/{ns}/{t}/{id}/heartbeat`, `POST /v1/bus/agents/{ns}/{t}/{id}/send` |
+| HTTP | `POST/GET /v1/bus/agents`, `GET|PUT|DELETE /v1/bus/agents/{id}`, `POST /v1/bus/agents/{id}/heartbeat`, `POST /v1/bus/agents/{id}/send` |
 | Rust client | `register_bus_agent`, `list_bus_agents`, `get_bus_agent`, `update_bus_agent`, `delete_bus_agent`, `heartbeat_bus_agent`, `send_to_bus_agent` |
 | Tests | 11 core unit tests (status derivation, validation, serde roundtrip, inbox defaults + overrides) |
 | Simulation | `bus_agent_simulation.rs` — register → discover by capability → status transitions → send → consume from shared inbox |
@@ -85,7 +85,7 @@ inbox topic in both state and Kafka.
 ### Heartbeat
 
 ```http
-POST /v1/bus/agents/agents/demo/planner-1/heartbeat
+POST /v1/bus/agents/planner-1/heartbeat
 → 200 { "agent_id": "planner-1", "last_heartbeat_at": "...", "status": "online" }
 ```
 
@@ -94,7 +94,7 @@ Cheap and idempotent. A common cadence is every `ttl / 3`.
 ### List + filter
 
 ```http
-GET /v1/bus/agents?namespace=agents&tenant=demo&capability=ocr&status=online
+GET /v1/bus/agents?capability=ocr&status=online
 → 200 { "agents": [...], "count": 1 }
 ```
 
@@ -105,7 +105,7 @@ the current heartbeat window.
 ### Send
 
 ```http
-POST /v1/bus/agents/agents/demo/planner-1/send
+POST /v1/bus/agents/planner-1/send
 { "payload": { "task": "break down user request" } }
 → 200 { "inbox_topic": "agents.demo.agents-inbox", "agent_id": "planner-1", "partition": 0, "offset": 17, ... }
 ```
@@ -184,7 +184,7 @@ compose: a `Banned` agent that still heartbeats is `Online` *and*
 `Banned`, and discovery / route / send all refuse it with `403`.
 
 ```text
-PUT /v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state
+PUT /v1/bus/agents/{agent_id}/admin-state
 ```
 
 See the dedicated [Operator Lifecycle](operator-lifecycle.md) guide

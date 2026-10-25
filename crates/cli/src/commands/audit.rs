@@ -15,12 +15,6 @@ pub struct AuditArgs {
 pub enum AuditCommand {
     /// Query the audit trail.
     Query {
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
         /// Filter by provider.
         #[arg(long)]
         provider: Option<String>,
@@ -57,12 +51,6 @@ pub enum AuditCommand {
     },
     /// Replay multiple actions matching filters.
     ReplayBulk {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
         /// Filter by provider.
         #[arg(long)]
         provider: Option<String>,
@@ -78,8 +66,6 @@ pub enum AuditCommand {
 pub async fn run(ops: &OpsClient, args: &AuditArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
         AuditCommand::Query {
-            tenant,
-            namespace,
             provider,
             action_type,
             limit,
@@ -88,8 +74,6 @@ pub async fn run(ops: &OpsClient, args: &AuditArgs, format: &OutputFormat) -> an
         } => {
             run_query(
                 ops,
-                tenant.as_ref(),
-                namespace.as_ref(),
                 provider.as_ref(),
                 action_type.as_ref(),
                 *limit,
@@ -102,31 +86,16 @@ pub async fn run(ops: &OpsClient, args: &AuditArgs, format: &OutputFormat) -> an
         AuditCommand::Get { action_id } => run_get(ops, action_id, format).await,
         AuditCommand::Replay { action_id } => run_replay(ops, action_id, format).await,
         AuditCommand::ReplayBulk {
-            namespace,
-            tenant,
             provider,
             action_type,
             limit,
-        } => {
-            run_replay_bulk(
-                ops,
-                namespace.as_ref(),
-                tenant.as_ref(),
-                provider.as_ref(),
-                action_type.as_ref(),
-                *limit,
-                format,
-            )
-            .await
-        }
+        } => run_replay_bulk(ops, provider.as_ref(), action_type.as_ref(), *limit, format).await,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_query(
     ops: &OpsClient,
-    tenant: Option<&String>,
-    namespace: Option<&String>,
     provider: Option<&String>,
     action_type: Option<&String>,
     limit: u32,
@@ -139,8 +108,6 @@ async fn run_query(
 
     loop {
         let query = AuditQuery {
-            tenant: tenant.cloned(),
-            namespace: namespace.cloned(),
             provider: provider.cloned(),
             action_type: action_type.cloned(),
             outcome: None,
@@ -267,16 +234,12 @@ async fn run_replay(ops: &OpsClient, action_id: &str, format: &OutputFormat) -> 
 
 async fn run_replay_bulk(
     ops: &OpsClient,
-    namespace: Option<&String>,
-    tenant: Option<&String>,
     provider: Option<&String>,
     action_type: Option<&String>,
     limit: u32,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let query = ReplayQuery {
-        namespace: namespace.cloned(),
-        tenant: tenant.cloned(),
         provider: provider.cloned(),
         action_type: action_type.cloned(),
         limit: Some(limit),

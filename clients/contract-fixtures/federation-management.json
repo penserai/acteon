@@ -1,7 +1,5 @@
 {
   "publication": {
-    "namespace": "prod",
-    "tenant": "acme",
     "change_id": "trust-remote-ops",
     "expected_revision": 0,
     "trust": {
@@ -70,8 +68,6 @@
     "reason": "approve remote incident diagnosis"
   },
   "revocation": {
-    "namespace": "prod",
-    "tenant": "acme",
     "change_id": "revoke-remote-ops",
     "trust_id": "remote-ops",
     "expected_revision": 1,
@@ -174,8 +170,6 @@
     "next_cursor": null
   },
   "abandon_request": {
-    "namespace": "prod",
-    "tenant": "acme",
     "disposition_id": "77777777-7777-4777-8777-777777777777",
     "reason": "peer status cannot be proven; stop local recovery"
   },
@@ -240,8 +234,6 @@
     "message_id": "export-message-1"
   },
   "reconcile_request": {
-    "namespace": "prod",
-    "tenant": "acme",
     "proof_base64": "cXVhbGlmaWVkLWZpbmFsaXR5LXByb29m"
   },
   "reconciled_evidence": {

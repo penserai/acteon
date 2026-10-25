@@ -21,7 +21,7 @@ use acteon_executor::delegation::{
 use acteon_gateway::TaskScope;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{
         IntoResponse, Response,
@@ -1636,7 +1636,9 @@ pub async fn rpc(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -1922,8 +1924,8 @@ impl From<acteon_executor::delegation::PeerSelectionOption> for AgentPeerSelecti
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path)),
     request_body = AgentPeerSend,
     responses((status = 200, body = AgentPeerSendReceipt, description = "Durable peer submission receipt; uncertain is not rejection"),
@@ -1935,7 +1937,7 @@ pub async fn peer_send(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, target, skill)): Path<(
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id, target, skill)): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -1990,8 +1992,8 @@ pub async fn peer_send(
 }
 
 #[utoipa::path(
-    get, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    get, path = "/a2a/agents/{agent}/v1/tasks/{id}/peers", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), AgentPeerDiscoveryQuery),
     responses((status = 200, body = AgentPeerDiscoveryResponse, description = "Current safe peer-selection options; registry descriptions are untrusted"),
         (status = 400, description = "Invalid exact skill query"), (status = 403, description = "Current source authority required"),
@@ -2002,7 +2004,7 @@ pub async fn peer_discover(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id)): crate::auth::context::ScopedPath<(String, String, String, uuid::Uuid)>,
     Query(query): Query<AgentPeerDiscoveryQuery>,
     headers: HeaderMap,
 ) -> Response {
@@ -2061,7 +2063,15 @@ pub async fn peer_submission_action(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, target, skill, submission_action)): Path<(
+    crate::auth::context::ScopedPath((
+        namespace,
+        tenant,
+        agent,
+        task_id,
+        target,
+        skill,
+        submission_action,
+    )): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -2091,7 +2101,7 @@ pub async fn peer_submission_action(
     let Some((submission_id, action)) = parse_peer_submission_action(&submission_action) else {
         return error(StatusCode::BAD_REQUEST, "invalid_agent_peer_request");
     };
-    let path = Path((
+    let path = crate::auth::context::ScopedPath((
         namespace,
         tenant,
         agent,
@@ -2129,10 +2139,10 @@ fn parse_peer_submission_action(value: &str) -> Option<(uuid::Uuid, PeerSubmissi
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
-        ("submission" = String, Path, description = "Stable peer submission UUID")),
+        ("submission" = String, description = "Stable peer submission UUID")),
     responses((status = 200, body = AgentPeerSendReceipt, description = "Last durable peer receipt after an authorized remote observation"),
         (status = 400, description = "Invalid lifecycle request"), (status = 403, description = "Current peer authority required"),
         (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Submission does not match its durable binding"),
@@ -2142,7 +2152,15 @@ pub async fn peer_refresh(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+    crate::auth::context::ScopedPath((
+        namespace,
+        tenant,
+        agent,
+        task_id,
+        target,
+        skill,
+        submission_id,
+    )): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -2197,10 +2215,10 @@ pub async fn peer_refresh(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
-        ("submission" = String, Path, description = "Stable peer submission UUID")),
+        ("submission" = String, description = "Stable peer submission UUID")),
     responses((status = 200, body = AgentPeerCancelReceipt, description = "Durable at-most-once remote cancellation receipt"),
         (status = 400, description = "Invalid lifecycle request"), (status = 403, description = "Current peer authority required"),
         (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Submission does not match its durable binding"),
@@ -2210,7 +2228,15 @@ pub async fn peer_cancel(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+    crate::auth::context::ScopedPath((
+        namespace,
+        tenant,
+        agent,
+        task_id,
+        target,
+        skill,
+        submission_id,
+    )): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -2265,10 +2291,10 @@ pub async fn peer_cancel(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
-        ("submission" = String, Path, description = "Stable peer submission UUID")),
+        ("submission" = String, description = "Stable peer submission UUID")),
     request_body = AgentPeerSend,
     responses((status = 200, body = AgentPeerContinuationReceipt, description = "Durable at-most-once response to the accepted peer task's active challenge"),
         (status = 400, description = "Invalid unbound response"), (status = 403, description = "Current peer authority required"),
@@ -2279,7 +2305,15 @@ pub async fn peer_continue(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+    crate::auth::context::ScopedPath((
+        namespace,
+        tenant,
+        agent,
+        task_id,
+        target,
+        skill,
+        submission_id,
+    )): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -2336,10 +2370,10 @@ pub async fn peer_continue(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
-        ("submission" = String, Path, description = "Stable peer submission UUID")),
+        ("submission" = String, description = "Stable peer submission UUID")),
     request_body = AgentAuthorizationResolve,
     responses((status = 200, body = AgentPeerAuthorizationReceipt, description = "Durable remote authorization handoff receipt"),
         (status = 400, description = "Invalid challenge selector"), (status = 403, description = "Current peer authority required"),
@@ -2350,7 +2384,15 @@ pub async fn peer_authorization_resolve(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+    crate::auth::context::ScopedPath((
+        namespace,
+        tenant,
+        agent,
+        task_id,
+        target,
+        skill,
+        submission_id,
+    )): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -2407,8 +2449,8 @@ pub async fn peer_authorization_resolve(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/message:send", tag = "Governance",
+    params(("agent" = String, Path),
         ("x-acteon-execution-context" = Option<String>, Header, description = "URL-safe base64 encoded parent execution-context reference; requires matching private caller authentication"),
         ("x-acteon-execution-permits" = Option<String>, Header, description = "JSON array of the parent context's explicit permit references; required with x-acteon-execution-context")),
     request_body = AgentMessageSend,
@@ -2420,7 +2462,9 @@ pub async fn message_send(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
     headers: HeaderMap,
     Json(request): Json<AgentMessageSend>,
 ) -> Response {
@@ -2529,8 +2573,8 @@ fn parse_parent(
 }
 
 #[utoipa::path(
-    get, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    get, path = "/a2a/agents/{agent}/v1/tasks/{id}", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Exact source context returned by admission; mandatory for agent requesters")),
     responses((status = 200, body = acteon_core::Task), (status = 403, description = "Private authentication required"),
         (status = 404, description = "Task unavailable to this requester"), (status = 503, description = "Runtime unavailable"))
@@ -2538,7 +2582,7 @@ fn parse_parent(
 pub async fn task_get(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id)): crate::auth::context::ScopedPath<(String, String, String, uuid::Uuid)>,
     headers: HeaderMap,
 ) -> Response {
     let Some(Extension(proof)) = proof else {
@@ -2604,8 +2648,8 @@ pub async fn task_get(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/message:send", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Exact source context returned by admission; mandatory for agent requesters")),
     request_body = AgentMessageSend,
     responses((status = 200, body = acteon_core::Task, description = "Task after durable response registration and governed continuation admission"),
@@ -2616,7 +2660,7 @@ pub async fn task_get(
 pub async fn task_continue(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id)): crate::auth::context::ScopedPath<(String, String, String, uuid::Uuid)>,
     headers: HeaderMap,
     Json(request): Json<AgentMessageSend>,
 ) -> Response {
@@ -2699,8 +2743,8 @@ pub async fn task_continue(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path), ("id" = String, Path)),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/authorization:request", tag = "Governance",
+    params(("agent" = String, Path), ("id" = String, Path)),
     request_body = AgentAuthorizationOpen,
     responses((status = 200, body = acteon_core::Task, description = "Task paused on the host-bound authorization profile"),
         (status = 400, description = "Invalid opaque authorization request"), (status = 403, description = "Configured recipient authentication required"),
@@ -2710,7 +2754,7 @@ pub async fn task_continue(
 pub async fn task_authorization_request(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id)): crate::auth::context::ScopedPath<(String, String, String, uuid::Uuid)>,
     headers: HeaderMap,
     Json(request): Json<AgentAuthorizationOpen>,
 ) -> Response {
@@ -2755,8 +2799,8 @@ pub async fn task_authorization_request(
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/authorization:resolve", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Original admission source context; mandatory for agent requesters")),
     request_body = AgentAuthorizationResolve,
     responses((status = 200, body = acteon_core::Task, description = "Task after verifier-backed authorization resolution"),
@@ -2767,7 +2811,7 @@ pub async fn task_authorization_request(
 pub async fn task_authorization_resolve(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id)): crate::auth::context::ScopedPath<(String, String, String, uuid::Uuid)>,
     headers: HeaderMap,
     Json(request): Json<AgentAuthorizationResolve>,
 ) -> Response {
@@ -2872,8 +2916,8 @@ impl From<acteon_executor::governed::abort::ProviderAbortStatus> for AgentServic
 }
 
 #[utoipa::path(
-    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    post, path = "/a2a/agents/{agent}/v1/tasks/{id}/stop", tag = "Governance",
+    params(("agent" = String, Path),
         ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Original admission source context; mandatory for agent requesters")),
     responses((status = 200, body = AgentServiceStopResponse),
         (status = 404, description = "Task unavailable to this requester"),
@@ -2882,7 +2926,7 @@ impl From<acteon_executor::governed::abort::ProviderAbortStatus> for AgentServic
 pub async fn task_stop(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id)): crate::auth::context::ScopedPath<(String, String, String, uuid::Uuid)>,
     headers: HeaderMap,
 ) -> Response {
     let Some(Extension(proof)) = proof else {

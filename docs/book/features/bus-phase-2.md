@@ -18,7 +18,7 @@ partition.
 | Core type | `acteon_core::Subscription` — `{id, topic, namespace, tenant, starting_offset, ack_mode, dead_letter_topic, ack_timeout_ms, labels}` |
 | State | `KeyKind::BusSubscription` |
 | Backend trait | `BusBackend::commit_offset` and `BusBackend::consumer_lag` added; both backends (Kafka + in-memory) implement them with consistent `committed = last consumed offset` semantics |
-| HTTP | `POST/GET /v1/bus/subscriptions`, `DELETE /v1/bus/subscriptions/{namespace}/{tenant}/{id}`, `POST /v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack`, `GET /v1/bus/subscriptions/{namespace}/{tenant}/{id}/lag`, `POST /v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter` |
+| HTTP | `POST/GET /v1/bus/subscriptions`, `DELETE /v1/bus/subscriptions/{id}`, `POST /v1/bus/subscriptions/{id}/ack`, `GET /v1/bus/subscriptions/{id}/lag`, `POST /v1/bus/subscriptions/{id}/deadletter` |
 | Rust client | `create_bus_subscription`, `list_bus_subscriptions`, `delete_bus_subscription`, `ack_bus_subscription`, `get_bus_lag`, `deadletter_bus_message` |
 | Tests | 2 new bus unit tests (commit + lag roundtrip, commit-to-missing-topic), 1 new Kafka integration test (commits survive reconnect) |
 | Simulation | `bus_subscription_simulation.rs` — end-to-end: produce, consume + DLQ one record, reconnect, observe resumption and lag |
@@ -45,7 +45,7 @@ POST /v1/bus/subscriptions
 ### Ack
 
 ```http
-POST /v1/bus/subscriptions/agents/demo/order-processor/ack
+POST /v1/bus/subscriptions/order-processor/ack
 {
   "partition": 0,
   "offset": 42
@@ -71,7 +71,7 @@ a server subscription-session registry remains separate work.
 ### Lag
 
 ```http
-GET /v1/bus/subscriptions/agents/demo/order-processor/lag
+GET /v1/bus/subscriptions/order-processor/lag
 → 200 {
   "subscription_id": "order-processor",
   "topic": "agents.demo.orders",
@@ -88,7 +88,7 @@ partition. `lag` is clamped at 0.
 ### Dead-letter
 
 ```http
-POST /v1/bus/subscriptions/agents/demo/order-processor/deadletter
+POST /v1/bus/subscriptions/order-processor/deadletter
 {
   "partition": 0,
   "offset": 42,

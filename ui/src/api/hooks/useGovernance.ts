@@ -30,7 +30,7 @@ function parseRegistryReceipt(value: unknown, request: GovernanceRegistryMutatio
 export function useGovernance(namespace: string, tenant: string) {
   return useQuery({
     queryKey: ['governance', namespace, tenant],
-    queryFn: () => apiGet<GovernanceScopeView>('/v1/governance', { namespace, tenant }),
+    queryFn: () => apiGet<GovernanceScopeView>('/v1/governance'),
     enabled: !!namespace && !!tenant,
     retry: false,
   })
@@ -38,7 +38,7 @@ export function useGovernance(namespace: string, tenant: string) {
 export function useGovernanceIntervention() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (request: GovernanceInterventionRequest) => apiPost<GovernanceChangeReceipt>('/v1/governance/changes', request),
+    mutationFn: (request: GovernanceInterventionRequest) => apiPost<GovernanceChangeReceipt>('/v1/governance/changes', { change_id: request.change_id, change: request.change, reason: request.reason }),
     retry: false,
     onSuccess: () => void client.invalidateQueries({ queryKey: ['governance'] }),
   })
@@ -46,7 +46,7 @@ export function useGovernanceIntervention() {
 export function usePublishGovernancePermit() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: (request: PublishGovernancePermitRequest) => apiPost<GovernanceChangeReceipt>('/v1/governance/permits', request),
+    mutationFn: (request: PublishGovernancePermitRequest) => apiPost<GovernanceChangeReceipt>('/v1/governance/permits', { change_id: request.change_id, expected_revision: request.expected_revision, permit: request.permit, reason: request.reason }),
     retry: false,
     onSuccess: () => void client.invalidateQueries({ queryKey: ['governance'] }),
   })
@@ -55,7 +55,7 @@ export function usePublishGovernancePermit() {
 export function useGovernanceRegistryProjection() {
   return useMutation({
     mutationFn: async (target: RegistryProjectionTarget) => {
-      const query = new URLSearchParams({ namespace: target.namespace, tenant: target.tenant, projection: target.projection })
+      const query = new URLSearchParams({ projection: target.projection })
       const value = await apiFetch<unknown>(`/v1/governance/registry/${encodeURIComponent(target.agentId)}?${query}`, { redirect: 'error' })
       return parseRegistryProjection(value, target)
     },
@@ -68,7 +68,8 @@ export function useGovernanceRegistryMutation() {
     mutationFn: async (request: GovernanceRegistryMutationRequest) => {
       const sent = structuredClone(request)
       const value = await apiFetch<unknown>('/v1/governance/registry', {
-        method: 'POST', redirect: 'error', body: JSON.stringify(sent),
+        method: 'POST', redirect: 'error', body: JSON.stringify({ agent_id: sent.agent_id, change_id: sent.change_id, projection: sent.projection,
+          expected_registry_revision: sent.expected_registry_revision, expected_projection_version: sent.expected_projection_version, value: sent.value, reason: sent.reason }),
       })
       return parseRegistryReceipt(value, sent)
     },
@@ -79,7 +80,7 @@ export function useGovernanceRegistryMutation() {
 export function useProviderExecutionHistory(namespace: string, tenant: string, executionId: string) {
   return useQuery({
     queryKey: ['provider-history', namespace, tenant, executionId],
-    queryFn: () => apiGet<ProviderExecutionHistory>(`/v1/governance/executions/${encodeURIComponent(executionId)}`, { namespace, tenant }),
+    queryFn: () => apiGet<ProviderExecutionHistory>(`/v1/governance/executions/${encodeURIComponent(executionId)}`),
     enabled: !!namespace && !!tenant && !!executionId,
     retry: false,
   })

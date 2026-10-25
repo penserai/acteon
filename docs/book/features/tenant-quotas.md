@@ -267,21 +267,19 @@ Create a new quota policy.
 
 ```json
 {
-  "namespace": "notifications",
-  "tenant": "acme",
   "max_actions": 1000,
   "window": "daily",
   "overage_behavior": "block",
   "enabled": true,
   "description": "Acme daily limit",
-  "labels": {"tier": "premium"}
+  "labels": {
+    "tier": "premium"
+  }
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | string | Yes | Namespace scope |
-| `tenant` | string | Yes | Tenant scope |
 | `max_actions` | integer | Yes | Maximum actions per window |
 | `window` | string/object | Yes | `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, or `{"custom": {"seconds": N}}` |
 | `overage_behavior` | string/object | Yes | `"block"`, `"warn"`, `{"degrade": {"fallback_provider": "..."}}`, or `{"notify": {"target": "..."}}` |
@@ -313,8 +311,6 @@ List all quota policies, optionally filtered by namespace and tenant.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `namespace` | string | No | Filter by namespace |
-| `tenant` | string | No | Filter by tenant |
 
 **Response (200):**
 
@@ -403,25 +399,23 @@ Retrieve the current usage for a quota policy within the active window.
 curl -X POST http://localhost:8080/v1/quotas \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "notifications",
-    "tenant": "acme",
-    "max_actions": 1000,
-    "window": "daily",
-    "overage_behavior": "block",
-    "description": "Acme daily notification limit"
-  }'
+  "max_actions": 1000,
+  "window": "daily",
+  "overage_behavior": "block",
+  "description": "Acme daily notification limit"
+}'
 ```
 
 ### Check current usage
 
 ```bash
-curl "http://localhost:8080/v1/quotas/q-001/usage?namespace=notifications&tenant=acme"
+curl "http://localhost:8080/v1/quotas/q-001/usage"
 ```
 
 ### Update limit (upgrade tier)
 
 ```bash
-curl -X PUT "http://localhost:8080/v1/quotas/q-001?namespace=notifications&tenant=acme" \
+curl -X PUT "http://localhost:8080/v1/quotas/q-001" \
   -H "Content-Type: application/json" \
   -d '{"max_actions": 5000}'
 ```
@@ -429,7 +423,7 @@ curl -X PUT "http://localhost:8080/v1/quotas/q-001?namespace=notifications&tenan
 ### Disable a quota temporarily
 
 ```bash
-curl -X PUT "http://localhost:8080/v1/quotas/q-001?namespace=notifications&tenant=acme" \
+curl -X PUT "http://localhost:8080/v1/quotas/q-001" \
   -H "Content-Type: application/json" \
   -d '{"enabled": false}'
 ```
@@ -437,7 +431,7 @@ curl -X PUT "http://localhost:8080/v1/quotas/q-001?namespace=notifications&tenan
 ### Delete a quota
 
 ```bash
-curl -X DELETE "http://localhost:8080/v1/quotas/q-001?namespace=notifications&tenant=acme"
+curl -X DELETE "http://localhost:8080/v1/quotas/q-001"
 ```
 
 ## Monitoring

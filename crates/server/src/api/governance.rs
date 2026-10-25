@@ -1,5 +1,6 @@
 //! Operator governance with original private authentication at the write boundary.
 use super::AppState;
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use crate::{
     auth::projection::AuthenticatedExecutionConfiguration, execution_authority::ManagementError,
 };
@@ -10,7 +11,7 @@ use acteon_core::{
 };
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -19,14 +20,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 pub struct GovernanceQuery {
+    #[param(ignore)]
     pub namespace: String,
+    #[param(ignore)]
     pub tenant: String,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 pub struct FederationDeliveryEvidenceQuery {
+    #[param(ignore)]
     pub namespace: String,
+    #[param(ignore)]
     pub tenant: String,
     pub after: Option<String>,
     pub limit: Option<usize>,
@@ -35,7 +40,9 @@ pub struct FederationDeliveryEvidenceQuery {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AbandonFederationDeliveryRequest {
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     pub disposition_id: String,
     pub reason: String,
@@ -44,7 +51,9 @@ pub struct AbandonFederationDeliveryRequest {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReconcileFederationDeliveryRequest {
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     pub proof_base64: String,
 }
@@ -337,7 +346,7 @@ pub(super) fn runtime(
 pub async fn inspect(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Query(query): Query<GovernanceQuery>,
+    ScopedQuery(query): ScopedQuery<GovernanceQuery>,
 ) -> Result<Json<GovernanceScopeView>, GovernanceApiError> {
     let proof = authentication(proof)?;
     let runtime = state
@@ -354,12 +363,12 @@ pub async fn inspect(
     ))
 }
 
-#[utoipa::path(post, path = "/v1/governance/permits", tag = "Governance", request_body = PublishGovernancePermitRequest,
+#[utoipa::path(post, path = "/v1/governance/permits", tag = "Governance", request_body = ScopedJson<PublishGovernancePermitRequest>,
     responses((status = 200, body = GovernanceChangeReceipt), (status = 400, description = "Invalid request"), (status = 403, description = "Publication exceeds management ceiling"), (status = 409, description = "Revision or authority conflict"), (status = 503, description = "Governance unavailable")))]
 pub async fn publish_permit(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Json(request): Json<PublishGovernancePermitRequest>,
+    ScopedJson(request): ScopedJson<PublishGovernancePermitRequest>,
 ) -> Result<Json<GovernanceChangeReceipt>, GovernanceApiError> {
     let proof = authentication(proof)?;
     let runtime = state
@@ -374,12 +383,12 @@ pub async fn publish_permit(
     ))
 }
 
-#[utoipa::path(post, path = "/v1/governance/federation/trusts", tag = "Governance", request_body = PublishFederationTrustRequest,
+#[utoipa::path(post, path = "/v1/governance/federation/trusts", tag = "Governance", request_body = ScopedJson<PublishFederationTrustRequest>,
     responses((status = 200, body = GovernanceChangeReceipt), (status = 400, description = "Invalid trust"), (status = 403, description = "Trust exceeds configured management ceiling"), (status = 409, description = "Revision or authority conflict"), (status = 503, description = "Governance unavailable")))]
 pub async fn publish_federation_trust(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Json(request): Json<PublishFederationTrustRequest>,
+    ScopedJson(request): ScopedJson<PublishFederationTrustRequest>,
 ) -> Result<Json<GovernanceChangeReceipt>, GovernanceApiError> {
     let proof = authentication(proof)?;
     Ok(Json(
@@ -389,12 +398,12 @@ pub async fn publish_federation_trust(
     ))
 }
 
-#[utoipa::path(post, path = "/v1/governance/federation/trusts/revoke", tag = "Governance", request_body = RevokeFederationTrustRequest,
+#[utoipa::path(post, path = "/v1/governance/federation/trusts/revoke", tag = "Governance", request_body = ScopedJson<RevokeFederationTrustRequest>,
     responses((status = 200, body = GovernanceChangeReceipt), (status = 400, description = "Invalid revocation"), (status = 403, description = "Trust exceeds configured management ceiling"), (status = 409, description = "Revision or authority conflict"), (status = 503, description = "Governance unavailable")))]
 pub async fn revoke_federation_trust(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Json(request): Json<RevokeFederationTrustRequest>,
+    ScopedJson(request): ScopedJson<RevokeFederationTrustRequest>,
 ) -> Result<Json<GovernanceChangeReceipt>, GovernanceApiError> {
     let proof = authentication(proof)?;
     Ok(Json(
@@ -404,12 +413,12 @@ pub async fn revoke_federation_trust(
     ))
 }
 
-#[utoipa::path(post, path = "/v1/governance/changes", tag = "Governance", request_body = GovernanceInterventionRequest,
+#[utoipa::path(post, path = "/v1/governance/changes", tag = "Governance", request_body = ScopedJson<GovernanceInterventionRequest>,
     responses((status = 200, body = GovernanceChangeReceipt), (status = 400, description = "Invalid request"), (status = 403, description = "Intervention exceeds management ceiling"), (status = 409, description = "Revision or authority conflict"), (status = 503, description = "Governance unavailable")))]
 pub async fn intervene(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Json(request): Json<GovernanceInterventionRequest>,
+    ScopedJson(request): ScopedJson<GovernanceInterventionRequest>,
 ) -> Result<Json<GovernanceChangeReceipt>, GovernanceApiError> {
     let proof = authentication(proof)?;
     let runtime = state
@@ -435,7 +444,7 @@ pub async fn provider_history(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path(execution_id): Path<uuid::Uuid>,
-    Query(query): Query<GovernanceQuery>,
+    ScopedQuery(query): ScopedQuery<GovernanceQuery>,
 ) -> Result<Json<ProviderExecutionHistory>, GovernanceApiError> {
     let proof = authentication(proof)?;
     Ok(Json(
@@ -458,7 +467,7 @@ pub async fn provider_history(
 pub async fn federation_delivery_evidence(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Query(query): Query<FederationDeliveryEvidenceQuery>,
+    ScopedQuery(query): ScopedQuery<FederationDeliveryEvidenceQuery>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     let proof = authentication(proof)?;
     let after = query
@@ -501,7 +510,7 @@ pub async fn abandon_federation_delivery(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path(delivery_id): Path<uuid::Uuid>,
-    Json(request): Json<AbandonFederationDeliveryRequest>,
+    ScopedJson(request): ScopedJson<AbandonFederationDeliveryRequest>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     let proof = authentication(proof)?;
     let disposition_id =
@@ -535,7 +544,7 @@ pub async fn federation_finality_correlation(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path(delivery_id): Path<uuid::Uuid>,
-    Query(query): Query<GovernanceQuery>,
+    ScopedQuery(query): ScopedQuery<GovernanceQuery>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     let proof = authentication(proof)?;
     let correlation = runtime(&state)?
@@ -562,7 +571,7 @@ pub async fn reconcile_federation_delivery(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path(delivery_id): Path<uuid::Uuid>,
-    Json(request): Json<ReconcileFederationDeliveryRequest>,
+    ScopedJson(request): ScopedJson<ReconcileFederationDeliveryRequest>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     use base64::Engine;
     let authentication = authentication(proof)?;
@@ -597,9 +606,11 @@ pub async fn federation_delivery_action(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path(delivery_action): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    crate::auth::context::RequestScope(scope): crate::auth::context::RequestScope,
+    Json(mut body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     let proof = authentication(proof)?;
+    crate::auth::context::bind_root(&mut body, &scope).map_err(|_| ManagementError::Invalid)?;
     let (delivery_id, action) = delivery_action
         .rsplit_once(':')
         .ok_or(ManagementError::Invalid)?;
@@ -665,7 +676,7 @@ pub async fn reconciliation_correlation(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path((execution_id, ordinal)): Path<(uuid::Uuid, u32)>,
-    Query(query): Query<GovernanceQuery>,
+    ScopedQuery(query): ScopedQuery<GovernanceQuery>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     let proof = authentication(proof)?;
     let runtime = runtime(&state)?;
@@ -700,7 +711,7 @@ pub async fn accept_reconciliation(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path((execution_id, ordinal)): Path<(uuid::Uuid, u32)>,
-    Query(query): Query<GovernanceQuery>,
+    ScopedQuery(query): ScopedQuery<GovernanceQuery>,
     Json(request): Json<acteon_core::ProviderReconciliationRequest>,
 ) -> Result<impl IntoResponse, GovernanceApiError> {
     use base64::Engine;
@@ -734,7 +745,9 @@ pub async fn accept_reconciliation(
 #[derive(Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryProjectionQuery {
+    #[param(ignore)]
     pub namespace: String,
+    #[param(ignore)]
     pub tenant: String,
     pub projection: acteon_core::GovernanceRegistryProjection,
 }
@@ -745,7 +758,7 @@ pub async fn registry_projection(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
     Path(agent_id): Path<String>,
-    Query(query): Query<RegistryProjectionQuery>,
+    ScopedQuery(query): ScopedQuery<RegistryProjectionQuery>,
 ) -> Result<Response, GovernanceApiError> {
     let proof = authentication(proof)?;
     let view = runtime(&state)?
@@ -764,12 +777,12 @@ pub async fn registry_projection(
         .into_response())
 }
 
-#[utoipa::path(post, path = "/v1/governance/registry", tag = "Governance", request_body = acteon_core::GovernanceRegistryMutationRequest,
+#[utoipa::path(post, path = "/v1/governance/registry", tag = "Governance", request_body = ScopedJson<acteon_core::GovernanceRegistryMutationRequest>,
     responses((status = 200, body = acteon_core::GovernanceRegistryMutationReceipt), (status = 400, description = "Invalid metadata or intent"), (status = 403, description = "Exact current agent management authority required"), (status = 409, description = "Changed metadata or qualification"), (status = 503, description = "Unavailable or unresolved control delivery")))]
 pub async fn mutate_registry(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Json(request): Json<acteon_core::GovernanceRegistryMutationRequest>,
+    ScopedJson(request): ScopedJson<acteon_core::GovernanceRegistryMutationRequest>,
 ) -> Result<Response, GovernanceApiError> {
     let proof = authentication(proof)?;
     let receipt = runtime(&state)?
@@ -825,3 +838,16 @@ mod tests {
         }
     }
 }
+
+crate::auth::context::scoped_body!(
+    AbandonFederationDeliveryRequest,
+    ReconcileFederationDeliveryRequest
+);
+
+crate::auth::context::scoped_body!(
+    PublishGovernancePermitRequest,
+    PublishFederationTrustRequest,
+    RevokeFederationTrustRequest,
+    GovernanceInterventionRequest,
+    acteon_core::GovernanceRegistryMutationRequest
+);

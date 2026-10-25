@@ -12,10 +12,10 @@ describe("typed workforce", () => {
       return new Response(JSON.stringify(init.method === "GET" ? fixture.scope : fixture.receipt));
     }));
     const client = new ActeonClient("http://city.test", { apiKey: "operator-key" });
-    expect(await client.workforce("prod", "acme")).toEqual(fixture.scope);
+    expect(await client.workforce()).toEqual(fixture.scope);
     const inspect = new URL(requests[0].url);
     expect(inspect.pathname).toBe("/v1/workforce");
-    expect(Object.fromEntries(inspect.searchParams)).toEqual({ namespace: "prod", tenant: "acme" });
+    expect(Object.fromEntries(inspect.searchParams)).toEqual({ });
     for (const change of fixture.changes) {
       expect(await client.changeWorkforce(change)).toEqual(fixture.receipt);
       const request = requests.at(-1)!;

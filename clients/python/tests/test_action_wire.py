@@ -11,15 +11,15 @@ def test_action_matches_the_rust_wire_fixture():
     )
     action = Action(
         id=fixture["id"],
-        namespace=fixture["namespace"],
-        tenant=fixture["tenant"],
         provider=fixture["provider"],
         action_type=fixture["action_type"],
         payload=fixture["payload"],
         metadata=fixture["metadata"],
         created_at=datetime(2026, 1, 1, 2, tzinfo=timezone(timedelta(hours=2))),
     )
-    assert action.to_dict() == fixture
+    assert action.to_dict() == {
+        k: v for k, v in fixture.items() if k not in ("namespace", "tenant")
+    }
 
 
 def test_deduplication_uses_the_rust_string_variant():

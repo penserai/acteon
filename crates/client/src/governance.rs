@@ -3,13 +3,11 @@ use crate::{ActeonClient, Error, PlatformOperation};
 pub use acteon_core::{
     FederationGrantCeilingDeclaration, FederationImportReceipt, FederationTrustDeclaration,
     FederationTrustView, GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
-    GovernanceInterventionRequest, GovernanceLimits, GovernanceManagementBounds,
-    GovernancePermitDeclaration, GovernancePermitView, GovernanceRegistryMutationReceipt,
-    GovernanceRegistryMutationRequest, GovernanceRegistryProjection,
+    GovernanceLimits, GovernanceManagementBounds, GovernancePermitDeclaration,
+    GovernancePermitView, GovernanceRegistryMutationReceipt, GovernanceRegistryProjection,
     GovernanceRegistryProjectionView, GovernanceRoute, GovernanceRouteView, GovernanceScopeView,
     ImportFederationEnvelopeRequest, InvokeFederatedAgentRequest, ProviderExecutionHistory,
     ProviderHistoryReceipt, ProviderReconciliationCorrelation, ProviderReconciliationRequest,
-    PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest,
     SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, Task, TaskMessage,
 };
 use serde::{Deserialize, Serialize};
@@ -100,16 +98,12 @@ pub struct FederationDeliveryAbandonment {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AbandonFederationDeliveryRequest<'a> {
-    pub namespace: &'a str,
-    pub tenant: &'a str,
     pub disposition_id: &'a str,
     pub reason: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconcileFederationDeliveryRequest<'a> {
-    pub namespace: &'a str,
-    pub tenant: &'a str,
     pub proof_base64: &'a str,
 }
 
@@ -185,17 +179,68 @@ struct FederationExportMessage<'a> {
     message: &'a TaskMessage,
 }
 
+/// Mutation within the authenticated credential context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishFederationTrustRequest {
+    pub change_id: String,
+    pub expected_revision: u64,
+    pub trust: FederationTrustDeclaration,
+    pub reason: String,
+}
+
+/// Mutation within the authenticated credential context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeFederationTrustRequest {
+    pub change_id: String,
+    pub trust_id: String,
+    pub expected_revision: u64,
+    pub reason: String,
+}
+
+/// Mutation within the authenticated credential context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishGovernancePermitRequest {
+    pub change_id: String,
+    pub expected_revision: u64,
+    pub permit: GovernancePermitDeclaration,
+    pub reason: String,
+}
+
+/// Mutation within the authenticated credential context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernanceInterventionRequest {
+    pub change_id: String,
+    pub change: GovernanceIntervention,
+    pub reason: String,
+}
+
+/// Mutation within the authenticated credential context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernanceRegistryMutationRequest {
+    pub agent_id: String,
+    pub change_id: String,
+    pub expected_registry_revision: u64,
+    pub projection: GovernanceRegistryProjection,
+    pub expected_projection_version: Option<u64>,
+    /// A complete validated Agent/AgentCard. Null requests deletion.
+    pub value: Option<serde_json::Value>,
+    pub reason: String,
+}
+
 impl ActeonClient {
     /// List sanitized outbound delivery evidence under reconciliation authority.
     pub async fn federation_delivery_evidence(
         &self,
-        namespace: &str,
-        tenant: &str,
         after: Option<&str>,
         limit: Option<usize>,
     ) -> Result<FederationDeliveryEvidencePage, Error> {
         let limit = limit.map(|value| value.to_string());
-        let mut query = vec![("namespace", namespace), ("tenant", tenant)];
+        let mut query = vec![];
         if let Some(after) = after {
             query.push(("after", after));
         }
@@ -245,15 +290,13 @@ impl ActeonClient {
     /// Return immutable correlation for the currently ambiguous peer stage.
     pub async fn federation_finality_correlation(
         &self,
-        namespace: &str,
-        tenant: &str,
         delivery_id: &str,
     ) -> Result<FederationFinalityCorrelation, Error> {
         let value = self
             .platform_request(
                 PlatformOperation::GovernanceFederationFinalityCorrelation,
                 &[("delivery_id", delivery_id)],
-                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
                 None,
             )
             .await?;
@@ -298,11 +341,12 @@ impl ActeonClient {
     /// Inspect the current projection/version under independently granted agent bounds.
     pub async fn registry_projection(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent_id: &str,
         projection: GovernanceRegistryProjection,
     ) -> Result<GovernanceRegistryProjectionView, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         let kind = match projection {
             GovernanceRegistryProjection::Agent => "agent",
             GovernanceRegistryProjection::Card => "card",
@@ -311,11 +355,7 @@ impl ActeonClient {
             .platform_request(
                 PlatformOperation::GovernanceRegistryProjection,
                 &[("agent_id", agent_id)],
-                &[
-                    ("namespace", namespace),
-                    ("tenant", tenant),
-                    ("projection", kind),
-                ],
+                &[("projection", kind)],
                 None,
             )
             .await?;
@@ -352,6 +392,7 @@ impl ActeonClient {
         &self,
         request: &GovernanceRegistryMutationRequest,
     ) -> Result<GovernanceRegistryMutationReceipt, Error> {
+        let scope = self.identity().await?.scope;
         let body =
             serde_json::to_value(request).map_err(|e| Error::Configuration(e.to_string()))?;
         let value = self
@@ -364,8 +405,8 @@ impl ActeonClient {
             .await?;
         let receipt: GovernanceRegistryMutationReceipt =
             serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
-        if receipt.namespace != request.namespace
-            || receipt.tenant != request.tenant
+        if receipt.namespace != scope.namespace
+            || receipt.tenant != scope.tenant
             || receipt.agent_id != request.agent_id
             || receipt.change_id != request.change_id
             || receipt.projection != request.projection
@@ -385,33 +426,22 @@ impl ActeonClient {
         }
         Ok(receipt)
     }
-    pub async fn governance(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<GovernanceScopeView, Error> {
+    pub async fn governance(&self) -> Result<GovernanceScopeView, Error> {
         let value = self
-            .platform_request(
-                PlatformOperation::GovernanceInspect,
-                &[],
-                &[("namespace", namespace), ("tenant", tenant)],
-                None,
-            )
+            .platform_request(PlatformOperation::GovernanceInspect, &[], &[], None)
             .await?;
         serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
     }
     /// Inspect retained evidence under an explicitly granted history permission.
     pub async fn provider_execution_history(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
     ) -> Result<ProviderExecutionHistory, Error> {
         let value = self
             .platform_request(
                 PlatformOperation::GovernanceProviderHistory,
                 &[("execution_id", execution_id)],
-                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
                 None,
             )
             .await?;
@@ -421,8 +451,6 @@ impl ActeonClient {
     /// Correlate retained work under independent reconciliation authority.
     pub async fn provider_reconciliation_correlation(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         ordinal: u32,
     ) -> Result<ProviderReconciliationCorrelation, Error> {
@@ -431,7 +459,7 @@ impl ActeonClient {
             .platform_request(
                 PlatformOperation::GovernanceReconciliationCorrelation,
                 &[("execution_id", execution_id), ("ordinal", &ordinal)],
-                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
                 None,
             )
             .await?;
@@ -440,8 +468,6 @@ impl ActeonClient {
     /// Accept qualified finality without automatic retry or provider dispatch.
     pub async fn accept_provider_reconciliation(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         ordinal: u32,
         request: &ProviderReconciliationRequest,
@@ -453,7 +479,7 @@ impl ActeonClient {
             .platform_request(
                 PlatformOperation::GovernanceAcceptReconciliation,
                 &[("execution_id", execution_id), ("ordinal", &ordinal)],
-                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
                 Some(&body),
             )
             .await?;
@@ -511,16 +537,17 @@ impl ActeonClient {
     /// Authenticate as a configured peer and retain imported authority without executing it.
     pub async fn import_federation_envelope(
         &self,
-        namespace: &str,
-        tenant: &str,
         envelope: SignedFederationEnvelopeDeclaration,
     ) -> Result<FederationImportReceipt, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         let body = serde_json::to_value(ImportFederationEnvelopeRequest { envelope })
             .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
         let value = self
             .platform_request(
                 PlatformOperation::FederationImportEnvelope,
-                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
                 &[],
                 Some(&body),
             )
@@ -537,18 +564,12 @@ impl ActeonClient {
     /// Fetch the signed capability card addressed to the authenticated peer.
     pub async fn federation_capabilities(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
     ) -> Result<SignedFederationCapabilityCard, Error> {
         let value = self
             .platform_request(
                 PlatformOperation::FederationCapabilities,
-                &[
-                    ("namespace", namespace),
-                    ("tenant", tenant),
-                    ("agent", agent),
-                ],
+                &[("agent", agent)],
                 &[],
                 None,
             )
@@ -565,12 +586,13 @@ impl ActeonClient {
     /// Invoke or replay an exact signed message as a configured federation peer.
     pub async fn invoke_federated_agent(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         invocation: SignedFederationInvocationDeclaration,
         message: TaskMessage,
     ) -> Result<Task, Error> {
+        let scope = self.identity().await?.scope;
+        let namespace = scope.namespace.as_str();
+        let tenant = scope.tenant.as_str();
         let body = serde_json::to_value(InvokeFederatedAgentRequest {
             invocation,
             message,
@@ -579,11 +601,7 @@ impl ActeonClient {
         let value = self
             .platform_request(
                 PlatformOperation::FederationInvokeAgent,
-                &[
-                    ("namespace", namespace),
-                    ("tenant", tenant),
-                    ("agent", agent),
-                ],
+                &[("agent", agent)],
                 &[],
                 Some(&body),
             )
@@ -600,8 +618,6 @@ impl ActeonClient {
     /// Submit one host-qualified export from an accepted local agent task.
     pub async fn export_federated_message(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         profile: &str,
@@ -609,8 +625,6 @@ impl ActeonClient {
     ) -> Result<FederationExportReceipt, Error> {
         self.federation_export_request(
             PlatformOperation::FederationExportMessage,
-            namespace,
-            tenant,
             agent,
             task_id,
             profile,
@@ -621,8 +635,6 @@ impl ActeonClient {
     /// Observe the original durable export without issuing network traffic.
     pub async fn observe_federated_export(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         profile: &str,
@@ -630,8 +642,6 @@ impl ActeonClient {
     ) -> Result<FederationExportReceipt, Error> {
         self.federation_export_request(
             PlatformOperation::FederationObserveExportMessage,
-            namespace,
-            tenant,
             agent,
             task_id,
             profile,
@@ -642,8 +652,6 @@ impl ActeonClient {
     /// Explicitly replay an exact request through a qualified idempotent peer.
     pub async fn replay_federated_export(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent: &str,
         task_id: &str,
         profile: &str,
@@ -651,8 +659,6 @@ impl ActeonClient {
     ) -> Result<FederationExportReceipt, Error> {
         self.federation_export_request(
             PlatformOperation::FederationReplayExportMessage,
-            namespace,
-            tenant,
             agent,
             task_id,
             profile,
@@ -665,8 +671,7 @@ impl ActeonClient {
     async fn federation_export_request(
         &self,
         operation: PlatformOperation,
-        namespace: &str,
-        tenant: &str,
+
         agent: &str,
         task_id: &str,
         profile: &str,
@@ -677,13 +682,7 @@ impl ActeonClient {
         let value = self
             .platform_request(
                 operation,
-                &[
-                    ("namespace", namespace),
-                    ("tenant", tenant),
-                    ("agent", agent),
-                    ("task_id", task_id),
-                    ("profile", profile),
-                ],
+                &[("agent", agent), ("task_id", task_id), ("profile", profile)],
                 &[],
                 Some(&body),
             )
@@ -743,8 +742,7 @@ mod tests {
         headers: HeaderMap,
     ) -> (StatusCode, Json<serde_json::Value>) {
         assert_eq!(headers["authorization"], "Bearer operator-key");
-        assert!(uri.query().unwrap().contains("namespace=prod"));
-        assert!(uri.query().unwrap().contains("tenant=acme"));
+        assert!(uri.query().is_none_or(str::is_empty));
         (StatusCode::OK, Json(f.wire["scope"].clone()))
     }
     async fn change(
@@ -781,7 +779,7 @@ mod tests {
             .api_key("operator-key")
             .build()
             .unwrap();
-        let scope = client.governance("prod", "acme").await.unwrap();
+        let scope = client.governance().await.unwrap();
         assert_eq!(serde_json::to_value(scope).unwrap(), fixture.wire["scope"]);
         let publication: PublishGovernancePermitRequest =
             serde_json::from_value(fixture.wire["publication"].clone()).unwrap();
@@ -874,11 +872,11 @@ mod federation_wire_tests {
         );
         assert_eq!(
             PlatformOperation::FederationCapabilities.descriptor().1,
-            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities"
+            "/a2a/federation/agents/{agent}/capabilities"
         );
         assert_eq!(
             PlatformOperation::FederationImportEnvelope.descriptor().1,
-            "/a2a/{namespace}/{tenant}/federation/envelopes:import"
+            "/a2a/federation/envelopes:import"
         );
         let invocation = SignedFederationInvocationDeclaration {
             payload: "signed-payload".into(),
@@ -903,7 +901,7 @@ mod federation_wire_tests {
         );
         assert_eq!(
             PlatformOperation::FederationInvokeAgent.descriptor().1,
-            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send"
+            "/a2a/federation/agents/{agent}/v1/message:send"
         );
         let export_receipt: FederationExportReceipt =
             serde_json::from_value(wire["export_receipt"].clone()).unwrap();
@@ -1051,7 +1049,7 @@ mod registry_tests {
         assert_eq!(headers["authorization"], "Bearer operator-key");
         assert_eq!(uri.path(), "/v1/governance/registry/maya");
         let query = uri.query().unwrap();
-        for expected in ["namespace=prod", "tenant=acme", "projection=card"] {
+        for expected in ["projection=card"] {
             assert!(query.contains(expected));
         }
         f.calls.fetch_add(1, Ordering::SeqCst);
@@ -1088,6 +1086,15 @@ mod registry_tests {
                 .build()
                 .unwrap();
         let router = Router::new()
+            .route(
+                "/v1/auth/identity",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "credential_id":"operator-key", "auth_method":"api_key", "role":"operator",
+                        "principal":null, "scope":{"namespace":"prod","tenant":"acme"}
+                    }))
+                }),
+            )
             .route("/v1/governance/registry/{agent_id}", get(inspect))
             .route("/v1/governance/registry", post(change))
             .with_state(f.clone());
@@ -1095,7 +1102,7 @@ mod registry_tests {
         assert_eq!(
             serde_json::to_value(
                 client
-                    .registry_projection("prod", "acme", "maya", GovernanceRegistryProjection::Card)
+                    .registry_projection("maya", GovernanceRegistryProjection::Card)
                     .await
                     .unwrap()
             )
@@ -1137,7 +1144,7 @@ mod registry_tests {
             let before = f.calls.load(Ordering::SeqCst);
             assert!(
                 client
-                    .registry_projection("prod", "acme", "maya", GovernanceRegistryProjection::Card)
+                    .registry_projection("maya", GovernanceRegistryProjection::Card)
                     .await
                     .is_err()
             );

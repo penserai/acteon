@@ -1,5 +1,9 @@
 # acteon-client (Java)
 
+Each credential belongs to one exact namespace and tenant. SDK requests omit
+tenant metadata; the server derives it from the JWT or API key. See the
+[request contract](https://penserai.github.io/acteon/api/tenant-context/).
+
 Java client for the Acteon action gateway.
 
 ## Complete platform API
@@ -8,7 +12,7 @@ The generated operation catalog exposes all 223 finite HTTP operations, includin
 
 ```java
 var status = client.platformRequest(PlatformOperation.BUS_STAGES_STATUS,
-    Map.of("namespace", "observability", "tenant", "demo", "id", "log-detector"),
+    Map.of("id", "log-detector"),
     null, null);
 ```
 
@@ -23,7 +27,7 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 
 ## Typed governance management
 
-Use `governance`, `publishGovernancePermit`, and `interveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+Use `governance`, `publishGovernancePermit`, and `interveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the credential’s namespace and tenant; an executor credential alone does not grant management authority.
 
 Cross-domain execution uses `publishFederationTrust`,
 `revokeFederationTrust`, `federationCapabilities`, `importFederationEnvelope`, and
@@ -34,7 +38,7 @@ authority without dispatching work. Invocation sends the exact signed intent
 and message, validates the returned task scope and ID, and does not retry
 automatically. Accepted source tasks use `exportFederatedMessage`,
 `observeFederatedExport`, and `replayFederatedExport`; the client returns a
-typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `federationDeliveryEvidence` for typed sanitized pages and `abandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
+typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `federationDeliveryEvidence` for typed sanitized pages and `abandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only delivery identity and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 
@@ -78,8 +82,6 @@ public class Example {
 
         // Dispatch an action
         Action action = new Action(
-            "notifications",
-            "tenant-1",
             "email",
             "send_notification",
             Map.of("to", "user@example.com", "subject", "Hello")
@@ -95,8 +97,6 @@ public class Example {
 
 ```java
 Action action = Action.builder()
-    .namespace("notifications")
-    .tenant("tenant-1")
     .provider("email")
     .actionType("send_notification")
     .payload(Map.of("to", "user@example.com"))
@@ -210,7 +210,6 @@ Available `time` fields: `hour` (0–23), `minute`, `second`, `day`, `month`, `y
 ```java
 // Query audit records
 AuditQuery query = AuditQuery.builder()
-    .tenant("tenant-1")
     .limit(10)
     .build();
 
@@ -228,10 +227,10 @@ record.ifPresent(r -> System.out.println("Found: " + r.getOutcome()));
 ## Configuration
 
 API keys are sent via the `Authorization: Bearer <key>` header. The server
-accepts both JWTs and raw API keys on that header. API keys are scoped by
-tenant, namespace, provider, and action type on the server side — see the
+accepts both JWTs and raw API keys on that header. Each API key has one exact namespace and tenant; grants restrict
+provider and action type on the server side — see the
 [API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
-documentation for the grant model and hierarchical tenant matching.
+documentation for credential context and the grant model.
 
 ```java
 // With API key
@@ -295,8 +294,6 @@ try (ActeonClient client = new ActeonClient("http://localhost:8080")) {
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | String | Yes | Logical grouping |
-| `tenant` | String | Yes | Tenant identifier |
 | `provider` | String | Yes | Target provider |
 | `actionType` | String | Yes | Type of action |
 | `payload` | Map | Yes | Action-specific data |
@@ -367,7 +364,7 @@ declared workforce management bounds and current operator authentication.
 Public values do not establish representation or caller authority.
 
 ```java
-var roster = client.workforce("prod", "acme");
+var roster = client.workforce();
 var receipt = client.changeWorkforce(new Workforce.ChangeRequest(
     "prod", "acme", "enroll-reliability-1",
     new Workforce.PutTeam(new Workforce.Team(

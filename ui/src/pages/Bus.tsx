@@ -63,18 +63,10 @@ const TABS: { id: TabId; label: string }[] = [
 export function Bus() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = (searchParams.get('tab') as TabId) ?? 'topics'
-  const ns = searchParams.get('ns') ?? ''
-  const tenant = searchParams.get('tenant') ?? ''
 
   const setTab = (id: string) => {
     const next = new URLSearchParams(searchParams)
     next.set('tab', id)
-    setSearchParams(next)
-  }
-  const setFilter = (key: 'ns' | 'tenant', value: string) => {
-    const next = new URLSearchParams(searchParams)
-    if (value) next.set(key, value)
-    else next.delete(key)
     setSearchParams(next)
   }
 
@@ -82,26 +74,13 @@ export function Bus() {
     <div>
       <PageHeader title="Agentic Bus" subtitle="Topics, subscriptions, agents, conversations, and HITL approvals." />
 
-      <div className={styles.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setFilter('ns', e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setFilter('tenant', e.target.value)}
-        />
-      </div>
-
       <Tabs tabs={TABS} active={tab} onChange={setTab} />
       <div className="mt-4">
-        {tab === 'topics' && <TopicsPanel ns={ns} tenant={tenant} />}
-        {tab === 'subscriptions' && <SubscriptionsPanel ns={ns} tenant={tenant} />}
-        {tab === 'agents' && <AgentsPanel ns={ns} tenant={tenant} />}
-        {tab === 'conversations' && <ConversationsPanel ns={ns} tenant={tenant} />}
-        {tab === 'approvals' && <ApprovalsPanel ns={ns} tenant={tenant} />}
+        {tab === 'topics' && <TopicsPanel />}
+        {tab === 'subscriptions' && <SubscriptionsPanel />}
+        {tab === 'agents' && <AgentsPanel />}
+        {tab === 'conversations' && <ConversationsPanel />}
+        {tab === 'approvals' && <ApprovalsPanel />}
       </div>
     </div>
   )
@@ -111,8 +90,8 @@ export function Bus() {
 
 const topicCol = createDataTableColumnHelper<BusTopic>()
 
-function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
-  const { data, isLoading } = useBusTopics({ namespace: ns || undefined, tenant: tenant || undefined })
+function TopicsPanel() {
+  const { data, isLoading } = useBusTopics()
   const del = useDeleteBusTopic()
   const { toast } = useToast()
   const [pending, setPending] = useState<BusTopic | null>(null)
@@ -173,7 +152,7 @@ function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
         onConfirm={() => {
           if (!pending) return
           del.mutate(
-            { namespace: pending.namespace, tenant: pending.tenant, name: pending.name },
+            { name: pending.name },
             {
               onSuccess: () => {
                 toast('success', 'Topic deleted')
@@ -192,10 +171,8 @@ function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
 
 const subCol = createDataTableColumnHelper<BusSubscription>()
 
-function SubscriptionsPanel({ ns, tenant }: { ns: string; tenant: string }) {
+function SubscriptionsPanel() {
   const { data, isLoading } = useBusSubscriptions({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
   })
   const del = useDeleteBusSubscription()
   const { toast } = useToast()
@@ -317,15 +294,13 @@ function LagPill({ lag }: { lag: number }) {
 
 const agentCol = createDataTableColumnHelper<BusAgent>()
 
-function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
+function AgentsPanel() {
   // Admin-state filter is local UI state — passed through as a
   // query param so the server's /v1/bus/agents handler does the
   // filtering rather than the browser. An empty string means "all
   // states" (the absence of the param to the server).
   const [adminFilter, setAdminFilter] = useState<'' | 'active' | 'suspended' | 'banned'>('')
   const { data, isLoading } = useBusAgents({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     admin_state: adminFilter || undefined,
   })
   const del = useDeleteBusAgent()
@@ -423,7 +398,7 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
         onConfirm={() => {
           if (!pending) return
           del.mutate(
-            { namespace: pending.namespace, tenant: pending.tenant, agentId: pending.agent_id },
+            { agentId: pending.agent_id },
             {
               onSuccess: () => {
                 toast('success', 'Agent deleted')
@@ -518,7 +493,7 @@ function AdminStateModal({ agent, onClose }: { agent: BusAgent; onClose: () => v
       body.expires_at = new Date(Date.now() + durationMin * 60_000).toISOString()
     }
     mut.mutate(
-      { namespace: agent.namespace, tenant: agent.tenant, agentId: agent.agent_id, body },
+      { agentId: agent.agent_id, body },
       {
         onSuccess: () => {
           toast('success', `Agent set to ${target}`)
@@ -688,11 +663,9 @@ function Heartbeat({ row }: { row: BusAgent }) {
 
 const convCol = createDataTableColumnHelper<BusConversation>()
 
-function ConversationsPanel({ ns, tenant }: { ns: string; tenant: string }) {
+function ConversationsPanel() {
   const navigate = useNavigate()
   const { data, isLoading } = useBusConversations({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
   })
 
   const columns = [
@@ -723,7 +696,7 @@ function ConversationsPanel({ ns, tenant }: { ns: string; tenant: string }) {
       loading={isLoading}
       onRowClick={(row) =>
         navigate(
-          `/bus/conversations/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.tenant)}/${encodeURIComponent(row.conversation_id)}`,
+          `/bus/conversations/${encodeURIComponent(row.conversation_id)}`,
         )
       }
       emptyTitle="No conversations"
@@ -734,7 +707,7 @@ function ConversationsPanel({ ns, tenant }: { ns: string; tenant: string }) {
 
 // --------------- Approvals ---------------
 
-function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
+function ApprovalsPanel() {
   const [searchParams, setSearchParams] = useSearchParams()
   const focusId = searchParams.get('approval_id') ?? ''
   // Default the status filter to "all" when deep-linked so the
@@ -744,25 +717,12 @@ function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const [statusFilter, setStatusFilter] = useState<BusApprovalStatus | ''>(
     focusId ? '' : 'pending',
   )
-  const { data, isLoading } = useBusApprovals(ns || undefined, tenant || undefined, {
+  const { data, isLoading } = useBusApprovals({
     status: statusFilter || undefined,
   })
   const approve = useApproveBusApproval()
   const reject = useRejectBusApproval()
   const { toast } = useToast()
-
-  // Approvals are tenant-scoped — without ns/tenant the list endpoint
-  // returns 400; surface that explicitly so operators understand why
-  // the panel is empty.
-  if (!ns || !tenant) {
-    return (
-      <EmptyState
-        icon={<ShieldCheck className="h-12 w-12" />}
-        title="Pick a namespace + tenant"
-        description="Bus approvals are scoped per (namespace, tenant). Use the filters above to load the queue."
-      />
-    )
-  }
 
   const approvals = data?.approvals ?? []
 
@@ -808,7 +768,7 @@ function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
               }}
               onApprove={(decided_by, decision_note) =>
                 approve.mutate(
-                  { namespace: ns, tenant, id: a.approval_id, decision: { decided_by, decision_note } },
+                  { id: a.approval_id, decision: { decided_by, decision_note } },
                   {
                     onSuccess: () => toast('success', 'Approved'),
                     onError: (err) => toast('error', 'Approve failed', (err as Error).message),
@@ -817,7 +777,7 @@ function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
               }
               onReject={(decided_by, decision_note) =>
                 reject.mutate(
-                  { namespace: ns, tenant, id: a.approval_id, decision: { decided_by, decision_note } },
+                  { id: a.approval_id, decision: { decided_by, decision_note } },
                   {
                     onSuccess: () => toast('success', 'Rejected'),
                     onError: (err) => toast('error', 'Reject failed', (err as Error).message),

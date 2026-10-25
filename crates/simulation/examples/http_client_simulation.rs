@@ -17,7 +17,7 @@
 //! Environment variables:
 //!   ACTEON_URL - Server URL (default: http://localhost:8080)
 
-use acteon_core::Action;
+use acteon_core::ActionRequest;
 use acteon_simulation::{ActeonClient, AuditQuery};
 use tracing::info;
 
@@ -87,15 +87,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // =========================================================================
-    // Single Action Dispatch
+    // Single ActionRequest Dispatch
     // =========================================================================
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     info!("  SINGLE ACTION DISPATCH");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let action = Action::new(
-        "notifications",
-        "tenant-http-test",
+    let action = ActionRequest::new(
         "email",
         "send_notification",
         serde_json::json!({
@@ -106,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     info!("  → POST /v1/dispatch");
-    info!("    Action ID: {}", action.id);
+    info!("    ActionRequest ID: {}", action.id);
     info!("    Provider: {}", action.provider);
     info!("    Type: {}", action.action_type);
 
@@ -126,11 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  BATCH DISPATCH");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let batch_actions: Vec<Action> = (1..=5)
+    let batch_actions: Vec<ActionRequest> = (1..=5)
         .map(|i| {
-            Action::new(
-                "notifications",
-                "tenant-http-test",
+            ActionRequest::new(
                 "email",
                 "batch_test",
                 serde_json::json!({
@@ -170,9 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test suppression (if block-spam rule is loaded)
     info!("  Testing suppression (action_type='spam'):");
-    let spam_action = Action::new(
-        "notifications",
-        "tenant-http-test",
+    let spam_action = ActionRequest::new(
         "email",
         "spam",
         serde_json::json!({"subject": "Buy now!!!"}),
@@ -185,18 +179,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test deduplication
     info!("\n  Testing deduplication (same dedup_key twice):");
-    let dedup_action1 = Action::new(
-        "notifications",
-        "tenant-http-test",
+    let dedup_action1 = ActionRequest::new(
         "email",
         "send_notification",
         serde_json::json!({"message": "First"}),
     )
     .with_dedup_key("http-dedup-test-key");
 
-    let dedup_action2 = Action::new(
-        "notifications",
-        "tenant-http-test",
+    let dedup_action2 = ActionRequest::new(
         "email",
         "send_notification",
         serde_json::json!({"message": "Second (should be deduped)"}),
@@ -221,7 +211,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let audit_query = AuditQuery {
-        tenant: Some("tenant-http-test".to_string()),
         limit: Some(10),
         ..Default::default()
     };
@@ -267,13 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut errors = 0;
 
     for i in 0..100 {
-        let action = Action::new(
-            "benchmark",
-            "tenant-http-test",
-            "email",
-            "throughput_test",
-            serde_json::json!({"seq": i}),
-        );
+        let action = ActionRequest::new("email", "throughput_test", serde_json::json!({"seq": i}));
 
         match client.dispatch(&action).await {
             Ok(_) => success += 1,

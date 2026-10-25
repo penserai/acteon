@@ -1,3 +1,4 @@
+import { useIdentity } from '../api/hooks/useIdentity'
 import { useState } from 'react'
 import { useGovernance, useGovernanceIntervention, usePublishGovernancePermit } from '../api/hooks/useGovernance'
 import { PageHeader } from '../components/layout/PageHeader'
@@ -13,9 +14,12 @@ import styles from './Governance.module.css'
 
 const resourceKey = (resource: GovernanceResource) => JSON.stringify(resource)
 export function Governance() {
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
-  const [scope, setScope] = useState({ namespace: '', tenant: '' })
+  const { data: identity, error } = useIdentity()
+  if (error) return <p role="alert">{error.message}</p>
+  if (!identity) return <p role="status">Loading identity…</p>
+  return <GovernanceScope key={JSON.stringify(identity.scope)} scope={identity.scope} />
+}
+function GovernanceScope({ scope }: { scope: { namespace: string; tenant: string } }) {
   const query = useGovernance(scope.namespace, scope.tenant)
   const intervention = useGovernanceIntervention()
   const publication = usePublishGovernancePermit()
@@ -64,11 +68,7 @@ export function Governance() {
   }
   return <div className={styles.content}>
     <PageHeader title="Governance" subtitle="Control execution authority and inspect retained evidence." />
-    <form className={styles.scope} onSubmit={e => { e.preventDefault(); if (!busy) { setScope({ namespace: namespace.trim(), tenant: tenant.trim() }); setReceipt(null); setPending(null); setError(''); setIssueId(null) } }}>
-      <Input label="Namespace" value={namespace} onChange={e => setNamespace(e.target.value)} required />
-      <Input label="Tenant" value={tenant} onChange={e => setTenant(e.target.value)} required />
-      <Button loading={query.isFetching} disabled={busy}>Inspect scope</Button>
-    </form>
+    <Button loading={query.isFetching} onClick={() => void query.refetch()}>Refresh</Button>
     {query.error && <p className={styles.error} role="alert">{query.error.message}</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
     {receipt && <div className={styles.card} role="status"><strong>Control recorded</strong><p className={styles.muted}>Generation {receipt.generation} · {receipt.reason}</p><p className={styles.muted}>New execution checks use this authority. Already started effects may still finish.</p></div>}

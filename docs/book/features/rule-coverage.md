@@ -44,8 +44,6 @@ GET /v1/rules/coverage
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `namespace` | string | no | Filter by namespace |
-| `tenant` | string | no | Filter by tenant (enforced against caller's allowed tenants) |
 | `from` | string (RFC 3339) | no | Start of time range. Defaults to 7 days ago |
 | `to` | string (RFC 3339) | no | End of time range. Defaults to now |
 
@@ -94,11 +92,11 @@ order.
 ## CLI
 
 ```bash
-# Last 24 hours (default), all namespaces
+# Last 24 hours (default), credential context
 acteon rules coverage
 
-# Last 7 days for a specific namespace
-acteon rules coverage --since-hours 168 --namespace prod
+# Last 7 days within the credential context
+acteon rules coverage --since-hours 168
 
 # Explicit time range
 acteon rules coverage \
@@ -122,8 +120,6 @@ acteon rules coverage --format json
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--namespace <NS>` | — | Filter by namespace |
-| `--tenant <T>` | — | Filter by tenant |
 | `--since-hours <N>` | 24 | Scan the last N hours (mutually exclusive with `--from`/`--to`) |
 | `--from <RFC3339>` | — | Explicit start of time range |
 | `--to <RFC3339>` | — | Explicit end of time range |

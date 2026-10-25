@@ -10,11 +10,6 @@ import java.util.Map;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CreateRecurringAction {
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     @JsonProperty("provider")
     private String provider;
@@ -54,21 +49,13 @@ public class CreateRecurringAction {
 
     public CreateRecurringAction() {}
 
-    public CreateRecurringAction(String namespace, String tenant, String provider, String actionType,
-                                 Map<String, Object> payload, String cronExpression) {
-        this.namespace = namespace;
-        this.tenant = tenant;
+    public CreateRecurringAction(String provider, String actionType, Map<String, Object> payload, String cronExpression) {
+
         this.provider = provider;
         this.actionType = actionType;
         this.payload = payload;
         this.cronExpression = cronExpression;
     }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }

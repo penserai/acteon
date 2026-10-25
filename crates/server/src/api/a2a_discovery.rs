@@ -4,13 +4,13 @@
 //! [`KeyKind::BusAgentCard`]:
 //!
 //! - **Authenticated CRUD** — `PUT` / `GET` / `DELETE` at
-//!   `/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card`. Operators
+//!   `/v1/bus/agents/{agent_id}/card`. Operators
 //!   register an A2A `AgentCard` against an already-registered agent;
 //!   the agent's lean record at [`KeyKind::BusAgent`] gains
 //!   `has_agent_card = true` so the hot heartbeat / list / route
 //!   path can short-circuit without loading the verbose card body.
 //! - **Public discovery** — the legacy stored-card view at
-//!   `GET /a2a/{namespace}/{tenant}/.well-known/agent.json` and the A2A 1.0
+//!   `GET /a2a/.well-known/agent.json` and the A2A 1.0
 //!   `ProtoJSON` projection at `GET .../.well-known/agent-card.json`.
 //!   Per the A2A spec, agent discovery is public and unauthenticated.
 //!   Acteon serves one A2A endpoint per `(namespace, tenant)`; the
@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -35,6 +35,7 @@ use acteon_state::{CasResult, KeyKind, StateKey, StateStore};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::context::ScopedJson;
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 
@@ -185,12 +186,12 @@ fn check_card_identity(
     None
 }
 
-/// `PUT /v1/bus/agents/{namespace}/{tenant}/{agent_id}/card`
+/// `PUT /v1/bus/agents/{agent_id}/card`
 pub async fn put_agent_card(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
-    Json(mut card): Json<AgentCard>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
+    ScopedJson(mut card): ScopedJson<AgentCard>,
 ) -> Response {
     if let Some(resp) =
         authorize_card_op(&identity, &namespace, &tenant, Permission::OperationsManage)
@@ -242,11 +243,11 @@ pub async fn put_agent_card(
     (StatusCode::OK, Json(card)).into_response()
 }
 
-/// `GET /v1/bus/agents/{namespace}/{tenant}/{agent_id}/card`
+/// `GET /v1/bus/agents/{agent_id}/card`
 pub async fn get_agent_card(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> Response {
     if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant, Permission::Dispatch) {
         return resp;
@@ -262,11 +263,11 @@ pub async fn get_agent_card(
     }
 }
 
-/// `DELETE /v1/bus/agents/{namespace}/{tenant}/{agent_id}/card`
+/// `DELETE /v1/bus/agents/{agent_id}/card`
 pub async fn delete_agent_card(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> Response {
     if let Some(resp) =
         authorize_card_op(&identity, &namespace, &tenant, Permission::OperationsManage)
@@ -304,7 +305,7 @@ pub async fn delete_agent_card(
 // Public discovery
 // ---------------------------------------------------------------------
 
-/// `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`
+/// `GET /a2a/.well-known/agent.json`
 ///
 /// Public, unauthenticated, per the A2A spec. Returns the tenant's
 /// `AgentCard`. If one card is registered, the card is returned
@@ -314,7 +315,10 @@ pub async fn delete_agent_card(
 /// `(namespace, tenant)` endpoint.
 pub async fn discover_agent(
     State(state): State<AppState>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
 ) -> Response {
     match resolve_tenant_card(&state, &namespace, &tenant).await {
         Ok(Some(card)) => (StatusCode::OK, Json(card)).into_response(),
@@ -325,7 +329,7 @@ pub async fn discover_agent(
     }
 }
 
-/// `GET /a2a/{namespace}/{tenant}/.well-known/agent-card.json`
+/// `GET /a2a/.well-known/agent-card.json`
 ///
 /// Projects Acteon's richer durable card into the schema-closed A2A 1.0
 /// `ProtoJSON` discovery shape. Internal ownership, timestamps and input schemas
@@ -334,7 +338,10 @@ pub async fn discover_agent(
 /// state migration.
 pub async fn discover_agent_v1(
     State(state): State<AppState>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
 ) -> Response {
     match resolve_tenant_card(&state, &namespace, &tenant).await {
         Ok(Some(card)) => {
@@ -911,3 +918,5 @@ mod tests {
         assert!(card.security_schemes.contains_key(INTRINSIC_API_KEY_ALIAS));
     }
 }
+
+crate::auth::context::scoped_body!(AgentCard);

@@ -14,9 +14,7 @@ public final class Governance {
     public record Effect(String operation, List<Resource> resources) {}
     public record PermitDeclaration(String id, long revision, PrincipalIdentity subject,
         List<Route> routes, @JsonProperty("valid_from_ms") long validFromMs, Limits limits) {}
-    public record PublishPermitRequest(String namespace, String tenant,
-        @JsonProperty("change_id") String changeId, @JsonProperty("expected_revision") long expectedRevision,
-        PermitDeclaration permit, String reason) {}
+    public record PublishPermitRequest(@JsonProperty("change_id") String changeId, @JsonProperty("expected_revision") long expectedRevision, PermitDeclaration permit, String reason) {}
     public record FederationGrantCeilingDeclaration(PrincipalIdentity source,
         PrincipalIdentity target, @JsonProperty("agent_resource") Resource agentResource,
         @JsonProperty("binding_digest") String bindingDigest, String skill,
@@ -33,14 +31,8 @@ public final class Governance {
         @JsonProperty("valid_from_ms") long validFromMs,
         @JsonProperty("deadline_ms") long deadlineMs,
         List<FederationGrantCeilingDeclaration> approved) {}
-    public record PublishFederationTrustRequest(String namespace, String tenant,
-        @JsonProperty("change_id") String changeId,
-        @JsonProperty("expected_revision") long expectedRevision,
-        FederationTrustDeclaration trust, String reason) {}
-    public record RevokeFederationTrustRequest(String namespace, String tenant,
-        @JsonProperty("change_id") String changeId,
-        @JsonProperty("trust_id") String trustId,
-        @JsonProperty("expected_revision") long expectedRevision, String reason) {}
+    public record PublishFederationTrustRequest(@JsonProperty("change_id") String changeId, @JsonProperty("expected_revision") long expectedRevision, FederationTrustDeclaration trust, String reason) {}
+    public record RevokeFederationTrustRequest(@JsonProperty("change_id") String changeId, @JsonProperty("trust_id") String trustId, @JsonProperty("expected_revision") long expectedRevision, String reason) {}
     public record SignedFederationEnvelopeDeclaration(String payload, String signature) {}
     public record SignedFederationCapabilityCard(String payload, String signature) {}
     public record SignedFederationInvocationDeclaration(String payload, String signature) {}
@@ -113,15 +105,8 @@ public final class Governance {
     public record FederationDeliveryEvidencePage(
         List<FederationDeliveryEvidence> deliveries,
         @JsonProperty("next_cursor") String nextCursor) {}
-    public record AbandonFederationDeliveryRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("disposition_id") String dispositionId,
-        String reason) {}
-    public record ReconcileFederationDeliveryRequest(
-        String namespace,
-        String tenant,
-        @JsonProperty("proof_base64") String proofBase64) {}
+    public record AbandonFederationDeliveryRequest(@JsonProperty("disposition_id") String dispositionId, String reason) {}
+    public record ReconcileFederationDeliveryRequest(@JsonProperty("proof_base64") String proofBase64) {}
     public record FederationTrustView(FederationTrustDeclaration trust, boolean revoked) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Intervention(String kind, Resource resource, PrincipalIdentity subject,
@@ -133,8 +118,7 @@ public final class Governance {
         public static Intervention revokePermit(String id, long revision) { return new Intervention("revoke_permit", null, null, id, null, revision); }
         public static Intervention revokeCredential(String id, long revision) { return new Intervention("revoke_credential", null, null, null, id, revision); }
     }
-    public record InterventionRequest(String namespace, String tenant,
-        @JsonProperty("change_id") String changeId, Intervention change, String reason) {}
+    public record InterventionRequest(@JsonProperty("change_id") String changeId, Intervention change, String reason) {}
     public record ChangeReceipt(String namespace, String tenant, @JsonProperty("change_id") String changeId,
         String actor, String reason, long generation, boolean pending) {}
     public record PermitView(String id, long revision, PrincipalIdentity subject, List<Effect> effects,
@@ -152,11 +136,7 @@ public final class Governance {
         @JsonProperty("closed_resources") List<Resource> closedResources,
         @JsonProperty("revoked_subjects") List<String> revokedSubjects,
         @JsonInclude(JsonInclude.Include.NON_EMPTY) @JsonProperty("federation_trusts") List<FederationTrustView> federationTrusts) {}
-    public record RegistryMutationRequest(String namespace, String tenant,
-        @JsonProperty("agent_id") String agentId, @JsonProperty("change_id") String changeId,
-        @JsonProperty("expected_registry_revision") long expectedRegistryRevision, String projection,
-        @JsonProperty("expected_projection_version") Long expectedProjectionVersion,
-        com.fasterxml.jackson.databind.JsonNode value, String reason) {}
+    public record RegistryMutationRequest(@JsonProperty("agent_id") String agentId, @JsonProperty("change_id") String changeId, @JsonProperty("expected_registry_revision") long expectedRegistryRevision, String projection, @JsonProperty("expected_projection_version") Long expectedProjectionVersion, com.fasterxml.jackson.databind.JsonNode value, String reason) {}
     public record RegistryProjectionView(String namespace, String tenant, @JsonProperty("agent_id") String agentId,
         @JsonProperty("agent_resource") Resource agentResource, String projection,
         @JsonProperty("registry_revision") long registryRevision, @JsonProperty("qualification_retired") Boolean qualificationRetired,

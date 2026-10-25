@@ -69,7 +69,7 @@ Topic ──┐
 ### A note on terminology: "agent registry"
 
 There is no separate "agent registry" component. The **Agent** primitive
-*is* the registry — `POST /v1/bus/agents/{ns}/{tenant}` registers, the
+*is* the registry — `POST /v1/bus/agents` registers, the
 list endpoint discovers, the heartbeat keeps a row warm, and the
 [operator lifecycle](../features/operator-lifecycle.md) state machine
 controls visibility and routability. A2A clients that walk the
@@ -110,8 +110,8 @@ Python, Node, Go, Java) wrap these with identical method names.
 # Phase 1 — topics + publish
 POST   /v1/bus/topics
 GET    /v1/bus/topics
-GET    /v1/bus/topics/{ns}/{tenant}/{name}
-DELETE /v1/bus/topics/{ns}/{tenant}/{name}
+GET    /v1/bus/topics/{name}
+DELETE /v1/bus/topics/{name}
 POST   /v1/bus/publish
 
 # Phase 2 — subscriptions + lag + DLQ
@@ -126,40 +126,40 @@ POST   /v1/bus/subscriptions/{id}/dlq
 # Phase 3 — schemas
 POST   /v1/bus/schemas
 GET    /v1/bus/schemas
-GET    /v1/bus/schemas/{ns}/{tenant}/{subject}/{version}
-DELETE /v1/bus/schemas/{ns}/{tenant}/{subject}/{version}
+GET    /v1/bus/schemas/{subject}/{version}
+DELETE /v1/bus/schemas/{subject}/{version}
 
 # Phase 4 — agents + heartbeat
 POST   /v1/bus/agents
 GET    /v1/bus/agents
-GET    /v1/bus/agents/{ns}/{tenant}/{agent_id}
-DELETE /v1/bus/agents/{ns}/{tenant}/{agent_id}
-PATCH  /v1/bus/agents/{ns}/{tenant}/{agent_id}/heartbeat
+GET    /v1/bus/agents/{agent_id}
+DELETE /v1/bus/agents/{agent_id}
+PATCH  /v1/bus/agents/{agent_id}/heartbeat
 
 # Phase 5 — conversations + replay + transition
 POST   /v1/bus/conversations
 GET    /v1/bus/conversations
-GET    /v1/bus/conversations/{ns}/{tenant}/{id}
-DELETE /v1/bus/conversations/{ns}/{tenant}/{id}
-POST   /v1/bus/conversations/{ns}/{tenant}/{id}/transition
-POST   /v1/bus/conversations/{ns}/{tenant}/{id}/messages   # append
-GET    /v1/bus/conversations/{ns}/{tenant}/{id}/messages   # replay
+GET    /v1/bus/conversations/{id}
+DELETE /v1/bus/conversations/{id}
+POST   /v1/bus/conversations/{id}/transition
+POST   /v1/bus/conversations/{id}/messages   # append
+GET    /v1/bus/conversations/{id}/messages   # replay
 
 # Phase 6a — tool-call envelopes
-POST   /v1/bus/conversations/{ns}/{tenant}/{id}/tool-calls
-POST   /v1/bus/conversations/{ns}/{tenant}/{id}/tool-results
-GET    /v1/bus/tool-calls/{ns}/{tenant}/{call_id}/result   # blocking lookup
+POST   /v1/bus/conversations/{id}/tool-calls
+POST   /v1/bus/conversations/{id}/tool-results
+GET    /v1/bus/tool-calls/{call_id}/result   # blocking lookup
 
 # Phase 6b — stream envelopes
-POST   /v1/bus/conversations/{ns}/{tenant}/{id}/stream-chunks
-POST   /v1/bus/conversations/{ns}/{tenant}/{id}/stream-end
-GET    /v1/bus/streams/{ns}/{tenant}/{conv_id}/{stream_id}  # SSE
+POST   /v1/bus/conversations/{id}/stream-chunks
+POST   /v1/bus/conversations/{id}/stream-end
+GET    /v1/bus/streams/{conv_id}/{stream_id}  # SSE
 
 # Phase 6c — HITL approvals
-GET    /v1/bus/approvals/{ns}/{tenant}
-GET    /v1/bus/approvals/{ns}/{tenant}/{approval_id}
-POST   /v1/bus/approvals/{ns}/{tenant}/{approval_id}/approve
-POST   /v1/bus/approvals/{ns}/{tenant}/{approval_id}/reject
+GET    /v1/bus/approvals
+GET    /v1/bus/approvals/{approval_id}
+POST   /v1/bus/approvals/{approval_id}/approve
+POST   /v1/bus/approvals/{approval_id}/reject
 ```
 
 ## A complete tour

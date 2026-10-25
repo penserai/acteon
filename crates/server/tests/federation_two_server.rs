@@ -512,6 +512,7 @@ authority_revision = 1
 [settings]
 jwt_secret = "test-jwt-secret-at-least-32-bytes"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "operator"
 authority_id = "credential/operator"
 principal = {{id="operator",kind="human"}}
@@ -523,6 +524,7 @@ tenants = ["acme"]
 providers = ["audit"]
 actions = ["read"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "source-peer"
 authority_id = "credential/source-peer"
 principal = {{id="agent/source",kind="agent"}}
@@ -539,6 +541,7 @@ tenants = ["acme"]
 providers = ["agent.worker"]
 actions = ["invoke"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "worker"
 authority_id = "credential/worker"
 principal = {{id="agent/worker",kind="agent"}}
@@ -598,6 +601,7 @@ authority_revision = 1
 [settings]
 jwt_secret = "test-jwt-secret-at-least-32-bytes"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "controller"
 authority_id = "credential/controller"
 principal = {{id="agent/controller",kind="agent"}}
@@ -609,6 +613,7 @@ tenants = ["acme"]
 providers = ["agent.source"]
 actions = ["invoke"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "source"
 authority_id = "credential/source"
 principal = {{id="agent/source",kind="agent"}}
@@ -625,6 +630,7 @@ tenants = ["acme"]
 providers = ["incident"]
 actions = ["execute"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "official-a2a-client"
 authority_id = "credential/official-a2a-client"
 principal = {{id="agent/controller",kind="agent"}}

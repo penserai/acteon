@@ -99,18 +99,16 @@ func leasedTaskWire(taskID, actionType, leaseToken string, payload map[string]an
 func newTestWorker(serverURL string) *Worker {
 	c := NewClient(serverURL, WithAPIKey("k"))
 	return NewWorker(c, WorkerConfig{
-		Namespace: "ns",
-		Tenant:    "tnt",
-		Queue:     "q",
-		WorkerID:  "w-1",
+
+		Queue:    "q",
+		WorkerID: "w-1",
 	})
 }
 
 func TestWorkerConfigDefaults(t *testing.T) {
 	w := NewWorker(NewClient("http://localhost"), WorkerConfig{
-		Namespace: "ns",
-		Tenant:    "tnt",
-		Queue:     "q",
+
+		Queue: "q",
 	})
 	if w.cfg.PollInterval != time.Second {
 		t.Errorf("PollInterval default: got %v", w.cfg.PollInterval)
@@ -172,11 +170,11 @@ func TestWorkerHappyPathCompletesWithHandlerResult(t *testing.T) {
 		t.Errorf("complete result: got %v", complete["result"])
 	}
 
-	// Poll body must carry the worker's scope + identity.
+	// Poll carries the worker ID; tenant context comes from its credential.
 	state.mu.Lock()
 	poll := state.pollBodies[0]
 	state.mu.Unlock()
-	if poll["namespace"] != "ns" || poll["tenant"] != "tnt" || poll["worker_id"] != "w-1" {
+	if poll["namespace"] != nil || poll["tenant"] != nil || poll["worker_id"] != "w-1" {
 		t.Errorf("poll body: got %v", poll)
 	}
 }

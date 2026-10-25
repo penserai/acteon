@@ -19,7 +19,7 @@ a Kafka topic per conversation.
 | Core type | `acteon_core::Conversation` — `{conversation_id, namespace, tenant, title, state, participants, events_topic, labels, created_at, updated_at}` |
 | State | `KeyKind::BusConversation`; key id = `conversation_id` |
 | Shared events topic | Default `{namespace}.{tenant}.conversations-events`, auto-created on first conversation registration. All conversations in the tenant share it; messages keyed by `conversation_id` so Kafka's partitioner gives per-thread FIFO ordering for free. |
-| HTTP | `POST/GET /v1/bus/conversations`, `GET\|PUT\|DELETE /v1/bus/conversations/{ns}/{t}/{id}`, `POST /v1/bus/conversations/{ns}/{t}/{id}/transition`, `POST\|GET /v1/bus/conversations/{ns}/{t}/{id}/messages` |
+| HTTP | `POST/GET /v1/bus/conversations`, `GET\|PUT\|DELETE /v1/bus/conversations/{id}`, `POST /v1/bus/conversations/{id}/transition`, `POST\|GET /v1/bus/conversations/{id}/messages` |
 | Rust client | `register_bus_conversation`, `list_bus_conversations`, `get_bus_conversation`, `update_bus_conversation`, `delete_bus_conversation`, `transition_bus_conversation`, `append_bus_conversation_message`, `replay_bus_conversation_messages` |
 | Tests | 10 core unit tests covering the state machine, validation, inbox defaults + overrides, and serde roundtrip |
 | Simulation | `bus_conversation_simulation.rs` — two conversations on one shared topic, replay with header filter, full state-machine walkthrough, participant ACL |
@@ -101,7 +101,7 @@ events topic in both state and Kafka.
 ### Append message
 
 ```http
-POST /v1/bus/conversations/agents/demo/plan-001/messages
+POST /v1/bus/conversations/plan-001/messages
 {
   "payload": { "kind": "draft", "body": "Step 1..." },
   "sender": "planner-1"
@@ -117,7 +117,7 @@ reserved headers: `acteon.conversation.id` and (if `sender` is set)
 ### Replay thread
 
 ```http
-GET /v1/bus/conversations/agents/demo/plan-001/messages?from=earliest&limit=200&timeout_ms=1500
+GET /v1/bus/conversations/plan-001/messages?from=earliest&limit=200&timeout_ms=1500
 → 200 {
   "conversation_id": "plan-001",
   "events_topic": "agents.demo.conversations-events",
@@ -139,7 +139,7 @@ messages with a larger `limit`).
 ### State transitions
 
 ```http
-POST /v1/bus/conversations/agents/demo/plan-001/transition
+POST /v1/bus/conversations/plan-001/transition
 { "transition": "resolve" }
 → 200 ConversationResponse { "state": "resolved", ... }
 ```

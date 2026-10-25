@@ -1,11 +1,12 @@
 //! Tenant-scoped timeline ingestion and queries.
 use super::AppState;
+use crate::auth::context::{RequestScope, ScopedBody, ScopedJson, bind_envelope};
 use crate::auth::identity::CallerIdentity;
 use acteon_core::timeline::{TimelineChange, TimelineQuery, TimelineScope};
 use acteon_timeline::TimelineService;
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -16,18 +17,21 @@ use utoipa::ToSchema;
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IngestRequest {
+    #[schema(ignore)]
     pub scope: TimelineScope,
     pub change: TimelineChange,
 }
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BatchRequest {
+    #[schema(ignore)]
     pub scope: TimelineScope,
     pub changes: Vec<TimelineChange>,
 }
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRequest {
+    #[schema(ignore)]
     pub scope: TimelineScope,
     pub query: TimelineQuery,
 }
@@ -93,7 +97,7 @@ fn service(
 pub async fn ingest(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Json(req): Json<IngestRequest>,
+    ScopedJson(req): ScopedJson<IngestRequest>,
 ) -> ApiResult {
     let service = service(&state, &caller, &req.scope)?;
     Ok(Json(
@@ -108,7 +112,7 @@ pub async fn ingest(
 pub async fn batch(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Json(req): Json<BatchRequest>,
+    ScopedJson(req): ScopedJson<BatchRequest>,
 ) -> ApiResult {
     let service = service(&state, &caller, &req.scope)?;
     if req.changes.is_empty() || req.changes.len() > 500 {
@@ -133,18 +137,19 @@ pub async fn batch(
 pub async fn query(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Json(req): Json<QueryRequest>,
+    ScopedJson(req): ScopedJson<QueryRequest>,
 ) -> ApiResult {
     let service = service(&state, &caller, &req.scope)?;
     Ok(Json(service.query(&req.scope, &req.query).await.map_err(error)?).into_response())
 }
-#[utoipa::path(get,path="/v1/timeline/events/{source}/{eventId}",tag="Timeline",params(("source"=String,Path),("eventId"=String,Path),("namespace"=String,Query),("tenant"=String,Query)),responses((status=200,body=acteon_core::timeline::TimelineEvent),(status=404)))]
+#[utoipa::path(get,path="/v1/timeline/events/{source}/{eventId}",tag="Timeline",params(("source"=String,Path),("eventId"=String,Path)),responses((status=200,body=acteon_core::timeline::TimelineEvent),(status=404)))]
 pub async fn get(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Query(scope): Query<TimelineScope>,
+    RequestScope(context): RequestScope,
     Path((source, id)): Path<(String, String)>,
 ) -> ApiResult {
+    let scope = TimelineScope::from(context);
     let service = service(&state, &caller, &scope)?;
     Ok(
         match service
@@ -158,12 +163,13 @@ pub async fn get(
         },
     )
 }
-#[utoipa::path(get,path="/v1/timeline/ledger/status",tag="Timeline",params(("namespace"=String,Query),("tenant"=String,Query)),responses((status=200,description="Tenant ledger status")))]
+#[utoipa::path(get,path="/v1/timeline/ledger/status",tag="Timeline",responses((status=200,description="Tenant ledger status")))]
 pub async fn status(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Query(scope): Query<TimelineScope>,
+    RequestScope(context): RequestScope,
 ) -> ApiResult {
+    let scope = TimelineScope::from(context);
     let service = service(&state, &caller, &scope)?;
     Ok(Json(service.ledger.status(&scope).await.map_err(error)?).into_response())
 }
@@ -175,12 +181,13 @@ pub(crate) fn replay_key(scope: &TimelineScope, id: &str) -> acteon_state::State
         id,
     )
 }
-#[utoipa::path(post,path="/v1/timeline/replays",tag="Timeline",request_body=TimelineScope,responses((status=202,body=ReplayStatus)))]
+#[utoipa::path(post,path="/v1/timeline/replays",tag="Timeline",responses((status=202,body=ReplayStatus)))]
 pub async fn replay(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Json(scope): Json<TimelineScope>,
+    RequestScope(context): RequestScope,
 ) -> ApiResult {
+    let scope = TimelineScope::from(context);
     let service = service(&state, &caller, &scope)?;
     let job = ReplayStatus {
         scope: scope.clone(),
@@ -235,13 +242,14 @@ pub async fn replay(
     });
     Ok((StatusCode::ACCEPTED, Json(job)).into_response())
 }
-#[utoipa::path(get,path="/v1/timeline/replays/{id}",tag="Timeline",params(("id"=String,Path),("namespace"=String,Query),("tenant"=String,Query)),responses((status=200,body=ReplayStatus),(status=404)))]
+#[utoipa::path(get,path="/v1/timeline/replays/{id}",tag="Timeline",params(("id"=String,Path)),responses((status=200,body=ReplayStatus),(status=404)))]
 pub async fn replay_status(
     State(state): State<AppState>,
     axum::Extension(caller): axum::Extension<CallerIdentity>,
-    Query(scope): Query<TimelineScope>,
+    RequestScope(context): RequestScope,
     Path(id): Path<String>,
 ) -> ApiResult {
+    let scope = TimelineScope::from(context);
     let service = service(&state, &caller, &scope)?;
     let value = service
         .state
@@ -255,4 +263,31 @@ pub async fn replay_status(
         }
         None => StatusCode::NOT_FOUND.into_response(),
     })
+}
+
+impl ScopedBody for IngestRequest {
+    fn bind_context(
+        body: &mut serde_json::Value,
+        scope: &acteon_core::TenantContext,
+    ) -> Result<(), Response> {
+        bind_envelope(body, scope)
+    }
+}
+
+impl ScopedBody for BatchRequest {
+    fn bind_context(
+        body: &mut serde_json::Value,
+        scope: &acteon_core::TenantContext,
+    ) -> Result<(), Response> {
+        bind_envelope(body, scope)
+    }
+}
+
+impl ScopedBody for QueryRequest {
+    fn bind_context(
+        body: &mut serde_json::Value,
+        scope: &acteon_core::TenantContext,
+    ) -> Result<(), Response> {
+        bind_envelope(body, scope)
+    }
 }

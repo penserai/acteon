@@ -6,21 +6,12 @@ import type {
   UpdateTimeIntervalRequest,
 } from '../../types'
 
-export interface ListTimeIntervalsParams {
-  namespace?: string
-  tenant?: string
-}
-
-export function useTimeIntervals(params: ListTimeIntervalsParams = {}) {
+export function useTimeIntervals() {
   return useQuery({
-    queryKey: ['time-intervals', params],
+    queryKey: ['time-intervals'],
     queryFn: async () => {
       const res = await apiGet<{ time_intervals: TimeInterval[]; count: number }>(
         '/v1/time-intervals',
-        {
-          namespace: params.namespace,
-          tenant: params.tenant,
-        },
       )
       return res.time_intervals
     },
@@ -28,19 +19,15 @@ export function useTimeIntervals(params: ListTimeIntervalsParams = {}) {
 }
 
 export function useTimeIntervalDetail(
-  namespace: string | undefined,
-  tenant: string | undefined,
   name: string | undefined,
 ) {
   return useQuery({
-    queryKey: ['time-interval', namespace, tenant, name],
+    queryKey: ['time-interval', name],
     queryFn: () =>
       apiGet<TimeInterval>(
-        `/v1/time-intervals/${encodeURIComponent(namespace!)}/${encodeURIComponent(
-          tenant!,
-        )}/${encodeURIComponent(name!)}`,
+        `/v1/time-intervals/${encodeURIComponent(name!)}`,
       ),
-    enabled: !!namespace && !!tenant && !!name,
+    enabled: !!name,
   })
 }
 
@@ -57,26 +44,20 @@ export function useUpdateTimeInterval() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       name,
       body,
     }: {
-      namespace: string
-      tenant: string
       name: string
       body: UpdateTimeIntervalRequest
     }) =>
       apiPut<TimeInterval>(
-        `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
-          tenant,
-        )}/${encodeURIComponent(name)}`,
+        `/v1/time-intervals/${encodeURIComponent(name)}`,
         body,
       ),
     onSuccess: (_, vars) => {
       void qc.invalidateQueries({ queryKey: ['time-intervals'] })
       void qc.invalidateQueries({
-        queryKey: ['time-interval', vars.namespace, vars.tenant, vars.name],
+        queryKey: ['time-interval', vars.name],
       })
     },
   })
@@ -86,18 +67,12 @@ export function useDeleteTimeInterval() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      namespace,
-      tenant,
       name,
     }: {
-      namespace: string
-      tenant: string
       name: string
     }) =>
       apiDelete(
-        `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
-          tenant,
-        )}/${encodeURIComponent(name)}`,
+        `/v1/time-intervals/${encodeURIComponent(name)}`,
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['time-intervals'] }),
   })

@@ -36,8 +36,6 @@ fn encode_segment(s: &str) -> String {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CreateBusTopic {
     pub name: String,
-    pub namespace: String,
-    pub tenant: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partitions: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,24 +77,14 @@ pub struct ListBusTopicsResponse {
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
-pub struct BusTopicFilter {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
-}
+pub struct BusTopicFilter {}
 
 /// Envelope handed to [`ActeonClient::publish_message`].
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct PublishBusMessage {
-    /// Either the full `namespace.tenant.name` form...
+    /// Full topic identifier returned by the server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
-    /// ...or the three parts spelled out separately.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,8 +108,6 @@ pub struct PublishReceipt {
 pub struct CreateSubscription {
     pub id: String,
     pub topic: String,
-    pub namespace: String,
-    pub tenant: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starting_offset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -169,10 +155,6 @@ pub struct ListBusSubscriptionsResponse {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct BusSubscriptionFilter {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
 }
@@ -339,15 +321,10 @@ impl ActeonClient {
         }
     }
 
-    /// Delete a subscription. The `(namespace, tenant, id)` triple
+    /// Delete a subscription. The `(id)` triple
     /// is used for an O(1) state-store lookup — no cross-tenant scan.
-    pub async fn delete_bus_subscription(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-    ) -> Result<(), Error> {
-        let url = self.subscription_url(namespace, tenant, id, None);
+    pub async fn delete_bus_subscription(&self, id: &str) -> Result<(), Error> {
+        let url = self.subscription_url(id, None);
         let resp = self
             .add_auth(self.client.delete(&url))
             .send()
@@ -370,14 +347,8 @@ impl ActeonClient {
     /// end-of-batch checkpoints only. A future phase introduces a
     /// stateful subscription registry that collapses this overhead
     /// to microseconds.
-    pub async fn ack_bus_subscription(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        position: AckOffset,
-    ) -> Result<(), Error> {
-        let url = self.subscription_url(namespace, tenant, id, Some("ack"));
+    pub async fn ack_bus_subscription(&self, id: &str, position: AckOffset) -> Result<(), Error> {
+        let url = self.subscription_url(id, Some("ack"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(&position)
@@ -392,13 +363,8 @@ impl ActeonClient {
     }
 
     /// Report per-partition lag for a subscription's consumer group.
-    pub async fn get_bus_lag(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-    ) -> Result<BusLag, Error> {
-        let url = self.subscription_url(namespace, tenant, id, Some("lag"));
+    pub async fn get_bus_lag(&self, id: &str) -> Result<BusLag, Error> {
+        let url = self.subscription_url(id, Some("lag"));
         let resp = self
             .add_auth(self.client.get(&url))
             .send()
@@ -417,12 +383,10 @@ impl ActeonClient {
     /// topic.
     pub async fn deadletter_bus_message(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         req: &DeadLetterRequest,
     ) -> Result<DeadLetterReceipt, Error> {
-        let url = self.subscription_url(namespace, tenant, id, Some("deadletter"));
+        let url = self.subscription_url(id, Some("deadletter"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -438,19 +402,11 @@ impl ActeonClient {
         }
     }
 
-    fn subscription_url(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        suffix: Option<&str>,
-    ) -> String {
-        let ns = encode_segment(namespace);
-        let t = encode_segment(tenant);
+    fn subscription_url(&self, id: &str, suffix: Option<&str>) -> String {
         let i = encode_segment(id);
         match suffix {
-            Some(s) => format!("{}/v1/bus/subscriptions/{ns}/{t}/{i}/{s}", self.base_url),
-            None => format!("{}/v1/bus/subscriptions/{ns}/{t}/{i}", self.base_url),
+            Some(s) => format!("{}/v1/bus/subscriptions/{i}/{s}", self.base_url),
+            None => format!("{}/v1/bus/subscriptions/{i}", self.base_url),
         }
     }
 
@@ -475,7 +431,7 @@ impl ActeonClient {
         }
     }
 
-    /// List schemas, optionally filtered by namespace/tenant/subject.
+    /// List schemas, optionally filtered by subject within the credential context.
     /// When `latest_only` is true, returns only the latest version per
     /// subject.
     pub async fn list_bus_schemas(
@@ -501,11 +457,9 @@ impl ActeonClient {
     /// Fetch every version of a subject, ordered oldest-to-newest.
     pub async fn get_bus_schema_versions(
         &self,
-        namespace: &str,
-        tenant: &str,
         subject: &str,
     ) -> Result<ListBusSchemasResponse, Error> {
-        let url = self.schema_subject_url(namespace, tenant, subject);
+        let url = self.schema_subject_url(subject);
         let resp = self
             .add_auth(self.client.get(&url))
             .send()
@@ -522,14 +476,8 @@ impl ActeonClient {
 
     /// Fetch a specific schema version. Pass `"latest"` for the most
     /// recent; any numeric string is parsed as a version number.
-    pub async fn get_bus_schema(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        subject: &str,
-        version: &str,
-    ) -> Result<BusSchema, Error> {
-        let url = self.schema_version_url(namespace, tenant, subject, version);
+    pub async fn get_bus_schema(&self, subject: &str, version: &str) -> Result<BusSchema, Error> {
+        let url = self.schema_version_url(subject, version);
         let resp = self
             .add_auth(self.client.get(&url))
             .send()
@@ -546,14 +494,8 @@ impl ActeonClient {
 
     /// Delete a schema version. Fails with 409 if any topic currently
     /// pins this version.
-    pub async fn delete_bus_schema(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        subject: &str,
-        version: i32,
-    ) -> Result<(), Error> {
-        let url = self.schema_version_url(namespace, tenant, subject, &version.to_string());
+    pub async fn delete_bus_schema(&self, subject: &str, version: i32) -> Result<(), Error> {
+        let url = self.schema_version_url(subject, &version.to_string());
         let resp = self
             .add_auth(self.client.delete(&url))
             .send()
@@ -570,13 +512,11 @@ impl ActeonClient {
     /// validates every subsequent publish against this binding.
     pub async fn bind_topic_schema(
         &self,
-        namespace: &str,
-        tenant: &str,
         topic_name: &str,
         subject: &str,
         version: i32,
     ) -> Result<BindTopicSchemaResponse, Error> {
-        let url = self.topic_schema_url(namespace, tenant, topic_name);
+        let url = self.topic_schema_url(topic_name);
         let req = BindTopicSchemaRequest {
             subject: subject.to_string(),
             version,
@@ -598,13 +538,8 @@ impl ActeonClient {
 
     /// Drop a topic's schema binding. Publishes after this skip
     /// validation.
-    pub async fn unbind_topic_schema(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        topic_name: &str,
-    ) -> Result<(), Error> {
-        let url = self.topic_schema_url(namespace, tenant, topic_name);
+    pub async fn unbind_topic_schema(&self, topic_name: &str) -> Result<(), Error> {
+        let url = self.topic_schema_url(topic_name);
         let resp = self
             .add_auth(self.client.delete(&url))
             .send()
@@ -627,8 +562,7 @@ impl ActeonClient {
             serde_json::to_value(req.value).map_err(|e| Error::Deserialization(e.to_string()))?;
         let msg = PublishBusMessage {
             topic: req.topic.map(str::to_string),
-            namespace: req.namespace.map(str::to_string),
-            tenant: req.tenant.map(str::to_string),
+
             name: req.name.map(str::to_string),
             key: req.key.map(str::to_string),
             payload,
@@ -637,39 +571,27 @@ impl ActeonClient {
         self.publish_message(&msg).await
     }
 
-    fn schema_subject_url(&self, namespace: &str, tenant: &str, subject: &str) -> String {
+    fn schema_subject_url(&self, subject: &str) -> String {
         format!(
-            "{}/v1/bus/schemas/{}/{}/{}",
+            "{}/v1/bus/schemas/{}",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(subject)
         )
     }
 
-    fn schema_version_url(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        subject: &str,
-        version: &str,
-    ) -> String {
+    fn schema_version_url(&self, subject: &str, version: &str) -> String {
         format!(
-            "{}/v1/bus/schemas/{}/{}/{}/{}",
+            "{}/v1/bus/schemas/{}/{}",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(subject),
             encode_segment(version)
         )
     }
 
-    fn topic_schema_url(&self, namespace: &str, tenant: &str, topic_name: &str) -> String {
+    fn topic_schema_url(&self, topic_name: &str) -> String {
         format!(
-            "{}/v1/bus/topics/{}/{}/{}/schema",
+            "{}/v1/bus/topics/{}/schema",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(topic_name)
         )
     }
@@ -696,7 +618,7 @@ impl ActeonClient {
         }
     }
 
-    /// List agents, optionally filtered by namespace/tenant/capability/status.
+    /// List agents, optionally filtered by capability/status within the credential context.
     pub async fn list_bus_agents(
         &self,
         filter: &BusAgentFilter,
@@ -718,13 +640,8 @@ impl ActeonClient {
     }
 
     /// Fetch a single agent record.
-    pub async fn get_bus_agent(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        agent_id: &str,
-    ) -> Result<BusAgent, Error> {
-        let url = self.agent_url(namespace, tenant, agent_id, None);
+    pub async fn get_bus_agent(&self, agent_id: &str) -> Result<BusAgent, Error> {
+        let url = self.agent_url(agent_id, None);
         let resp = self
             .add_auth(self.client.get(&url))
             .send()
@@ -742,12 +659,10 @@ impl ActeonClient {
     /// Patch-style update of the mutable fields on an agent record.
     pub async fn update_bus_agent(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent_id: &str,
         req: &UpdateBusAgent,
     ) -> Result<BusAgent, Error> {
-        let url = self.agent_url(namespace, tenant, agent_id, None);
+        let url = self.agent_url(agent_id, None);
         let resp = self
             .add_auth(self.client.put(&url))
             .json(req)
@@ -765,13 +680,8 @@ impl ActeonClient {
 
     /// Delete an agent record. The shared inbox topic is left in
     /// place — other agents in the tenant may still need it.
-    pub async fn delete_bus_agent(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        agent_id: &str,
-    ) -> Result<(), Error> {
-        let url = self.agent_url(namespace, tenant, agent_id, None);
+    pub async fn delete_bus_agent(&self, agent_id: &str) -> Result<(), Error> {
+        let url = self.agent_url(agent_id, None);
         let resp = self
             .add_auth(self.client.delete(&url))
             .send()
@@ -792,12 +702,10 @@ impl ActeonClient {
     /// is set on anything other than `suspended`.
     pub async fn set_bus_agent_admin_state(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent_id: &str,
         req: &SetBusAgentAdminState,
     ) -> Result<BusAgent, Error> {
-        let url = self.agent_url(namespace, tenant, agent_id, Some("admin-state"));
+        let url = self.agent_url(agent_id, Some("admin-state"));
         let resp = self
             .add_auth(self.client.put(&url))
             .json(req)
@@ -815,13 +723,8 @@ impl ActeonClient {
 
     /// Record a heartbeat. Agents typically call this once per
     /// `heartbeat_ttl_ms / 3` to stay `Online`.
-    pub async fn heartbeat_bus_agent(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        agent_id: &str,
-    ) -> Result<BusAgentHeartbeat, Error> {
-        let url = self.agent_url(namespace, tenant, agent_id, Some("heartbeat"));
+    pub async fn heartbeat_bus_agent(&self, agent_id: &str) -> Result<BusAgentHeartbeat, Error> {
+        let url = self.agent_url(agent_id, Some("heartbeat"));
         let resp = self
             .add_auth(self.client.post(&url))
             .send()
@@ -840,12 +743,10 @@ impl ActeonClient {
     /// Kafka routes to a stable partition per agent.
     pub async fn send_to_bus_agent(
         &self,
-        namespace: &str,
-        tenant: &str,
         agent_id: &str,
         req: &SendToBusAgent,
     ) -> Result<BusAgentSendReceipt, Error> {
-        let url = self.agent_url(namespace, tenant, agent_id, Some("send"));
+        let url = self.agent_url(agent_id, Some("send"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -861,19 +762,11 @@ impl ActeonClient {
         }
     }
 
-    fn agent_url(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        agent_id: &str,
-        suffix: Option<&str>,
-    ) -> String {
-        let ns = encode_segment(namespace);
-        let t = encode_segment(tenant);
+    fn agent_url(&self, agent_id: &str, suffix: Option<&str>) -> String {
         let a = encode_segment(agent_id);
         match suffix {
-            Some(s) => format!("{}/v1/bus/agents/{ns}/{t}/{a}/{s}", self.base_url),
-            None => format!("{}/v1/bus/agents/{ns}/{t}/{a}", self.base_url),
+            Some(s) => format!("{}/v1/bus/agents/{a}/{s}", self.base_url),
+            None => format!("{}/v1/bus/agents/{a}", self.base_url),
         }
     }
 
@@ -902,7 +795,7 @@ impl ActeonClient {
         }
     }
 
-    /// List conversations, optionally filtered by namespace/tenant/state/participant.
+    /// List conversations, optionally filtered by state/participant within the credential context.
     pub async fn list_bus_conversations(
         &self,
         filter: &BusConversationFilter,
@@ -926,11 +819,9 @@ impl ActeonClient {
     /// Fetch a single conversation record.
     pub async fn get_bus_conversation(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
     ) -> Result<BusConversation, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, None);
+        let url = self.conversation_url(conversation_id, None);
         let resp = self
             .add_auth(self.client.get(&url))
             .send()
@@ -949,12 +840,10 @@ impl ActeonClient {
     /// through [`Self::transition_bus_conversation`] instead.
     pub async fn update_bus_conversation(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &UpdateBusConversation,
     ) -> Result<BusConversation, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, None);
+        let url = self.conversation_url(conversation_id, None);
         let resp = self
             .add_auth(self.client.put(&url))
             .json(req)
@@ -972,13 +861,8 @@ impl ActeonClient {
 
     /// Delete a conversation record. The shared events topic is
     /// preserved — other conversations in the tenant share it.
-    pub async fn delete_bus_conversation(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        conversation_id: &str,
-    ) -> Result<(), Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, None);
+    pub async fn delete_bus_conversation(&self, conversation_id: &str) -> Result<(), Error> {
+        let url = self.conversation_url(conversation_id, None);
         let resp = self
             .add_auth(self.client.delete(&url))
             .send()
@@ -996,12 +880,10 @@ impl ActeonClient {
     /// current state.
     pub async fn transition_bus_conversation(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         transition: BusConversationTransition,
     ) -> Result<BusConversation, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("transition"));
+        let url = self.conversation_url(conversation_id, Some("transition"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(&serde_json::json!({ "transition": transition }))
@@ -1022,12 +904,10 @@ impl ActeonClient {
     /// to a stable partition (per-thread FIFO).
     pub async fn append_bus_conversation_message(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &AppendBusConversationMessage,
     ) -> Result<BusConversationAppendReceipt, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("messages"));
+        let url = self.conversation_url(conversation_id, Some("messages"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -1048,12 +928,10 @@ impl ActeonClient {
     /// server-stamped `acteon.conversation.id` header.
     pub async fn replay_bus_conversation_messages(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         params: &ReplayBusConversationParams,
     ) -> Result<BusConversationReplay, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("messages"));
+        let url = self.conversation_url(conversation_id, Some("messages"));
         let resp = self
             .add_auth(self.client.get(&url))
             .query(params)
@@ -1069,19 +947,11 @@ impl ActeonClient {
         }
     }
 
-    fn conversation_url(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        conversation_id: &str,
-        suffix: Option<&str>,
-    ) -> String {
-        let ns = encode_segment(namespace);
-        let t = encode_segment(tenant);
+    fn conversation_url(&self, conversation_id: &str, suffix: Option<&str>) -> String {
         let c = encode_segment(conversation_id);
         match suffix {
-            Some(s) => format!("{}/v1/bus/conversations/{ns}/{t}/{c}/{s}", self.base_url),
-            None => format!("{}/v1/bus/conversations/{ns}/{t}/{c}", self.base_url),
+            Some(s) => format!("{}/v1/bus/conversations/{c}/{s}", self.base_url),
+            None => format!("{}/v1/bus/conversations/{c}", self.base_url),
         }
     }
 
@@ -1093,12 +963,10 @@ impl ActeonClient {
     /// subscribers can route on the call without parsing the payload.
     pub async fn post_bus_tool_call(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &PostBusToolCall,
     ) -> Result<PostBusToolCallOutcome, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("tool-calls"));
+        let url = self.conversation_url(conversation_id, Some("tool-calls"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -1130,12 +998,10 @@ impl ActeonClient {
     /// it to the call.
     pub async fn post_bus_tool_result(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &PostBusToolResult,
     ) -> Result<BusToolEnvelopeReceipt, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("tool-results"));
+        let url = self.conversation_url(conversation_id, Some("tool-results"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -1158,16 +1024,12 @@ impl ActeonClient {
     /// (`reply_to` pattern).
     pub async fn lookup_bus_tool_result(
         &self,
-        namespace: &str,
-        tenant: &str,
         call_id: &str,
         params: &BusToolResultLookupParams,
     ) -> Result<BusToolResultLookup, Error> {
         let url = format!(
-            "{}/v1/bus/tool-calls/{}/{}/{}/result",
+            "{}/v1/bus/tool-calls/{}/result",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(call_id),
         );
         let resp = self
@@ -1199,15 +1061,11 @@ impl ActeonClient {
     /// [`Self::lookup_bus_tool_result`] explicitly.
     pub async fn post_bus_tool_call_and_wait(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &PostBusToolCall,
         timeout_ms: Option<u64>,
     ) -> Result<BusToolResultLookup, Error> {
-        let outcome = self
-            .post_bus_tool_call(namespace, tenant, conversation_id, req)
-            .await?;
+        let outcome = self.post_bus_tool_call(conversation_id, req).await?;
         let receipt = match outcome {
             PostBusToolCallOutcome::Produced(r) => r,
             // A parked approval means no Kafka record exists yet.
@@ -1228,8 +1086,6 @@ impl ActeonClient {
         // participant-ACL check.
         let _ = req; // suppress unused warning when caller didn't set sender
         self.lookup_bus_tool_result(
-            namespace,
-            tenant,
             &receipt.call_id,
             &BusToolResultLookupParams {
                 conversation_id: receipt.conversation_id,
@@ -1248,12 +1104,10 @@ impl ActeonClient {
     /// without parsing the chunk body.
     pub async fn post_bus_stream_chunk(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &PostBusStreamChunk,
     ) -> Result<BusStreamEnvelopeReceipt, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("stream-chunks"));
+        let url = self.conversation_url(conversation_id, Some("stream-chunks"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -1274,12 +1128,10 @@ impl ActeonClient {
     /// connection on observing this record.
     pub async fn post_bus_stream_end(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         req: &PostBusStreamEnd,
     ) -> Result<BusStreamEnvelopeReceipt, Error> {
-        let url = self.conversation_url(namespace, tenant, conversation_id, Some("stream-end"));
+        let url = self.conversation_url(conversation_id, Some("stream-end"));
         let resp = self
             .add_auth(self.client.post(&url))
             .json(req)
@@ -1301,16 +1153,9 @@ impl ActeonClient {
     /// conversation via `params`.
     pub async fn list_bus_approvals(
         &self,
-        namespace: &str,
-        tenant: &str,
         params: &ListBusApprovalsParams,
     ) -> Result<ListBusApprovalsResponse, Error> {
-        let url = format!(
-            "{}/v1/bus/approvals/{}/{}",
-            self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
-        );
+        let url = format!("{}/v1/bus/approvals", self.base_url);
         let resp = self
             .add_auth(self.client.get(&url))
             .query(params)
@@ -1327,17 +1172,10 @@ impl ActeonClient {
     }
 
     /// Fetch a single approval by id.
-    pub async fn get_bus_approval(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        approval_id: &str,
-    ) -> Result<BusApprovalView, Error> {
+    pub async fn get_bus_approval(&self, approval_id: &str) -> Result<BusApprovalView, Error> {
         let url = format!(
-            "{}/v1/bus/approvals/{}/{}/{}",
+            "{}/v1/bus/approvals/{}",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(approval_id),
         );
         let resp = self
@@ -1360,40 +1198,32 @@ impl ActeonClient {
     /// header.
     pub async fn approve_bus_approval(
         &self,
-        namespace: &str,
-        tenant: &str,
         approval_id: &str,
         req: &BusApprovalDecisionRequest,
     ) -> Result<BusApprovalDecisionResponse, Error> {
-        self.post_bus_approval_decision(namespace, tenant, approval_id, "approve", req)
+        self.post_bus_approval_decision(approval_id, "approve", req)
             .await
     }
 
     /// Reject a parked tool-call. No Kafka record is produced.
     pub async fn reject_bus_approval(
         &self,
-        namespace: &str,
-        tenant: &str,
         approval_id: &str,
         req: &BusApprovalDecisionRequest,
     ) -> Result<BusApprovalDecisionResponse, Error> {
-        self.post_bus_approval_decision(namespace, tenant, approval_id, "reject", req)
+        self.post_bus_approval_decision(approval_id, "reject", req)
             .await
     }
 
     async fn post_bus_approval_decision(
         &self,
-        namespace: &str,
-        tenant: &str,
         approval_id: &str,
         verb: &str,
         req: &BusApprovalDecisionRequest,
     ) -> Result<BusApprovalDecisionResponse, Error> {
         let url = format!(
-            "{}/v1/bus/approvals/{}/{}/{}/{verb}",
+            "{}/v1/bus/approvals/{}/{verb}",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(approval_id),
         );
         let resp = self
@@ -1416,18 +1246,10 @@ impl ActeonClient {
     /// -N --header 'accept: text/event-stream'`, or any other
     /// SSE-aware client. Encodes path segments per the bus URL rules.
     #[must_use]
-    pub fn bus_stream_consume_url(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        conversation_id: &str,
-        stream_id: &str,
-    ) -> String {
+    pub fn bus_stream_consume_url(&self, conversation_id: &str, stream_id: &str) -> String {
         format!(
-            "{}/v1/bus/streams/{}/{}/{}/{}",
+            "{}/v1/bus/streams/{}/{}",
             self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
             encode_segment(conversation_id),
             encode_segment(stream_id),
         )
@@ -1439,8 +1261,6 @@ impl ActeonClient {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RegisterBusSchema {
     pub subject: String,
-    pub namespace: String,
-    pub tenant: String,
     pub body: serde_json::Value,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
@@ -1467,10 +1287,6 @@ pub struct ListBusSchemasResponse {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct BusSchemaFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub latest_only: bool,
@@ -1496,8 +1312,6 @@ pub struct BindTopicSchemaResponse {
 pub struct PublishTyped<'a, T: serde::Serialize> {
     pub value: &'a T,
     pub topic: Option<&'a str>,
-    pub namespace: Option<&'a str>,
-    pub tenant: Option<&'a str>,
     pub name: Option<&'a str>,
     pub key: Option<&'a str>,
     pub headers: BTreeMap<String, String>,
@@ -1508,8 +1322,6 @@ pub struct PublishTyped<'a, T: serde::Serialize> {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RegisterBusAgent {
     pub agent_id: String,
-    pub namespace: String,
-    pub tenant: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1585,10 +1397,6 @@ pub struct ListBusAgentsResponse {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct BusAgentFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -1643,8 +1451,6 @@ pub struct BusAgentSendReceipt {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RegisterBusConversation {
     pub conversation_id: String,
-    pub namespace: String,
-    pub tenant: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1710,10 +1516,6 @@ pub struct ListBusConversationsResponse {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct BusConversationFilter {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2304,7 +2106,7 @@ impl ActeonClient {
     }
 
     /// Consume a typed stream via SSE
-    /// (`GET /v1/bus/streams/{ns}/{tenant}/{conversation_id}/{stream_id}`).
+    /// (`GET /v1/bus/streams/{conversation_id}/{stream_id}`).
     /// Server filters records by `(envelope_kind, conversation_id,
     /// stream_id)` so this stream only emits chunks for the requested
     /// stream id and closes after the terminal `StreamEnd`.
@@ -2318,7 +2120,7 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let mut stream = client
-    ///     .consume_bus_stream("agents", "demo", "thread-1", "stream-42")
+    ///     .consume_bus_stream("thread-1", "stream-42")
     ///     .await?;
     /// while let Some(item) = stream.next().await {
     ///     match item? {
@@ -2335,12 +2137,10 @@ impl ActeonClient {
     /// ```
     pub async fn consume_bus_stream(
         &self,
-        namespace: &str,
-        tenant: &str,
         conversation_id: &str,
         stream_id: &str,
     ) -> Result<BusStreamConsumeStream, Error> {
-        let url = self.bus_stream_consume_url(namespace, tenant, conversation_id, stream_id);
+        let url = self.bus_stream_consume_url(conversation_id, stream_id);
         let resp = self
             .add_auth(self.client.get(&url))
             .send()
@@ -2793,42 +2593,29 @@ impl ActeonClient {
     /// Open a live, owner-bound consumer. Retry with the same request ID on the same server.
     pub async fn open_bus_session(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         request_id: &str,
     ) -> Result<SessionResponse, Error> {
-        let url = self.subscription_url(namespace, tenant, id, Some("sessions"));
+        let url = self.subscription_url(id, Some("sessions"));
         self.bus_session_json(self.client.post(url).json(&OpenSessionRequest {
             request_id: request_id.into(),
         }))
         .await
     }
-    pub async fn get_bus_session(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        session: &str,
-    ) -> Result<SessionResponse, Error> {
-        self.bus_session_json(
-            self.client
-                .get(self.bus_session_url(namespace, tenant, id, session, None)),
-        )
-        .await
+    pub async fn get_bus_session(&self, id: &str, session: &str) -> Result<SessionResponse, Error> {
+        self.bus_session_json(self.client.get(self.bus_session_url(id, session, None)))
+            .await
     }
     /// Receive or replay the pending batch. A lost response retains the same receipt IDs.
     pub async fn receive_bus_session(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         session: &str,
         request: &ReceiveRequest,
     ) -> Result<ReceiveResponse, Error> {
         self.bus_session_json(
             self.client
-                .post(self.bus_session_url(namespace, tenant, id, session, Some("receive")))
+                .post(self.bus_session_url(id, session, Some("receive")))
                 .json(request),
         )
         .await
@@ -2836,15 +2623,13 @@ impl ActeonClient {
     /// Validate the complete prefix and derive checkpoint positions without committing.
     pub async fn validate_bus_receipts(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         session: &str,
         receipt_ids: &[String],
     ) -> Result<ReceiptResponse, Error> {
         self.bus_session_json(
             self.client
-                .post(self.bus_session_url(namespace, tenant, id, session, Some("validate")))
+                .post(self.bus_session_url(id, session, Some("validate")))
                 .json(&ReceiptRequest {
                     receipt_ids: receipt_ids.to_vec(),
                 }),
@@ -2855,33 +2640,22 @@ impl ActeonClient {
     /// by session lifetime, assignment ownership, and acknowledgement history retention.
     pub async fn acknowledge_bus_receipts(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         session: &str,
         receipt_ids: &[String],
     ) -> Result<ReceiptResponse, Error> {
         self.bus_session_json(
             self.client
-                .post(self.bus_session_url(namespace, tenant, id, session, Some("ack")))
+                .post(self.bus_session_url(id, session, Some("ack")))
                 .json(&ReceiptRequest {
                     receipt_ids: receipt_ids.to_vec(),
                 }),
         )
         .await
     }
-    pub async fn close_bus_session(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        session: &str,
-    ) -> Result<(), Error> {
+    pub async fn close_bus_session(&self, id: &str, session: &str) -> Result<(), Error> {
         let response = self
-            .add_auth(
-                self.client
-                    .delete(self.bus_session_url(namespace, tenant, id, session, None)),
-            )
+            .add_auth(self.client.delete(self.bus_session_url(id, session, None)))
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -2891,15 +2665,8 @@ impl ActeonClient {
             Err(map_error(response).await)
         }
     }
-    fn bus_session_url(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        session: &str,
-        suffix: Option<&str>,
-    ) -> String {
-        let base = self.subscription_url(namespace, tenant, id, Some("sessions"));
+    fn bus_session_url(&self, id: &str, session: &str, suffix: Option<&str>) -> String {
+        let base = self.subscription_url(id, Some("sessions"));
         let session = encode_segment(session);
         match suffix {
             Some(s) => format!("{base}/{session}/{s}"),
@@ -2946,38 +2713,25 @@ pub struct StageQuarantineSummary {
 }
 #[cfg(feature = "stream-processing")]
 impl ActeonClient {
-    fn stage_url(&self, namespace: &str, tenant: &str, id: &str) -> String {
-        format!(
-            "{}/v1/bus/stages/{}/{}/{}",
-            self.base_url,
-            encode_segment(namespace),
-            encode_segment(tenant),
-            encode_segment(id)
-        )
+    fn stage_url(&self, id: &str) -> String {
+        format!("{}/v1/bus/stages/{}", self.base_url, encode_segment(id))
     }
     pub async fn stream_stage_status(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
     ) -> Result<acteon_bus::StreamStageMetrics, Error> {
-        self.bus_session_json(self.client.get(self.stage_url(namespace, tenant, id)))
+        self.bus_session_json(self.client.get(self.stage_url(id)))
             .await
     }
     pub async fn list_stage_quarantine(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         after: Option<&str>,
         limit: usize,
     ) -> Result<StageQuarantinePage, Error> {
         let mut request = self
             .client
-            .get(format!(
-                "{}/quarantine",
-                self.stage_url(namespace, tenant, id)
-            ))
+            .get(format!("{}/quarantine", self.stage_url(id)))
             .query(&[("limit", limit.to_string())]);
         if let Some(after) = after {
             request = request.query(&[("after", after)]);
@@ -2986,14 +2740,12 @@ impl ActeonClient {
     }
     pub async fn get_stage_quarantined_input(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         entry: &str,
     ) -> Result<acteon_bus::StreamQuarantinedInput, Error> {
         self.bus_session_json(self.client.get(format!(
             "{}/quarantine/{}",
-            self.stage_url(namespace, tenant, id),
+            self.stage_url(id),
             encode_segment(entry)
         )))
         .await
@@ -3001,8 +2753,6 @@ impl ActeonClient {
     /// Explicit removal only: never rewinds sources or runs a processor.
     pub async fn discard_stage_quarantined_input(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         entry: &str,
     ) -> Result<bool, Error> {
@@ -3013,7 +2763,7 @@ impl ActeonClient {
         let result: Discard = self
             .bus_session_json(self.client.delete(format!(
                 "{}/quarantine/{}",
-                self.stage_url(namespace, tenant, id),
+                self.stage_url(id),
                 encode_segment(entry)
             )))
             .await?;
@@ -3028,8 +2778,8 @@ mod stage_operator_tests {
     fn stage_paths_encode_each_scope_segment() {
         let client = ActeonClient::new("http://localhost:8080/");
         assert_eq!(
-            client.stage_url("name/space", "tenant?other", "stage#x%y"),
-            "http://localhost:8080/v1/bus/stages/name%2Fspace/tenant%3Fother/stage%23x%25y"
+            client.stage_url("stage#x%y"),
+            "http://localhost:8080/v1/bus/stages/stage%23x%25y"
         );
     }
 }
@@ -3045,8 +2795,6 @@ pub struct RequestStageReplay {
 impl ActeonClient {
     pub async fn request_stage_replay(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         entry: &str,
         request: &RequestStageReplay,
@@ -3055,7 +2803,7 @@ impl ActeonClient {
             self.client
                 .post(format!(
                     "{}/quarantine/{}/replay",
-                    self.stage_url(namespace, tenant, id),
+                    self.stage_url(id),
                     encode_segment(entry)
                 ))
                 .json(request),
@@ -3064,15 +2812,13 @@ impl ActeonClient {
     }
     pub async fn get_stage_replay_audit(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         request: uuid::Uuid,
     ) -> Result<acteon_bus::StreamReplayAudit, Error> {
-        self.bus_session_json(self.client.get(format!(
-            "{}/replays/{request}",
-            self.stage_url(namespace, tenant, id)
-        )))
+        self.bus_session_json(
+            self.client
+                .get(format!("{}/replays/{request}", self.stage_url(id))),
+        )
         .await
     }
 }
@@ -3081,29 +2827,25 @@ impl ActeonClient {
 impl ActeonClient {
     pub async fn control_stage(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         request: &acteon_bus::StreamStageControlRequest,
     ) -> Result<acteon_bus::StreamStageControlAudit, Error> {
         self.bus_session_json(
             self.client
-                .post(format!("{}/control", self.stage_url(namespace, tenant, id)))
+                .post(format!("{}/control", self.stage_url(id)))
                 .json(request),
         )
         .await
     }
     pub async fn get_stage_control_audit(
         &self,
-        namespace: &str,
-        tenant: &str,
         id: &str,
         request: uuid::Uuid,
     ) -> Result<acteon_bus::StreamStageControlAudit, Error> {
-        self.bus_session_json(self.client.get(format!(
-            "{}/controls/{request}",
-            self.stage_url(namespace, tenant, id)
-        )))
+        self.bus_session_json(
+            self.client
+                .get(format!("{}/controls/{request}", self.stage_url(id))),
+        )
         .await
     }
 }

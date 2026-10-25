@@ -60,12 +60,14 @@ export function SettingsAuth() {
           <div className={styles.grid}>
             <div className={styles.row}><span className={styles.label}>Credential</span><span>{identity.credential_id || 'Anonymous'}</span></div>
             <div className={styles.row}><span className={styles.label}>Authority ID</span><span>{identity.authority_id ?? 'Not configured'}</span></div>
+            <div className={styles.row}><span className={styles.label}>Namespace</span><span>{identity.scope.namespace}</span></div>
+            <div className={styles.row}><span className={styles.label}>Tenant</span><span>{identity.scope.tenant}</span></div>
             <div className={styles.row}><span className={styles.label}>Role</span><span>{identity.role}</span></div>
             <div className={styles.row}><span className={styles.label}>Principal</span><span>{identity.principal?.id ?? 'Not configured'}</span></div>
             {identity.principal && <div className={styles.row}><span className={styles.label}>Kind</span><span>{identity.principal.kind}</span></div>}
           </div>
         ) : <Skeleton className="h-16" />}
-        <p className={styles.description}>A stable principal identifies the same actor across credential rotation. Roles and scoped grants determine access.</p>
+        <p className={styles.description}>A stable principal identifies the same actor across credential rotation. Your credential sets the tenant and namespace. Roles and grants determine permissions within that context.</p>
       </div>
 
       <div className={styles.card}>
@@ -84,7 +86,7 @@ export function SettingsAuth() {
         <p className={styles.description}>
           Auth policies define scoped grants and caller credentials. When file watch
           is enabled, changes are automatically reloaded and apply to subsequent
-          API-key and JWT requests. Removing a user invalidates that user's existing sessions.
+          API-key and JWT requests. Removing a user or changing their context invalidates their existing sessions.
         </p>
       </div>
     </div>

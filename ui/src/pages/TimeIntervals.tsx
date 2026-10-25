@@ -44,15 +44,10 @@ function summarizeRanges(ranges: TimeRange[]): string {
 
 export function TimeIntervals() {
   const { toast } = useToast()
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<TimeInterval | null>(null)
 
-  const { data: intervals, isLoading } = useTimeIntervals({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
+  const { data: intervals, isLoading } = useTimeIntervals()
 
   const createMutation = useCreateTimeInterval()
   const deleteMutation = useDeleteTimeInterval()
@@ -61,8 +56,6 @@ export function TimeIntervals() {
     if (!deleteTarget) return
     deleteMutation.mutate(
       {
-        namespace: deleteTarget.namespace,
-        tenant: deleteTarget.tenant,
         name: deleteTarget.name,
       },
       {
@@ -150,16 +143,6 @@ export function TimeIntervals() {
       />
 
       <div className={styles.filterRow}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
       </div>
 
       <DataTable
@@ -232,8 +215,6 @@ function TimeIntervalCreateModal({
   loading: boolean
 }) {
   const [name, setName] = useState('')
-  const [namespace, setNamespace] = useState('prod')
-  const [tenant, setTenant] = useState('default')
   const [location, setLocation] = useState('')
   const [description, setDescription] = useState('')
   const [rangesJson, setRangesJson] = useState(EXAMPLE_RANGES)
@@ -253,8 +234,6 @@ function TimeIntervalCreateModal({
     }
     onSubmit({
       name,
-      namespace,
-      tenant,
       time_ranges,
       location: location || undefined,
       description: description || undefined,
@@ -284,16 +263,6 @@ function TimeIntervalCreateModal({
           onChange={(e) => setName(e.target.value)}
           placeholder="business-hours"
           required
-        />
-        <Input
-          label="Namespace"
-          value={namespace}
-          onChange={(e) => setNamespace(e.target.value)}
-        />
-        <Input
-          label="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
         />
         <Input
           label="Location (IANA timezone, optional)"

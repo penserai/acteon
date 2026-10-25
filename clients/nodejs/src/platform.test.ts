@@ -41,7 +41,7 @@ describe("platform operations", () => {
     await expect(client.platformRequest("bus_stages_status", { path: { namespace: "n", tenant: "t", id: ".." } })).rejects.toThrow();
   });
   it("preserves subscription receipt mode and scoped group", () => {
-    expect(createBusSubscriptionBody({ id: "s", topic: "n.t.logs", namespace: "n", tenant: "t", receiptRequired: true }).receipt_required).toBe(true);
+    expect(createBusSubscriptionBody({id: "s", topic: "n.t.logs", receiptRequired: true }).receipt_required).toBe(true);
     const sub = parseBusSubscription({ id: "s", receipt_required: true, consumer_group: "scoped" });
     expect(sub.receiptRequired).toBe(true);
     expect(sub.consumerGroup).toBe("scoped");
@@ -79,15 +79,16 @@ it("resolves scoped topics before deleting by registered Kafka name", async () =
   const seen: string[] = [];
   vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
     const url = new URL(input);
+    if (url.pathname === "/v1/auth/identity") return new Response(JSON.stringify({credential_id:"test",auth_method:"api_key",role:"admin",principal:null,scope:{namespace:"n",tenant:"t"}}));
     seen.push(`${init.method} ${url.pathname}`);
     if (init.method === "GET") {
-      expect(url.searchParams.get("namespace")).toBe("n");
-      expect(url.searchParams.get("tenant")).toBe("t");
+      expect(url.searchParams.get("namespace")).toBe(null);
+      expect(url.searchParams.get("tenant")).toBe(null);
       return new Response(JSON.stringify({ topics: [{ ...topic, tenant: "other" }, topic] }));
     }
     return new Response(null, { status: 204 });
   });
-  await new ActeonClient("http://localhost").deleteBusTopic("n", "t", "logs");
+  await new ActeonClient("http://localhost").deleteBusTopic("logs");
   expect(seen).toEqual(["GET /v1/bus/topics", "DELETE /v1/bus/topics/actual.logs"]);
 });
 
@@ -101,6 +102,6 @@ it("typed identity preserves credential, actor, and legacy null", async () => {
       return new Response(JSON.stringify(wire));
     });
     const identity = await new ActeonClient("http://localhost", { apiKey: "local-test" }).identity();
-    expect(identity).toEqual({ credentialId: wire.credential_id, authorityId: wire.authority_id ?? null, authMethod: wire.auth_method, role: wire.role, principal: wire.principal });
+    expect(identity).toEqual({ scope: wire.scope, credentialId: wire.credential_id, authorityId: wire.authority_id ?? null, authMethod: wire.auth_method, role: wire.role, principal: wire.principal });
   }
 });

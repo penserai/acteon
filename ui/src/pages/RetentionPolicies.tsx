@@ -42,8 +42,6 @@ export function RetentionPolicies() {
   const { toast } = useToast()
 
   // Filter state
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
 
   // Create modal
   const [showCreate, setShowCreate] = useState(false)
@@ -59,10 +57,7 @@ export function RetentionPolicies() {
   const [deleteTarget, setDeleteTarget] = useState<RetentionPolicy | null>(null)
 
   // Data
-  const { data, isLoading } = useRetentionPolicies({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
+  const { data, isLoading } = useRetentionPolicies()
 
   const { data: selectedPolicy } = useRetentionPolicy(selectedId ?? undefined)
 
@@ -172,16 +167,6 @@ export function RetentionPolicies() {
       />
 
       <div className={shared.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
       </div>
 
       <DataTable
@@ -289,8 +274,6 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
   title: string
   initial?: RetentionPolicy
 }) {
-  const [formNs, setFormNs] = useState(initial?.namespace ?? '')
-  const [formTenant, setFormTenant] = useState(initial?.tenant ?? '')
   const [auditTtl, setAuditTtl] = useState(initial?.audit_ttl_seconds?.toString() ?? '')
   const [stateTtl, setStateTtl] = useState(initial?.state_ttl_seconds?.toString() ?? '')
   const [timelineTtl, setTimelineTtl] = useState(initial?.timeline_ttl_seconds?.toString() ?? '')
@@ -310,8 +293,6 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
   const handleSubmit = () => {
     const labels = parseLabels(labelsText)
     onSubmit({
-      namespace: formNs,
-      tenant: formTenant,
       audit_ttl_seconds: auditTtl ? parseInt(auditTtl, 10) : null,
       state_ttl_seconds: stateTtl ? parseInt(stateTtl, 10) : null,
       timeline_ttl_seconds: timelineTtl ? parseInt(timelineTtl, 10) : null,
@@ -326,7 +307,7 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
   }
 
   const isEdit = !!initial
-  const isValid = formNs && formTenant
+  const isValid = true
 
   return (
     <Modal
@@ -350,22 +331,6 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
       }
     >
       <div className={shared.formSection}>
-        <div className={shared.formGrid}>
-          <Input
-            label="Namespace *"
-            value={formNs}
-            onChange={(e) => setFormNs(e.target.value)}
-            placeholder="prod"
-            disabled={isEdit}
-          />
-          <Input
-            label="Tenant *"
-            value={formTenant}
-            onChange={(e) => setFormTenant(e.target.value)}
-            placeholder="acme"
-            disabled={isEdit}
-          />
-        </div>
 
         <div className={shared.formGrid}>
           <Input

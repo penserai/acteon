@@ -1,5 +1,5 @@
 use crate::{ActeonClient, PermitReference};
-use acteon_core::Action;
+use acteon_core::ActionRequest;
 use axum::{Json, Router, http::HeaderMap, routing::post};
 use serde_json::{Value, json};
 use std::{
@@ -39,6 +39,8 @@ async fn permit_dispatch_preserves_auth_body_and_legacy_header_omission() {
             let action = if body.is_array() { &body[0] } else { &body };
             assert_eq!(action["payload"], json!({"incident":42}));
             assert!(action.get("permits").is_none());
+            assert!(action.get("namespace").is_none());
+            assert!(action.get("tenant").is_none());
             Json(if body.is_array() {
                 json!(["Deduplicated"])
             } else {
@@ -55,13 +57,7 @@ async fn permit_dispatch_preserves_auth_body_and_legacy_header_omission() {
         .build()
         .unwrap();
     let server = tokio::spawn(axum::serve(listener, router).into_future());
-    let action = Action::new(
-        "prod",
-        "acme",
-        "incident",
-        "execute",
-        json!({"incident":42}),
-    );
+    let action = ActionRequest::new("incident", "execute", json!({"incident":42}));
     client.dispatch(&action).await.unwrap();
     client
         .dispatch_with_permits(&action, &fixture)
@@ -99,7 +95,7 @@ async fn dispatch_refusals_preserve_http_status() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let client = ActeonClient::new(format!("http://{}", listener.local_addr().unwrap()));
     let server = tokio::spawn(axum::serve(listener, router).into_future());
-    let action = Action::new("prod", "acme", "incident", "execute", json!({}));
+    let action = ActionRequest::new("incident", "execute", json!({}));
     assert!(matches!(
         client.dispatch_with_permits(&action, &[]).await,
         Err(crate::Error::Http { status: 403, .. })

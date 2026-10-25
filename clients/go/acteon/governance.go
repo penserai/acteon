@@ -37,8 +37,6 @@ type GovernancePermitDeclaration struct {
 	Limits      GovernanceLimits  `json:"limits"`
 }
 type PublishGovernancePermitRequest struct {
-	Namespace        string                      `json:"namespace"`
-	Tenant           string                      `json:"tenant"`
 	ChangeID         string                      `json:"change_id"`
 	ExpectedRevision uint64                      `json:"expected_revision"`
 	Permit           GovernancePermitDeclaration `json:"permit"`
@@ -70,16 +68,12 @@ type FederationTrustDeclaration struct {
 	Approved                 []FederationGrantCeilingDeclaration `json:"approved"`
 }
 type PublishFederationTrustRequest struct {
-	Namespace        string                     `json:"namespace"`
-	Tenant           string                     `json:"tenant"`
 	ChangeID         string                     `json:"change_id"`
 	ExpectedRevision uint64                     `json:"expected_revision"`
 	Trust            FederationTrustDeclaration `json:"trust"`
 	Reason           string                     `json:"reason"`
 }
 type RevokeFederationTrustRequest struct {
-	Namespace        string `json:"namespace"`
-	Tenant           string `json:"tenant"`
 	ChangeID         string `json:"change_id"`
 	TrustID          string `json:"trust_id"`
 	ExpectedRevision uint64 `json:"expected_revision"`
@@ -146,14 +140,10 @@ type FederationDeliveryAbandonment struct {
 	RecordedAtMs         int64             `json:"recorded_at_ms"`
 }
 type AbandonFederationDeliveryRequest struct {
-	Namespace     string `json:"namespace"`
-	Tenant        string `json:"tenant"`
 	DispositionID string `json:"disposition_id"`
 	Reason        string `json:"reason"`
 }
 type ReconcileFederationDeliveryRequest struct {
-	Namespace   string `json:"namespace"`
-	Tenant      string `json:"tenant"`
 	ProofBase64 string `json:"proof_base64"`
 }
 type FederationDeliveryFinalityEvidence struct {
@@ -228,11 +218,9 @@ type GovernanceIntervention struct {
 	ExpectedRevision *uint64             `json:"expected_revision,omitempty"`
 }
 type GovernanceInterventionRequest struct {
-	Namespace string                 `json:"namespace"`
-	Tenant    string                 `json:"tenant"`
-	ChangeID  string                 `json:"change_id"`
-	Change    GovernanceIntervention `json:"change"`
-	Reason    string                 `json:"reason"`
+	ChangeID string                 `json:"change_id"`
+	Change   GovernanceIntervention `json:"change"`
+	Reason   string                 `json:"reason"`
 }
 type GovernanceChangeReceipt struct {
 	Namespace  string `json:"namespace"`
@@ -280,8 +268,9 @@ type GovernanceScopeView struct {
 	FederationTrusts []FederationTrustView      `json:"federation_trusts,omitempty"`
 }
 
-func (c *Client) Governance(ctx context.Context, namespace, tenant string) (*GovernanceScopeView, error) {
-	data, err := c.PlatformRequest(ctx, OpGovernanceInspect, nil, url.Values{"namespace": {namespace}, "tenant": {tenant}}, nil)
+func (c *Client) Governance(ctx context.Context) (*GovernanceScopeView, error) {
+
+	data, err := c.PlatformRequest(ctx, OpGovernanceInspect, nil, url.Values{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -318,9 +307,9 @@ func (c *Client) RevokeFederationTrust(ctx context.Context, request RevokeFedera
 }
 
 // FederationCapabilities fetches the audience-bound signed card for one current peer agent.
-func (c *Client) FederationCapabilities(ctx context.Context, namespace, tenant, agent string) (*SignedFederationCapabilityCard, error) {
+func (c *Client) FederationCapabilities(ctx context.Context, agent string) (*SignedFederationCapabilityCard, error) {
 	value, err := c.PlatformRequest(ctx, OpFederationCapabilities, map[string]string{
-		"namespace": namespace, "tenant": tenant, "agent": agent,
+		"agent": agent,
 	}, nil, nil)
 	if err != nil {
 		return nil, err
@@ -336,8 +325,9 @@ func (c *Client) FederationCapabilities(ctx context.Context, namespace, tenant, 
 }
 
 // FederationDeliveryEvidence pages sanitized retained outbound delivery records.
-func (c *Client) FederationDeliveryEvidence(ctx context.Context, namespace, tenant string, after *string, limit *int) (*FederationDeliveryEvidencePage, error) {
-	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
+func (c *Client) FederationDeliveryEvidence(ctx context.Context, after *string, limit *int) (*FederationDeliveryEvidencePage, error) {
+
+	query := url.Values{}
 	if after != nil {
 		query.Set("after", *after)
 	}
@@ -373,8 +363,9 @@ func (c *Client) AbandonFederationDelivery(ctx context.Context, deliveryID strin
 }
 
 // FederationFinalityCorrelation returns correlation for the currently ambiguous stage.
-func (c *Client) FederationFinalityCorrelation(ctx context.Context, namespace, tenant, deliveryID string) (*FederationFinalityCorrelation, error) {
-	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
+func (c *Client) FederationFinalityCorrelation(ctx context.Context, deliveryID string) (*FederationFinalityCorrelation, error) {
+
+	query := url.Values{}
 	data, err := c.PlatformRequest(ctx, OpGovernanceFederationFinalityCorrelation,
 		map[string]string{"delivery_id": deliveryID}, query, nil)
 	if err != nil {
@@ -407,9 +398,15 @@ func (c *Client) ReconcileFederationDelivery(ctx context.Context, deliveryID str
 	return &evidence, nil
 }
 
-func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant string, envelope SignedFederationEnvelopeDeclaration) (*FederationImportReceipt, error) {
+func (c *Client) ImportFederationEnvelope(ctx context.Context, envelope SignedFederationEnvelopeDeclaration) (*FederationImportReceipt, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
 	data, err := c.PlatformRequest(ctx, OpFederationImportEnvelope,
-		map[string]string{"namespace": namespace, "tenant": tenant}, nil,
+		map[string]string{}, nil,
 		struct {
 			Envelope SignedFederationEnvelopeDeclaration `json:"envelope"`
 		}{envelope})
@@ -427,9 +424,15 @@ func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant
 }
 
 // InvokeFederatedAgent executes or replays one exact message under signed imported federation authority.
-func (c *Client) InvokeFederatedAgent(ctx context.Context, namespace, tenant, agent string, invocation SignedFederationInvocationDeclaration, message map[string]any) (map[string]any, error) {
+func (c *Client) InvokeFederatedAgent(ctx context.Context, agent string, invocation SignedFederationInvocationDeclaration, message map[string]any) (map[string]any, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
 	data, err := c.PlatformRequest(ctx, OpFederationInvokeAgent,
-		map[string]string{"namespace": namespace, "tenant": tenant, "agent": agent}, nil,
+		map[string]string{"agent": agent}, nil,
 		struct {
 			Invocation SignedFederationInvocationDeclaration `json:"invocation"`
 			Message    map[string]any                        `json:"message"`
@@ -449,23 +452,23 @@ func (c *Client) InvokeFederatedAgent(ctx context.Context, namespace, tenant, ag
 }
 
 // ExportFederatedMessage submits one host-qualified export from an accepted local agent task.
-func (c *Client) ExportFederatedMessage(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
-	return c.federationExportRequest(ctx, OpFederationExportMessage, namespace, tenant, agent, taskID, profile, message)
+func (c *Client) ExportFederatedMessage(ctx context.Context, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationExportMessage, agent, taskID, profile, message)
 }
 
 // ObserveFederatedExport reads retained delivery evidence without issuing network traffic.
-func (c *Client) ObserveFederatedExport(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
-	return c.federationExportRequest(ctx, OpFederationObserveExportMessage, namespace, tenant, agent, taskID, profile, message)
+func (c *Client) ObserveFederatedExport(ctx context.Context, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationObserveExportMessage, agent, taskID, profile, message)
 }
 
 // ReplayFederatedExport explicitly replays an exact request through a qualified idempotent peer.
-func (c *Client) ReplayFederatedExport(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
-	return c.federationExportRequest(ctx, OpFederationReplayExportMessage, namespace, tenant, agent, taskID, profile, message)
+func (c *Client) ReplayFederatedExport(ctx context.Context, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationReplayExportMessage, agent, taskID, profile, message)
 }
 
-func (c *Client) federationExportRequest(ctx context.Context, operation PlatformOperation, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+func (c *Client) federationExportRequest(ctx context.Context, operation PlatformOperation, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
 	data, err := c.PlatformRequest(ctx, operation,
-		map[string]string{"namespace": namespace, "tenant": tenant, "agent": agent, "task_id": taskID, "profile": profile}, nil,
+		map[string]string{"agent": agent, "task_id": taskID, "profile": profile}, nil,
 		struct {
 			Message map[string]any `json:"message"`
 		}{message})
@@ -559,9 +562,9 @@ type ProviderHistoryReconciliation struct {
 	Outcome          ActionOutcome                     `json:"outcome"`
 }
 
-func (c *Client) ProviderExecutionHistory(ctx context.Context, namespace, tenant, executionID string) (*ProviderExecutionHistory, error) {
+func (c *Client) ProviderExecutionHistory(ctx context.Context, executionID string) (*ProviderExecutionHistory, error) {
 	data, err := c.PlatformRequest(ctx, OpGovernanceProviderHistory,
-		map[string]string{"execution_id": executionID}, url.Values{"namespace": {namespace}, "tenant": {tenant}}, nil)
+		map[string]string{"execution_id": executionID}, url.Values{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -590,8 +593,9 @@ type ProviderReconciliationRequest struct {
 	ProofBase64 string `json:"proof_base64"`
 }
 
-func (c *Client) ProviderReconciliationCorrelation(ctx context.Context, namespace, tenant, executionID string, ordinal uint32) (*ProviderReconciliationCorrelation, error) {
-	data, err := c.PlatformRequest(ctx, OpGovernanceReconciliationCorrelation, map[string]string{"execution_id": executionID, "ordinal": strconv.FormatUint(uint64(ordinal), 10)}, url.Values{"namespace": {namespace}, "tenant": {tenant}}, nil)
+func (c *Client) ProviderReconciliationCorrelation(ctx context.Context, executionID string, ordinal uint32) (*ProviderReconciliationCorrelation, error) {
+
+	data, err := c.PlatformRequest(ctx, OpGovernanceReconciliationCorrelation, map[string]string{"execution_id": executionID, "ordinal": strconv.FormatUint(uint64(ordinal), 10)}, url.Values{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -599,8 +603,8 @@ func (c *Client) ProviderReconciliationCorrelation(ctx context.Context, namespac
 	err = json.Unmarshal(data, &result)
 	return &result, err
 }
-func (c *Client) AcceptProviderReconciliation(ctx context.Context, namespace, tenant, executionID string, ordinal uint32, request ProviderReconciliationRequest) (*ProviderHistoryReceipt, error) {
-	data, err := c.PlatformRequest(ctx, OpGovernanceAcceptReconciliation, map[string]string{"execution_id": executionID, "ordinal": strconv.FormatUint(uint64(ordinal), 10)}, url.Values{"namespace": {namespace}, "tenant": {tenant}}, request)
+func (c *Client) AcceptProviderReconciliation(ctx context.Context, executionID string, ordinal uint32, request ProviderReconciliationRequest) (*ProviderHistoryReceipt, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceAcceptReconciliation, map[string]string{"execution_id": executionID, "ordinal": strconv.FormatUint(uint64(ordinal), 10)}, url.Values{}, request)
 	if err != nil {
 		return nil, err
 	}
@@ -618,8 +622,6 @@ const (
 )
 
 type GovernanceRegistryMutationRequest struct {
-	Namespace                 string             `json:"namespace"`
-	Tenant                    string             `json:"tenant"`
 	AgentID                   string             `json:"agent_id"`
 	ChangeID                  string             `json:"change_id"`
 	ExpectedRegistryRevision  uint64             `json:"expected_registry_revision"`
@@ -654,8 +656,14 @@ type GovernanceRegistryMutationReceipt struct {
 
 var registryReceiptDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-func (c *Client) RegistryProjection(ctx context.Context, namespace, tenant, agentID string, projection RegistryProjection) (*GovernanceRegistryProjectionView, error) {
-	data, err := c.PlatformRequest(ctx, OpGovernanceRegistryProjection, map[string]string{"agent_id": agentID}, url.Values{"namespace": {namespace}, "tenant": {tenant}, "projection": {string(projection)}}, nil)
+func (c *Client) RegistryProjection(ctx context.Context, agentID string, projection RegistryProjection) (*GovernanceRegistryProjectionView, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
+	data, err := c.PlatformRequest(ctx, OpGovernanceRegistryProjection, map[string]string{"agent_id": agentID}, url.Values{"projection": {string(projection)}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -686,6 +694,10 @@ func (c *Client) RegistryProjection(ctx context.Context, namespace, tenant, agen
 
 // MutateRegistry sends once. Retain this exact request/change ID for explicit recovery.
 func (c *Client) MutateRegistry(ctx context.Context, request GovernanceRegistryMutationRequest) (*GovernanceRegistryMutationReceipt, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
 	data, err := c.PlatformRequest(ctx, OpGovernanceMutateRegistry, nil, nil, request)
 	if err != nil {
 		return nil, err
@@ -698,7 +710,7 @@ func (c *Client) MutateRegistry(ctx context.Context, request GovernanceRegistryM
 	if err = json.Unmarshal(data, &fields); err != nil {
 		return nil, err
 	}
-	if len(fields["expected_registry_revision"]) == 0 || string(fields["expected_registry_revision"]) == "null" || result.Namespace != request.Namespace || result.Tenant != request.Tenant || result.AgentID != request.AgentID || result.ChangeID != request.ChangeID || result.Projection != request.Projection || result.ExpectedRegistryRevision != request.ExpectedRegistryRevision || !result.DeliveryComplete || !result.Applied || result.Actor == "" || !registryReceiptDigest.MatchString(result.InputDigest) {
+	if len(fields["expected_registry_revision"]) == 0 || string(fields["expected_registry_revision"]) == "null" || result.Namespace != identity.Scope.Namespace || result.Tenant != identity.Scope.Tenant || result.AgentID != request.AgentID || result.ChangeID != request.ChangeID || result.Projection != request.Projection || result.ExpectedRegistryRevision != request.ExpectedRegistryRevision || !result.DeliveryComplete || !result.Applied || result.Actor == "" || !registryReceiptDigest.MatchString(result.InputDigest) {
 		return nil, fmt.Errorf("unmatched or incomplete registry mutation receipt")
 	}
 	return &result, nil

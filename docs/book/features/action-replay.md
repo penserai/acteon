@@ -58,15 +58,13 @@ curl -X POST http://localhost:8080/v1/audit/550e8400-e29b-41d4-a716-446655440000
 Replay multiple actions matching audit query filters:
 
 ```
-POST /v1/audit/replay?tenant=acme&outcome=failed&limit=50
+POST /v1/audit/replay?outcome=failed&limit=50
 ```
 
 ### Query Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `namespace` | string | Filter by namespace |
-| `tenant` | string | Filter by tenant |
 | `provider` | string | Filter by provider |
 | `action_type` | string | Filter by action type |
 | `outcome` | string | Filter by outcome (e.g. `failed`, `suppressed`) |

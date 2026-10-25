@@ -9,7 +9,7 @@
 Phases 1–6c built the wire format and HTTP surface. Phase 7 makes
 that surface usable from a browser without curl. The UI is a single
 `/bus` route with tabs across the bus primitives, plus a
-`/bus/conversations/{ns}/{tenant}/{id}` drilldown for individual
+`/bus/conversations/{id}` drilldown for individual
 threads. Polls the existing REST endpoints; no new server code.
 
 ## What ships in Phase 7
@@ -17,7 +17,7 @@ threads. Polls the existing REST endpoints; no new server code.
 | Surface | Shape |
 |---|---|
 | Top-level page | `/bus` with tabs: Topics, Subscriptions, Agents, Conversations, Approvals |
-| Conversation detail | `/bus/conversations/{namespace}/{tenant}/{id}` — replays the thread, color-codes envelope kind, links inline back to the originating approval row |
+| Conversation detail | `/bus/conversations/{id}` — replays the thread, color-codes envelope kind, links inline back to the originating approval row |
 | Lag widget | Per-subscription expand-on-demand panel with partition-level committed / high-water-mark / lag |
 | Agent heartbeat | Live (1 s) relative-timestamp + stale flag based on each agent's `heartbeat_ttl_ms` |
 | Approvals queue | Decision card per row with operator id + decision note inputs, approve/reject buttons that gate on `decided_by` being set |

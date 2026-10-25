@@ -60,6 +60,7 @@ from .bus_models import (
     StreamEndEnvelope,
 )
 from .errors import ApiError, HttpError
+from .models import CredentialIdentity
 
 if TYPE_CHECKING:
     import httpx
@@ -91,6 +92,10 @@ def _raise_for_status(resp: httpx.Response) -> None:
 
 
 class _BusClientMixin:
+    if TYPE_CHECKING:
+
+        def identity(self) -> CredentialIdentity: ...
+
     """Mixin providing the agentic bus REST surface."""
 
     # The mixin doesn't define its own __init__; these attributes are
@@ -119,30 +124,25 @@ class _BusClientMixin:
         _raise_for_status(resp)
         return BusTopic.from_dict(resp.json())
 
-    def list_bus_topics(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-    ) -> list[BusTopic]:
+    def list_bus_topics(self) -> list[BusTopic]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         resp = self._request("GET", "/v1/bus/topics", params=params or None)
         _raise_for_status(resp)
         return [BusTopic.from_dict(t) for t in resp.json().get("topics", [])]
 
-    def get_bus_topic(self, namespace: str, tenant: str, name: str) -> BusTopic:
-        topics = self.list_bus_topics(namespace=namespace, tenant=tenant)
+    def get_bus_topic(self, name: str) -> BusTopic:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
+        topics = self.list_bus_topics()
         for topic in topics:
             if (topic.namespace, topic.tenant, topic.name) == (namespace, tenant, name):
                 return topic
         raise HttpError(404, "Bus topic not found")
 
-    def delete_bus_topic(self, namespace: str, tenant: str, name: str) -> None:
-        topic = self.get_bus_topic(namespace, tenant, name)
+    def delete_bus_topic(self, name: str) -> None:
+        topic = self.get_bus_topic(name)
         resp = self._request("DELETE", f"/v1/bus/topics/{_seg(topic.kafka_name)}")
         _raise_for_status(resp)
 
@@ -158,26 +158,20 @@ class _BusClientMixin:
         _raise_for_status(resp)
         return BusSubscription.from_dict(resp.json())
 
-    def list_bus_subscriptions(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-        topic: str | None = None,
-    ) -> list[BusSubscription]:
+    def list_bus_subscriptions(self, *, topic: str | None = None) -> list[BusSubscription]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         if topic is not None:
             params["topic"] = topic
         resp = self._request("GET", "/v1/bus/subscriptions", params=params or None)
         _raise_for_status(resp)
         return [BusSubscription.from_dict(s) for s in resp.json().get("subscriptions", [])]
 
-    def get_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> BusSubscription:
-        subscriptions = self.list_bus_subscriptions(namespace=namespace, tenant=tenant)
+    def get_bus_subscription(self, sub_id: str) -> BusSubscription:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
+        subscriptions = self.list_bus_subscriptions()
         for subscription in subscriptions:
             if (subscription.namespace, subscription.tenant, subscription.id) == (
                 namespace,
@@ -187,17 +181,17 @@ class _BusClientMixin:
                 return subscription
         raise HttpError(404, "Bus subscription not found")
 
-    def delete_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> None:
+    def delete_bus_subscription(self, sub_id: str) -> None:
         resp = self._request(
             "DELETE",
-            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
+            f"/v1/bus/subscriptions/{_seg(sub_id)}",
         )
         _raise_for_status(resp)
 
-    def get_bus_subscription_lag(self, namespace: str, tenant: str, sub_id: str) -> BusLag:
+    def get_bus_subscription_lag(self, sub_id: str) -> BusLag:
         resp = self._request(
             "GET",
-            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}/lag",
+            f"/v1/bus/subscriptions/{_seg(sub_id)}/lag",
         )
         _raise_for_status(resp)
         return BusLag.from_dict(resp.json())
@@ -210,18 +204,10 @@ class _BusClientMixin:
         return BusSchema.from_dict(resp.json())
 
     def list_bus_schemas(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-        subject: str | None = None,
-        latest_only: bool = False,
+        self, *, subject: str | None = None, latest_only: bool = False
     ) -> list[BusSchema]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         if subject is not None:
             params["subject"] = subject
         if latest_only:
@@ -230,30 +216,18 @@ class _BusClientMixin:
         _raise_for_status(resp)
         return [BusSchema.from_dict(s) for s in resp.json().get("schemas", [])]
 
-    def get_bus_schema(
-        self,
-        namespace: str,
-        tenant: str,
-        subject: str,
-        version: int,
-    ) -> BusSchema:
+    def get_bus_schema(self, subject: str, version: int) -> BusSchema:
         resp = self._request(
             "GET",
-            f"/v1/bus/schemas/{_seg(namespace)}/{_seg(tenant)}/{_seg(subject)}/{version}",
+            f"/v1/bus/schemas/{_seg(subject)}/{version}",
         )
         _raise_for_status(resp)
         return BusSchema.from_dict(resp.json())
 
-    def delete_bus_schema(
-        self,
-        namespace: str,
-        tenant: str,
-        subject: str,
-        version: int,
-    ) -> None:
+    def delete_bus_schema(self, subject: str, version: int) -> None:
         resp = self._request(
             "DELETE",
-            f"/v1/bus/schemas/{_seg(namespace)}/{_seg(tenant)}/{_seg(subject)}/{version}",
+            f"/v1/bus/schemas/{_seg(subject)}/{version}",
         )
         _raise_for_status(resp)
 
@@ -264,56 +238,37 @@ class _BusClientMixin:
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
 
-    def list_bus_agents(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-    ) -> list[BusAgent]:
+    def list_bus_agents(self) -> list[BusAgent]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         resp = self._request("GET", "/v1/bus/agents", params=params or None)
         _raise_for_status(resp)
         return [BusAgent.from_dict(a) for a in resp.json().get("agents", [])]
 
-    def get_bus_agent(self, namespace: str, tenant: str, agent_id: str) -> BusAgent:
+    def get_bus_agent(self, agent_id: str) -> BusAgent:
         resp = self._request(
             "GET",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}",
+            f"/v1/bus/agents/{_seg(agent_id)}",
         )
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
 
-    def delete_bus_agent(self, namespace: str, tenant: str, agent_id: str) -> None:
+    def delete_bus_agent(self, agent_id: str) -> None:
         resp = self._request(
             "DELETE",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}",
+            f"/v1/bus/agents/{_seg(agent_id)}",
         )
         _raise_for_status(resp)
 
-    def heartbeat_bus_agent(
-        self,
-        namespace: str,
-        tenant: str,
-        agent_id: str,
-    ) -> BusAgent:
+    def heartbeat_bus_agent(self, agent_id: str) -> BusAgent:
         resp = self._request(
             "PATCH",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/heartbeat",
+            f"/v1/bus/agents/{_seg(agent_id)}/heartbeat",
         )
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
 
-    def set_bus_agent_admin_state(
-        self,
-        namespace: str,
-        tenant: str,
-        agent_id: str,
-        req: SetBusAgentAdminState,
-    ) -> BusAgent:
+    def set_bus_agent_admin_state(self, agent_id: str, req: SetBusAgentAdminState) -> BusAgent:
         """Set the operator admin state on an agent.
 
         Requires the ``ManageAgent`` permission. The server returns
@@ -322,7 +277,7 @@ class _BusClientMixin:
         """
         resp = self._request(
             "PUT",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/admin-state",
+            f"/v1/bus/agents/{_seg(agent_id)}/admin-state",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
@@ -336,18 +291,10 @@ class _BusClientMixin:
         return BusConversation.from_dict(resp.json())
 
     def list_bus_conversations(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-        state: str | None = None,
-        participant: str | None = None,
+        self, *, state: str | None = None, participant: str | None = None
     ) -> list[BusConversation]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         if state is not None:
             params["state"] = state
         if participant is not None:
@@ -356,70 +303,45 @@ class _BusClientMixin:
         _raise_for_status(resp)
         return [BusConversation.from_dict(c) for c in resp.json().get("conversations", [])]
 
-    def get_bus_conversation(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-    ) -> BusConversation:
+    def get_bus_conversation(self, conversation_id: str) -> BusConversation:
         resp = self._request(
             "GET",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}",
+            f"/v1/bus/conversations/{_seg(conversation_id)}",
         )
         _raise_for_status(resp)
         return BusConversation.from_dict(resp.json())
 
-    def delete_bus_conversation(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-    ) -> None:
+    def delete_bus_conversation(self, conversation_id: str) -> None:
         resp = self._request(
             "DELETE",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}",
+            f"/v1/bus/conversations/{_seg(conversation_id)}",
         )
         _raise_for_status(resp)
 
     def transition_bus_conversation(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        *,
-        target_state: str,
+        self, conversation_id: str, *, target_state: str
     ) -> BusConversation:
         resp = self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/transition",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/transition",
             json={"target_state": target_state},
         )
         _raise_for_status(resp)
         return BusConversation.from_dict(resp.json())
 
     def append_bus_conversation_message(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: AppendBusConversationMessage,
+        self, conversation_id: str, req: AppendBusConversationMessage
     ) -> dict[str, Any]:
         resp = self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/messages",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/messages",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
     def replay_bus_conversation_messages(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        *,
-        limit: int | None = None,
-        cursor: str | None = None,
+        self, conversation_id: str, *, limit: int | None = None, cursor: str | None = None
     ) -> BusReplayResponse:
         params: dict[str, Any] = {}
         if limit is not None:
@@ -428,7 +350,7 @@ class _BusClientMixin:
             params["cursor"] = cursor
         resp = self._request(
             "GET",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/messages",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/messages",
             params=params or None,
         )
         _raise_for_status(resp)
@@ -437,11 +359,7 @@ class _BusClientMixin:
     # --------------- Phase 6a: Tool envelopes ---------------
 
     def post_bus_tool_call(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusToolCall,
+        self, conversation_id: str, req: PostBusToolCall
     ) -> PostBusToolCallOutcome:
         """Append a tool-call envelope.
 
@@ -453,7 +371,7 @@ class _BusClientMixin:
         """
         resp = self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/tool-calls",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/tool-calls",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
@@ -467,30 +385,22 @@ class _BusClientMixin:
         )
 
     def post_bus_tool_result(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusToolResult,
+        self, conversation_id: str, req: PostBusToolResult
     ) -> BusToolEnvelopeReceipt:
         resp = self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/tool-results",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/tool-results",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusToolEnvelopeReceipt.from_dict(resp.json())
 
     def lookup_bus_tool_result(
-        self,
-        namespace: str,
-        tenant: str,
-        call_id: str,
-        params: BusToolResultLookupParams,
+        self, call_id: str, params: BusToolResultLookupParams
     ) -> BusToolResultLookup:
         resp = self._request(
             "GET",
-            f"/v1/bus/tool-calls/{_seg(namespace)}/{_seg(tenant)}/{_seg(call_id)}/result",
+            f"/v1/bus/tool-calls/{_seg(call_id)}/result",
             params=params.to_query(),
         )
         _raise_for_status(resp)
@@ -499,52 +409,35 @@ class _BusClientMixin:
     # --------------- Phase 6b: Stream envelopes ---------------
 
     def post_bus_stream_chunk(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusStreamChunk,
+        self, conversation_id: str, req: PostBusStreamChunk
     ) -> BusStreamEnvelopeReceipt:
         resp = self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/stream-chunks",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/stream-chunks",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusStreamEnvelopeReceipt.from_dict(resp.json())
 
     def post_bus_stream_end(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusStreamEnd,
+        self, conversation_id: str, req: PostBusStreamEnd
     ) -> BusStreamEnvelopeReceipt:
         resp = self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/stream-end",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/stream-end",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusStreamEnvelopeReceipt.from_dict(resp.json())
 
-    def bus_stream_consume_url(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        stream_id: str,
-    ) -> str:
+    def bus_stream_consume_url(self, conversation_id: str, stream_id: str) -> str:
         """Return the SSE consume URL for a stream. Plug the URL into
         whichever SSE client your runtime prefers (``httpx-sse``,
         ``aiohttp-sse-client2``, ``sseclient``, etc.). Path
         segments are encoded the same way the Rust SDK encodes
         them.
         """
-        return (
-            f"{self.base_url}/v1/bus/streams/"
-            f"{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/{_seg(stream_id)}"
-        )
+        return f"{self.base_url}/v1/bus/streams/{_seg(conversation_id)}/{_seg(stream_id)}"
 
     def consume_bus_subscription(
         self,
@@ -619,13 +512,7 @@ class _BusClientMixin:
             )
             params_for_open = resume_params
 
-    def consume_bus_stream(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        stream_id: str,
-    ) -> Iterator[BusStreamItem]:
+    def consume_bus_stream(self, conversation_id: str, stream_id: str) -> Iterator[BusStreamItem]:
         """Consume a typed stream via SSE
         (``GET /v1/bus/streams/{ns}/{tenant}/{conv}/{stream_id}``). The
         server filters by ``(envelope_kind, conversation_id, stream_id)``,
@@ -635,7 +522,7 @@ class _BusClientMixin:
         Yields:
             :class:`BusStreamItem` per chunk plus the terminal end marker.
         """
-        url = self.bus_stream_consume_url(namespace, tenant, conversation_id, stream_id)
+        url = self.bus_stream_consume_url(conversation_id, stream_id)
         for env in _open_bus_sse_stream(self._client, url, None, self._headers()):
             item = _envelope_to_stream_item(env)
             yield item
@@ -645,12 +532,7 @@ class _BusClientMixin:
     # --------------- Phase 6c: HITL approvals ---------------
 
     def list_bus_approvals(
-        self,
-        namespace: str,
-        tenant: str,
-        *,
-        status: str | None = None,
-        conversation_id: str | None = None,
+        self, *, status: str | None = None, conversation_id: str | None = None
     ) -> list[BusApprovalView]:
         params: dict[str, Any] = {}
         if status is not None:
@@ -659,50 +541,37 @@ class _BusClientMixin:
             params["conversation_id"] = conversation_id
         resp = self._request(
             "GET",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}",
+            "/v1/bus/approvals",
             params=params or None,
         )
         _raise_for_status(resp)
         return [BusApprovalView.from_dict(a) for a in resp.json().get("approvals", [])]
 
-    def get_bus_approval(
-        self,
-        namespace: str,
-        tenant: str,
-        approval_id: str,
-    ) -> BusApprovalView:
+    def get_bus_approval(self, approval_id: str) -> BusApprovalView:
         resp = self._request(
             "GET",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}/{_seg(approval_id)}",
+            f"/v1/bus/approvals/{_seg(approval_id)}",
         )
         _raise_for_status(resp)
         return BusApprovalView.from_dict(resp.json())
 
     def approve_bus_approval(
-        self,
-        namespace: str,
-        tenant: str,
-        approval_id: str,
-        decision: BusApprovalDecision,
+        self, approval_id: str, decision: BusApprovalDecision
     ) -> BusApprovalDecisionResponse:
         resp = self._request(
             "POST",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}/{_seg(approval_id)}/approve",
+            f"/v1/bus/approvals/{_seg(approval_id)}/approve",
             json=decision.to_dict(),
         )
         _raise_for_status(resp)
         return BusApprovalDecisionResponse.from_dict(resp.json())
 
     def reject_bus_approval(
-        self,
-        namespace: str,
-        tenant: str,
-        approval_id: str,
-        decision: BusApprovalDecision,
+        self, approval_id: str, decision: BusApprovalDecision
     ) -> BusApprovalDecisionResponse:
         resp = self._request(
             "POST",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}/{_seg(approval_id)}/reject",
+            f"/v1/bus/approvals/{_seg(approval_id)}/reject",
             json=decision.to_dict(),
         )
         _raise_for_status(resp)
@@ -724,6 +593,10 @@ class _BusClientMixin:
 
 
 class _AsyncBusClientMixin:
+    if TYPE_CHECKING:
+
+        async def identity(self) -> CredentialIdentity: ...
+
     """Async mixin providing the agentic bus REST surface."""
 
     if TYPE_CHECKING:
@@ -749,30 +622,25 @@ class _AsyncBusClientMixin:
         _raise_for_status(resp)
         return BusTopic.from_dict(resp.json())
 
-    async def list_bus_topics(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-    ) -> list[BusTopic]:
+    async def list_bus_topics(self) -> list[BusTopic]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         resp = await self._request("GET", "/v1/bus/topics", params=params or None)
         _raise_for_status(resp)
         return [BusTopic.from_dict(t) for t in resp.json().get("topics", [])]
 
-    async def get_bus_topic(self, namespace: str, tenant: str, name: str) -> BusTopic:
-        topics = await self.list_bus_topics(namespace=namespace, tenant=tenant)
+    async def get_bus_topic(self, name: str) -> BusTopic:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
+        topics = await self.list_bus_topics()
         for topic in topics:
             if (topic.namespace, topic.tenant, topic.name) == (namespace, tenant, name):
                 return topic
         raise HttpError(404, "Bus topic not found")
 
-    async def delete_bus_topic(self, namespace: str, tenant: str, name: str) -> None:
-        topic = await self.get_bus_topic(namespace, tenant, name)
+    async def delete_bus_topic(self, name: str) -> None:
+        topic = await self.get_bus_topic(name)
         resp = await self._request("DELETE", f"/v1/bus/topics/{_seg(topic.kafka_name)}")
         _raise_for_status(resp)
 
@@ -788,28 +656,20 @@ class _AsyncBusClientMixin:
         _raise_for_status(resp)
         return BusSubscription.from_dict(resp.json())
 
-    async def list_bus_subscriptions(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-        topic: str | None = None,
-    ) -> list[BusSubscription]:
+    async def list_bus_subscriptions(self, *, topic: str | None = None) -> list[BusSubscription]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         if topic is not None:
             params["topic"] = topic
         resp = await self._request("GET", "/v1/bus/subscriptions", params=params or None)
         _raise_for_status(resp)
         return [BusSubscription.from_dict(s) for s in resp.json().get("subscriptions", [])]
 
-    async def get_bus_subscription(
-        self, namespace: str, tenant: str, sub_id: str
-    ) -> BusSubscription:
-        subscriptions = await self.list_bus_subscriptions(namespace=namespace, tenant=tenant)
+    async def get_bus_subscription(self, sub_id: str) -> BusSubscription:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
+        subscriptions = await self.list_bus_subscriptions()
         for subscription in subscriptions:
             if (subscription.namespace, subscription.tenant, subscription.id) == (
                 namespace,
@@ -819,17 +679,17 @@ class _AsyncBusClientMixin:
                 return subscription
         raise HttpError(404, "Bus subscription not found")
 
-    async def delete_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> None:
+    async def delete_bus_subscription(self, sub_id: str) -> None:
         resp = await self._request(
             "DELETE",
-            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
+            f"/v1/bus/subscriptions/{_seg(sub_id)}",
         )
         _raise_for_status(resp)
 
-    async def get_bus_subscription_lag(self, namespace: str, tenant: str, sub_id: str) -> BusLag:
+    async def get_bus_subscription_lag(self, sub_id: str) -> BusLag:
         resp = await self._request(
             "GET",
-            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}/lag",
+            f"/v1/bus/subscriptions/{_seg(sub_id)}/lag",
         )
         _raise_for_status(resp)
         return BusLag.from_dict(resp.json())
@@ -842,18 +702,10 @@ class _AsyncBusClientMixin:
         return BusSchema.from_dict(resp.json())
 
     async def list_bus_schemas(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-        subject: str | None = None,
-        latest_only: bool = False,
+        self, *, subject: str | None = None, latest_only: bool = False
     ) -> list[BusSchema]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         if subject is not None:
             params["subject"] = subject
         if latest_only:
@@ -862,30 +714,18 @@ class _AsyncBusClientMixin:
         _raise_for_status(resp)
         return [BusSchema.from_dict(s) for s in resp.json().get("schemas", [])]
 
-    async def get_bus_schema(
-        self,
-        namespace: str,
-        tenant: str,
-        subject: str,
-        version: int,
-    ) -> BusSchema:
+    async def get_bus_schema(self, subject: str, version: int) -> BusSchema:
         resp = await self._request(
             "GET",
-            f"/v1/bus/schemas/{_seg(namespace)}/{_seg(tenant)}/{_seg(subject)}/{version}",
+            f"/v1/bus/schemas/{_seg(subject)}/{version}",
         )
         _raise_for_status(resp)
         return BusSchema.from_dict(resp.json())
 
-    async def delete_bus_schema(
-        self,
-        namespace: str,
-        tenant: str,
-        subject: str,
-        version: int,
-    ) -> None:
+    async def delete_bus_schema(self, subject: str, version: int) -> None:
         resp = await self._request(
             "DELETE",
-            f"/v1/bus/schemas/{_seg(namespace)}/{_seg(tenant)}/{_seg(subject)}/{version}",
+            f"/v1/bus/schemas/{_seg(subject)}/{version}",
         )
         _raise_for_status(resp)
 
@@ -896,65 +736,43 @@ class _AsyncBusClientMixin:
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
 
-    async def list_bus_agents(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-    ) -> list[BusAgent]:
+    async def list_bus_agents(self) -> list[BusAgent]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         resp = await self._request("GET", "/v1/bus/agents", params=params or None)
         _raise_for_status(resp)
         return [BusAgent.from_dict(a) for a in resp.json().get("agents", [])]
 
-    async def get_bus_agent(self, namespace: str, tenant: str, agent_id: str) -> BusAgent:
+    async def get_bus_agent(self, agent_id: str) -> BusAgent:
         resp = await self._request(
             "GET",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}",
+            f"/v1/bus/agents/{_seg(agent_id)}",
         )
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
 
-    async def delete_bus_agent(
-        self,
-        namespace: str,
-        tenant: str,
-        agent_id: str,
-    ) -> None:
+    async def delete_bus_agent(self, agent_id: str) -> None:
         resp = await self._request(
             "DELETE",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}",
+            f"/v1/bus/agents/{_seg(agent_id)}",
         )
         _raise_for_status(resp)
 
-    async def heartbeat_bus_agent(
-        self,
-        namespace: str,
-        tenant: str,
-        agent_id: str,
-    ) -> BusAgent:
+    async def heartbeat_bus_agent(self, agent_id: str) -> BusAgent:
         resp = await self._request(
             "PATCH",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/heartbeat",
+            f"/v1/bus/agents/{_seg(agent_id)}/heartbeat",
         )
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
 
     async def set_bus_agent_admin_state(
-        self,
-        namespace: str,
-        tenant: str,
-        agent_id: str,
-        req: SetBusAgentAdminState,
+        self, agent_id: str, req: SetBusAgentAdminState
     ) -> BusAgent:
         """Async counterpart of the sync method of the same name."""
         resp = await self._request(
             "PUT",
-            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/admin-state",
+            f"/v1/bus/agents/{_seg(agent_id)}/admin-state",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
@@ -968,18 +786,10 @@ class _AsyncBusClientMixin:
         return BusConversation.from_dict(resp.json())
 
     async def list_bus_conversations(
-        self,
-        *,
-        namespace: str | None = None,
-        tenant: str | None = None,
-        state: str | None = None,
-        participant: str | None = None,
+        self, *, state: str | None = None, participant: str | None = None
     ) -> list[BusConversation]:
         params: dict[str, Any] = {}
-        if namespace is not None:
-            params["namespace"] = namespace
-        if tenant is not None:
-            params["tenant"] = tenant
+
         if state is not None:
             params["state"] = state
         if participant is not None:
@@ -988,57 +798,38 @@ class _AsyncBusClientMixin:
         _raise_for_status(resp)
         return [BusConversation.from_dict(c) for c in resp.json().get("conversations", [])]
 
-    async def get_bus_conversation(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-    ) -> BusConversation:
+    async def get_bus_conversation(self, conversation_id: str) -> BusConversation:
         resp = await self._request(
             "GET",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}",
+            f"/v1/bus/conversations/{_seg(conversation_id)}",
         )
         _raise_for_status(resp)
         return BusConversation.from_dict(resp.json())
 
-    async def delete_bus_conversation(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-    ) -> None:
+    async def delete_bus_conversation(self, conversation_id: str) -> None:
         resp = await self._request(
             "DELETE",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}",
+            f"/v1/bus/conversations/{_seg(conversation_id)}",
         )
         _raise_for_status(resp)
 
     async def transition_bus_conversation(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        *,
-        target_state: str,
+        self, conversation_id: str, *, target_state: str
     ) -> BusConversation:
         resp = await self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/transition",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/transition",
             json={"target_state": target_state},
         )
         _raise_for_status(resp)
         return BusConversation.from_dict(resp.json())
 
     async def append_bus_conversation_message(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: AppendBusConversationMessage,
+        self, conversation_id: str, req: AppendBusConversationMessage
     ) -> dict[str, Any]:
         resp = await self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/messages",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/messages",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
@@ -1046,8 +837,6 @@ class _AsyncBusClientMixin:
 
     async def replay_bus_conversation_messages(
         self,
-        namespace: str,
-        tenant: str,
         conversation_id: str,
         *,
         limit: int | None = None,
@@ -1063,7 +852,7 @@ class _AsyncBusClientMixin:
             params["as_agent"] = as_agent
         resp = await self._request(
             "GET",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/messages",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/messages",
             params=params or None,
         )
         _raise_for_status(resp)
@@ -1072,18 +861,14 @@ class _AsyncBusClientMixin:
     # --------------- Phase 6a: Tool envelopes ---------------
 
     async def post_bus_tool_call(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusToolCall,
+        self, conversation_id: str, req: PostBusToolCall
     ) -> PostBusToolCallOutcome:
         """See :meth:`_BusClientMixin.post_bus_tool_call` — same
         produced/parked sum-type return.
         """
         resp = await self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/tool-calls",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/tool-calls",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
@@ -1097,30 +882,22 @@ class _AsyncBusClientMixin:
         )
 
     async def post_bus_tool_result(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusToolResult,
+        self, conversation_id: str, req: PostBusToolResult
     ) -> BusToolEnvelopeReceipt:
         resp = await self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/tool-results",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/tool-results",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusToolEnvelopeReceipt.from_dict(resp.json())
 
     async def lookup_bus_tool_result(
-        self,
-        namespace: str,
-        tenant: str,
-        call_id: str,
-        params: BusToolResultLookupParams,
+        self, call_id: str, params: BusToolResultLookupParams
     ) -> BusToolResultLookup:
         resp = await self._request(
             "GET",
-            f"/v1/bus/tool-calls/{_seg(namespace)}/{_seg(tenant)}/{_seg(call_id)}/result",
+            f"/v1/bus/tool-calls/{_seg(call_id)}/result",
             params=params.to_query(),
         )
         _raise_for_status(resp)
@@ -1129,50 +906,33 @@ class _AsyncBusClientMixin:
     # --------------- Phase 6b: Stream envelopes ---------------
 
     async def post_bus_stream_chunk(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusStreamChunk,
+        self, conversation_id: str, req: PostBusStreamChunk
     ) -> BusStreamEnvelopeReceipt:
         resp = await self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/stream-chunks",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/stream-chunks",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusStreamEnvelopeReceipt.from_dict(resp.json())
 
     async def post_bus_stream_end(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        req: PostBusStreamEnd,
+        self, conversation_id: str, req: PostBusStreamEnd
     ) -> BusStreamEnvelopeReceipt:
         resp = await self._request(
             "POST",
-            f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/stream-end",
+            f"/v1/bus/conversations/{_seg(conversation_id)}/stream-end",
             json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusStreamEnvelopeReceipt.from_dict(resp.json())
 
-    def bus_stream_consume_url(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        stream_id: str,
-    ) -> str:
+    def bus_stream_consume_url(self, conversation_id: str, stream_id: str) -> str:
         """Return the SSE consume URL for a stream. Synchronous on
         the async client too — this is a pure URL builder, no
         I/O happens.
         """
-        return (
-            f"{self.base_url}/v1/bus/streams/"
-            f"{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/{_seg(stream_id)}"
-        )
+        return f"{self.base_url}/v1/bus/streams/{_seg(conversation_id)}/{_seg(stream_id)}"
 
     async def consume_bus_subscription(
         self,
@@ -1224,14 +984,10 @@ class _AsyncBusClientMixin:
             params_for_open = resume_params
 
     async def consume_bus_stream(
-        self,
-        namespace: str,
-        tenant: str,
-        conversation_id: str,
-        stream_id: str,
+        self, conversation_id: str, stream_id: str
     ) -> AsyncIterator[BusStreamItem]:
         """Async version of :meth:`_BusClientMixin.consume_bus_stream`."""
-        url = self.bus_stream_consume_url(namespace, tenant, conversation_id, stream_id)
+        url = self.bus_stream_consume_url(conversation_id, stream_id)
         async for env in _async_open_bus_sse_stream(self._client, url, None, self._headers()):
             item = _envelope_to_stream_item(env)
             yield item
@@ -1241,12 +997,7 @@ class _AsyncBusClientMixin:
     # --------------- Phase 6c: HITL approvals ---------------
 
     async def list_bus_approvals(
-        self,
-        namespace: str,
-        tenant: str,
-        *,
-        status: str | None = None,
-        conversation_id: str | None = None,
+        self, *, status: str | None = None, conversation_id: str | None = None
     ) -> list[BusApprovalView]:
         params: dict[str, Any] = {}
         if status is not None:
@@ -1255,50 +1006,37 @@ class _AsyncBusClientMixin:
             params["conversation_id"] = conversation_id
         resp = await self._request(
             "GET",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}",
+            "/v1/bus/approvals",
             params=params or None,
         )
         _raise_for_status(resp)
         return [BusApprovalView.from_dict(a) for a in resp.json().get("approvals", [])]
 
-    async def get_bus_approval(
-        self,
-        namespace: str,
-        tenant: str,
-        approval_id: str,
-    ) -> BusApprovalView:
+    async def get_bus_approval(self, approval_id: str) -> BusApprovalView:
         resp = await self._request(
             "GET",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}/{_seg(approval_id)}",
+            f"/v1/bus/approvals/{_seg(approval_id)}",
         )
         _raise_for_status(resp)
         return BusApprovalView.from_dict(resp.json())
 
     async def approve_bus_approval(
-        self,
-        namespace: str,
-        tenant: str,
-        approval_id: str,
-        decision: BusApprovalDecision,
+        self, approval_id: str, decision: BusApprovalDecision
     ) -> BusApprovalDecisionResponse:
         resp = await self._request(
             "POST",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}/{_seg(approval_id)}/approve",
+            f"/v1/bus/approvals/{_seg(approval_id)}/approve",
             json=decision.to_dict(),
         )
         _raise_for_status(resp)
         return BusApprovalDecisionResponse.from_dict(resp.json())
 
     async def reject_bus_approval(
-        self,
-        namespace: str,
-        tenant: str,
-        approval_id: str,
-        decision: BusApprovalDecision,
+        self, approval_id: str, decision: BusApprovalDecision
     ) -> BusApprovalDecisionResponse:
         resp = await self._request(
             "POST",
-            f"/v1/bus/approvals/{_seg(namespace)}/{_seg(tenant)}/{_seg(approval_id)}/reject",
+            f"/v1/bus/approvals/{_seg(approval_id)}/reject",
             json=decision.to_dict(),
         )
         _raise_for_status(resp)

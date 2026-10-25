@@ -75,6 +75,9 @@ impl AuthenticatedExecutionConfiguration {
     }
 
     pub fn scope(&self, namespace: &str, tenant: &str) -> Result<ScopedCredentialBinding, String> {
+        if !self.credential.matches_scope(namespace, tenant) {
+            return Err("resource is outside the authenticated tenant context".into());
+        }
         let configuration = self
             .scopes
             .get(&(namespace.into(), tenant.into()))
@@ -572,7 +575,7 @@ impl CredentialPolicyProjector {
         let source = authority.configuration(config)?;
         let definitions = self.catalog.definitions(&self.namespace, &self.tenant);
         let mut credentials = BTreeMap::new();
-        for (id, principal, role, grants, method) in config
+        for (id, principal, role, grants, context, method) in config
             .users
             .iter()
             .map(|u| {
@@ -581,6 +584,7 @@ impl CredentialPolicyProjector {
                     u.principal.as_ref(),
                     &u.role,
                     &u.grants,
+                    &u.scope,
                     "jwt",
                 )
             })
@@ -590,10 +594,14 @@ impl CredentialPolicyProjector {
                     k.principal.as_ref(),
                     &k.role,
                     &k.grants,
+                    &k.scope,
                     "api_key",
                 )
             }))
         {
+            if !context.matches(&self.namespace, &self.tenant) {
+                continue;
+            }
             let id = id.ok_or("execution scope projection requires enrolled credentials")?;
             let principal =
                 principal.ok_or("execution scope projection requires stable principals")?;
@@ -806,6 +814,7 @@ mod tests {
             },
             users: vec![],
             api_keys: vec![ApiKeyConfig {
+                scope: acteon_core::TenantContext::new("prod", "acme"),
                 authority_id: Some("credential/notifier".into()),
                 name: "notifier".into(),
                 principal: Some(principal),

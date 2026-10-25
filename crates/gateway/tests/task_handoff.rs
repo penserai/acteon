@@ -64,6 +64,15 @@ impl DeadLetterSink for Sink {
     async fn drain(&self) -> Vec<DeadLetterEntry> {
         self.queue.drain()
     }
+    async fn drain_selected(
+        &self,
+        selection: &acteon_executor::DeadLetterSelection,
+    ) -> Vec<DeadLetterEntry> {
+        self.queue.drain_selected(selection)
+    }
+    async fn len_selected(&self, selection: &acteon_executor::DeadLetterSelection) -> usize {
+        self.queue.len_selected(selection)
+    }
     async fn len(&self) -> usize {
         self.queue.len()
     }

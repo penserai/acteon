@@ -18,13 +18,14 @@
 //! the audit store for events that occurred after the given ID's timestamp
 //! and replays them before switching to the live broadcast stream.
 
+use crate::auth::context::ScopedQuery;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -151,7 +152,7 @@ pub async fn stream(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     headers: HeaderMap,
-    Query(query): Query<StreamQuery>,
+    ScopedQuery(query): ScopedQuery<StreamQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
     // 1. Check role permission.
     if !identity.role.has_permission(Permission::StreamSubscribe) {

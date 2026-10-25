@@ -14,11 +14,6 @@ import java.util.List;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CreateSilenceRequest {
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     @JsonProperty("matchers")
     private List<SilenceMatcher> matchers;
@@ -37,24 +32,12 @@ public class CreateSilenceRequest {
 
     public CreateSilenceRequest() {}
 
-    public CreateSilenceRequest(
-            String namespace,
-            String tenant,
-            List<SilenceMatcher> matchers,
-            String comment,
-            long durationSeconds) {
-        this.namespace = namespace;
-        this.tenant = tenant;
+    public CreateSilenceRequest(List<SilenceMatcher> matchers, String comment, long durationSeconds) {
+
         this.matchers = matchers;
         this.comment = comment;
         this.durationSeconds = durationSeconds;
     }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public List<SilenceMatcher> getMatchers() { return matchers; }
     public void setMatchers(List<SilenceMatcher> matchers) { this.matchers = matchers; }

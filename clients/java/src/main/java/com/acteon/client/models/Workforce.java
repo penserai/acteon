@@ -42,7 +42,7 @@ public final class Workforce {
     public record PutMandate(MandateDeclaration mandate) implements Change {}
     public record RevokeMandate(String id, @JsonProperty("expected_revision") long expectedRevision) implements Change {}
     public record PublishRepresentedPermit(Governance.PermitDeclaration permit, Reference mandate) implements Change {}
-    public record ChangeRequest(String namespace, String tenant, @JsonProperty("change_id") String changeId, Change change, String reason) {}
+    public record ChangeRequest(@JsonProperty("change_id") String changeId, Change change, String reason) {}
     public record Entry<T>(T value, boolean revoked) {}
     public record PermitBindingView(@JsonProperty("permit_id") String permitId, @JsonProperty("permit_revision") long permitRevision, Reference mandate) {}
     public record ManagementBounds(List<TeamRef> teams, List<PrincipalIdentity> principals, @JsonProperty("job_classes") List<String> jobClasses,

@@ -93,12 +93,7 @@ function queueRoute(tasks: Record<string, unknown>[]): (
 }
 
 function makeWorker(overrides: Partial<ConstructorParameters<typeof Worker>[0]> = {}): Worker {
-  return new Worker({
-    client: new ActeonClient("http://x"),
-    namespace: "ns",
-    tenant: "t1",
-    queue: "billing",
-    ...overrides,
+  return new Worker({client: new ActeonClient("http://x"), queue: "billing", ...overrides
   });
 }
 
@@ -120,19 +115,10 @@ describe("Worker task handling", () => {
       expect(seen).toEqual([{ amount: 42 }, "task-1"]);
 
       expect(calls[0].url).toEqual("http://x/v1/queues/billing/poll");
-      expect(calls[0].body).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        max_tasks: 1,
-        lease_seconds: 30,
-        worker_id: "w-1",
+      expect(calls[0].body).toEqual({max_tasks: 1, lease_seconds: 30, worker_id: "w-1"
       });
       expect(calls[1].url).toEqual("http://x/v1/queues/tasks/task-1/complete");
-      expect(calls[1].body).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        lease_token: "lease-1",
-        result: { charged: true },
+      expect(calls[1].body).toEqual({lease_token: "lease-1", result: { charged: true }
       });
     } finally {
       restore();
@@ -148,12 +134,7 @@ describe("Worker task handling", () => {
       });
       await worker.runOnce();
       expect(calls[1].url).toEqual("http://x/v1/queues/tasks/task-1/fail");
-      expect(calls[1].body).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        lease_token: "lease-1",
-        error: "card declined",
-        retryable: true,
+      expect(calls[1].body).toEqual({lease_token: "lease-1", error: "card declined", retryable: true
       });
     } finally {
       restore();

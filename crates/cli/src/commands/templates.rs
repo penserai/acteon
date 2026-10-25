@@ -17,14 +17,7 @@ pub struct TemplatesArgs {
 #[derive(Subcommand, Debug)]
 pub enum TemplatesCommand {
     /// List templates.
-    List {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
-    },
+    List {},
     /// Get a template by ID.
     Get {
         /// Template ID.
@@ -68,14 +61,7 @@ pub struct ProfilesArgs {
 #[derive(Subcommand, Debug)]
 pub enum ProfilesCommand {
     /// List template profiles.
-    List {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
-    },
+    List {},
     /// Get a template profile by ID.
     Get {
         /// Profile ID.
@@ -118,10 +104,8 @@ pub async fn run(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        TemplatesCommand::List { namespace, tenant } => {
-            let resp = ops
-                .list_templates(namespace.as_deref(), tenant.as_deref())
-                .await?;
+        TemplatesCommand::List {} => {
+            let resp = ops.list_templates().await?;
             match format {
                 OutputFormat::Json => {
                     info!("{}", serde_json::to_string_pretty(&resp)?);
@@ -224,10 +208,8 @@ async fn run_profiles(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        ProfilesCommand::List { namespace, tenant } => {
-            let resp = ops
-                .list_profiles(namespace.as_deref(), tenant.as_deref())
-                .await?;
+        ProfilesCommand::List {} => {
+            let resp = ops.list_profiles().await?;
             match format {
                 OutputFormat::Json => {
                     info!("{}", serde_json::to_string_pretty(&resp)?);

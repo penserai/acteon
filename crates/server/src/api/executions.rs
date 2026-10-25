@@ -2,10 +2,11 @@
 //! (including terminal ones), per-execution event history, external
 //! signals, and search-attribute upserts.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -25,8 +26,10 @@ use crate::auth::identity::CallerIdentity;
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ExecutionsQueryParams {
     /// Namespace to filter by.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant to filter by.
+    #[param(ignore)]
     pub tenant: String,
     /// Optional chain definition name filter.
     pub chain_name: Option<String>,
@@ -48,8 +51,10 @@ pub struct ExecutionsQueryParams {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ExecutionNamespaceParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
 }
 
@@ -107,8 +112,10 @@ pub struct ExecutionHistoryResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SignalRequest {
     /// Namespace of the execution.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant of the execution.
+    #[schema(ignore)]
     pub tenant: String,
     /// Optional signal payload. Becomes the wait step's response body.
     #[serde(default)]
@@ -131,8 +138,10 @@ pub struct SignalResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpsertAttributesRequest {
     /// Namespace of the execution.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant of the execution.
+    #[schema(ignore)]
     pub tenant: String,
     /// Attributes to merge into the execution (existing keys overwritten).
     #[schema(value_type = Object)]
@@ -175,7 +184,7 @@ fn summarize(state: &acteon_core::ChainState) -> ExecutionSummary {
 pub async fn list_executions(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ExecutionsQueryParams>,
+    ScopedQuery(params): ScopedQuery<ExecutionsQueryParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -249,7 +258,7 @@ pub async fn get_execution(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Query(params): Query<ExecutionNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<ExecutionNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -298,7 +307,7 @@ pub async fn get_execution_history(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Query(params): Query<ExecutionNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<ExecutionNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -385,7 +394,7 @@ pub async fn signal_execution(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path((execution_id, signal_name)): Path<(String, String)>,
-    Json(req): Json<SignalRequest>,
+    ScopedJson(req): ScopedJson<SignalRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -444,7 +453,7 @@ pub async fn upsert_execution_attributes(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Json(req): Json<UpsertAttributesRequest>,
+    ScopedJson(req): ScopedJson<UpsertAttributesRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -471,8 +480,10 @@ pub async fn upsert_execution_attributes(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ResetExecutionRequest {
     /// Namespace of the execution.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant of the execution.
+    #[schema(ignore)]
     pub tenant: String,
     /// Name of the step to re-run from. Must exist in the execution's
     /// pinned definition and have been reached by the original run.
@@ -504,7 +515,7 @@ pub async fn reset_execution(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Json(req): Json<ResetExecutionRequest>,
+    ScopedJson(req): ScopedJson<ResetExecutionRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -534,3 +545,9 @@ pub async fn reset_execution(
         }
     }
 }
+
+crate::auth::context::scoped_body!(
+    ResetExecutionRequest,
+    SignalRequest,
+    UpsertAttributesRequest
+);

@@ -30,14 +30,14 @@ func TestGovernanceWireContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.Header.Get("Authorization") != "Bearer operator-key" {
 			t.Error("missing authentication")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
-			if r.URL.Path != "/v1/governance" || r.URL.Query().Get("namespace") != "prod" || r.URL.Query().Get("tenant") != "acme" {
+			if r.URL.Path != "/v1/governance" || r.URL.Query().Get("namespace") != "" || r.URL.Query().Get("tenant") != "" {
 				t.Error("wrong scope")
 			}
 			w.Write(fixture["scope"])
@@ -62,7 +62,7 @@ func TestGovernanceWireContracts(t *testing.T) {
 	defer server.Close()
 	client := NewClient(server.URL, WithAPIKey("operator-key"))
 	ctx := context.Background()
-	scope, err := client.Governance(ctx, "prod", "acme")
+	scope, err := client.Governance(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestGovernanceWireContracts(t *testing.T) {
 func TestGovernanceRefusalsPreserveStatus(t *testing.T) {
 	for _, status := range []int{401, 403, 409, 503} {
 		calls := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 			calls++
 			w.WriteHeader(status)
 			w.Write([]byte(`{"error":"denied"}`))
@@ -145,7 +145,12 @@ func TestHistoryCapabilityDefaultsDeniedAndPreservesLegacyWire(t *testing.T) {
 
 type historyTransport func(*http.Request) (*http.Response, error)
 
-func (f historyTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func (f historyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if response := testIdentityResponse(r); response != nil {
+		return response, nil
+	}
+	return f(r)
+}
 
 func TestProviderHistoryReadsNestedEvidence(t *testing.T) {
 	raw, err := os.ReadFile("../../contract-fixtures/provider-history.json")
@@ -159,7 +164,7 @@ func TestProviderHistoryReadsNestedEvidence(t *testing.T) {
 	index := 0
 	client := NewClient("https://acteon.example", WithAPIKey("operator-key"), WithHTTPClient(&http.Client{Transport: historyTransport(func(r *http.Request) (*http.Response, error) {
 		if r.Method != "GET" || r.URL.Path != "/v1/governance/executions/73000000-0000-4000-8000-000000000001" ||
-			r.URL.Query().Get("namespace") != "prod" || r.URL.Query().Get("tenant") != "acme" || r.Header.Get("Authorization") != "Bearer operator-key" {
+			r.URL.Query().Get("namespace") != "" || r.URL.Query().Get("tenant") != "" || r.Header.Get("Authorization") != "Bearer operator-key" {
 			t.Fatalf("wrong history request: %v", r)
 		}
 		body := fixtures[index]
@@ -171,7 +176,7 @@ func TestProviderHistoryReadsNestedEvidence(t *testing.T) {
 		if err := json.Unmarshal(wire, &expected); err != nil {
 			t.Fatal(err)
 		}
-		result, err := client.ProviderExecutionHistory(context.Background(), "prod", "acme", expected.Receipt.ExecutionID)
+		result, err := client.ProviderExecutionHistory(context.Background(), expected.Receipt.ExecutionID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +229,7 @@ func TestProviderReconciliationTransport(t *testing.T) {
 		if r.URL.Path != "/v1/governance/executions/"+fixture.Correlation.Context.ExecutionID+"/attempts/0/"+tail || r.Method != method {
 			t.Fatal("wrong finality route")
 		}
-		if r.URL.Query().Get("namespace") != "prod" || r.URL.Query().Get("tenant") != "acme" || r.Header.Get("Authorization") != "Bearer operator-key" {
+		if r.URL.Query().Get("namespace") != "" || r.URL.Query().Get("tenant") != "" || r.Header.Get("Authorization") != "Bearer operator-key" {
 			t.Fatal("lost scope/authentication")
 		}
 		if index > 0 {
@@ -237,12 +242,12 @@ func TestProviderReconciliationTransport(t *testing.T) {
 		index++
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
 	})}))
-	result, err := client.ProviderReconciliationCorrelation(context.Background(), "prod", "acme", fixture.Correlation.Context.ExecutionID, 0)
+	result, err := client.ProviderReconciliationCorrelation(context.Background(), fixture.Correlation.Context.ExecutionID, 0)
 	if err != nil || !reflect.DeepEqual(*result, fixture.Correlation) {
 		t.Fatal("lost correlation", err)
 	}
 	for _, expected := range []json.RawMessage{fixture.Receipt, fixture.NoEffect} {
-		result, err := client.AcceptProviderReconciliation(context.Background(), "prod", "acme", fixture.Correlation.Context.ExecutionID, 0, fixture.Request)
+		result, err := client.AcceptProviderReconciliation(context.Background(), fixture.Correlation.Context.ExecutionID, 0, fixture.Request)
 		var wanted ProviderHistoryReceipt
 		if e := json.Unmarshal(expected, &wanted); e != nil {
 			t.Fatal(e)
@@ -273,13 +278,13 @@ func TestRegistryManagementRequestsAndReceiptValidation(t *testing.T) {
 	view := f["view"]
 	status := 200
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.Header.Get("Authorization") != "Bearer operator-key" {
 			t.Error("missing original authentication")
 		}
 		if r.Method == "GET" {
-			if r.URL.Path != "/v1/governance/registry/maya" || r.URL.Query().Get("projection") != "card" || r.URL.Query().Get("namespace") != "prod" || r.URL.Query().Get("tenant") != "acme" {
+			if r.URL.Path != "/v1/governance/registry/maya" || r.URL.Query().Get("projection") != "card" || r.URL.Query().Get("namespace") != "" || r.URL.Query().Get("tenant") != "" {
 				t.Error("wrong projection scope")
 			}
 			w.Write(view)
@@ -299,7 +304,7 @@ func TestRegistryManagementRequestsAndReceiptValidation(t *testing.T) {
 	defer server.Close()
 	client := NewClient(server.URL, WithAPIKey("operator-key"))
 	ctx := context.Background()
-	if _, err = client.RegistryProjection(ctx, "prod", "acme", "maya", RegistryProjectionCard); err != nil {
+	if _, err = client.RegistryProjection(ctx, "maya", RegistryProjectionCard); err != nil {
 		t.Fatal(err)
 	}
 	for field, value := range map[string]any{"tenant": "other", "version": 0, "qualification_retired": nil, "registry_revision": 0, "value": "invalid"} {
@@ -308,7 +313,7 @@ func TestRegistryManagementRequestsAndReceiptValidation(t *testing.T) {
 		bad[field] = value
 		view, _ = json.Marshal(bad)
 		before := calls
-		if _, err = client.RegistryProjection(ctx, "prod", "acme", "maya", RegistryProjectionCard); err == nil {
+		if _, err = client.RegistryProjection(ctx, "maya", RegistryProjectionCard); err == nil {
 			t.Fatal("invalid observation accepted", field)
 		}
 		if calls != before+1 {

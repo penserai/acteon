@@ -28,11 +28,11 @@ import { HttpError } from "./errors.js";
 
 describe("queue request body builders", () => {
   it("poll body minimal", () => {
-    assert.deepEqual(pollTasksBody("ns", "t1"), { namespace: "ns", tenant: "t1" });
+    assert.deepEqual(pollTasksBody(), { });
   });
 
   it("poll body snake-cases optional fields", () => {
-    const body = pollTasksBody("ns", "t1", {
+    const body = pollTasksBody({
       maxTasks: 5,
       leaseSeconds: 120,
       workerId: "worker-7",
@@ -43,48 +43,32 @@ describe("queue request body builders", () => {
   });
 
   it("enqueue body — payload required, max_attempts optional", () => {
-    const minimal = enqueueTaskBody("ns", "t1", "send_email", { to: "x" });
-    assert.deepEqual(minimal, {
-      namespace: "ns",
-      tenant: "t1",
-      action_type: "send_email",
-      payload: { to: "x" },
+    const minimal = enqueueTaskBody("send_email", { to: "x" });
+    assert.deepEqual(minimal, {action_type: "send_email", payload: { to: "x" }
     });
 
-    const full = enqueueTaskBody("ns", "t1", "send_email", {}, { maxAttempts: 3 });
+    const full = enqueueTaskBody("send_email", {}, { maxAttempts: 3 });
     assert.equal(full.max_attempts, 3);
   });
 
   it("heartbeat body — extend_seconds optional", () => {
-    const minimal = heartbeatTaskBody("ns", "t1", "lease-1");
-    assert.deepEqual(minimal, {
-      namespace: "ns",
-      tenant: "t1",
-      lease_token: "lease-1",
+    const minimal = heartbeatTaskBody("lease-1");
+    assert.deepEqual(minimal, {lease_token: "lease-1"
     });
 
-    const full = heartbeatTaskBody("ns", "t1", "lease-1", 90);
+    const full = heartbeatTaskBody("lease-1", 90);
     assert.equal(full.extend_seconds, 90);
   });
 
   it("complete body carries result verbatim", () => {
-    const body = completeTaskBody("ns", "t1", "lease-1", { ok: true });
-    assert.deepEqual(body, {
-      namespace: "ns",
-      tenant: "t1",
-      lease_token: "lease-1",
-      result: { ok: true },
+    const body = completeTaskBody("lease-1", { ok: true });
+    assert.deepEqual(body, {lease_token: "lease-1", result: { ok: true }
     });
   });
 
   it("fail body carries error + retryable", () => {
-    const body = failTaskBody("ns", "t1", "lease-1", "boom", false);
-    assert.deepEqual(body, {
-      namespace: "ns",
-      tenant: "t1",
-      lease_token: "lease-1",
-      error: "boom",
-      retryable: false,
+    const body = failTaskBody("lease-1", "boom", false);
+    assert.deepEqual(body, {lease_token: "lease-1", error: "boom", retryable: false
     });
   });
 });
@@ -208,19 +192,14 @@ describe("queue client URLs and bodies", () => {
     const { calls, restore } = captureFetch(200, { tasks: [wireTask()] });
     try {
       const c = new ActeonClient("http://x");
-      const tasks = await c.pollTasks("billing", "ns", "t1", {
+      const tasks = await c.pollTasks("billing", {
         maxTasks: 2,
         leaseSeconds: 30,
         workerId: "w-1",
       });
       expect(calls[0].url).toEqual("http://x/v1/queues/billing/poll");
       expect(calls[0].init?.method).toEqual("POST");
-      expect(sentBody(calls[0])).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        max_tasks: 2,
-        lease_seconds: 30,
-        worker_id: "w-1",
+      expect(sentBody(calls[0])).toEqual({max_tasks: 2, lease_seconds: 30, worker_id: "w-1"
       });
       expect(tasks.length).toEqual(1);
       expect(tasks[0].taskId).toEqual("task-1");
@@ -233,7 +212,7 @@ describe("queue client URLs and bodies", () => {
     const { calls, restore } = captureFetch(201, wireTask({ status: "pending" }));
     try {
       const c = new ActeonClient("http://x");
-      const task = await c.enqueueTask("billing", "ns", "t1", "charge", { amount: 42 }, { maxAttempts: 3 });
+      const task = await c.enqueueTask("billing", "charge", { amount: 42 }, { maxAttempts: 3 });
       expect(calls[0].url).toEqual("http://x/v1/queues/billing/tasks");
       expect(sentBody(calls[0]).max_attempts).toEqual(3);
       expect(task.status).toEqual("pending");
@@ -246,9 +225,9 @@ describe("queue client URLs and bodies", () => {
     const { calls, restore } = captureFetch(200, wireTask());
     try {
       const c = new ActeonClient("http://x");
-      await c.heartbeatTask("task-1", "ns", "t1", "lease-1", 45);
-      await c.completeTask("task-1", "ns", "t1", "lease-1", { ok: true });
-      await c.failTask("task-1", "ns", "t1", "lease-1", "boom");
+      await c.heartbeatTask("task-1", "lease-1", 45);
+      await c.completeTask("task-1", "lease-1", { ok: true });
+      await c.failTask("task-1", "lease-1", "boom");
       expect(calls[0].url).toEqual("http://x/v1/queues/tasks/task-1/heartbeat");
       expect(sentBody(calls[0]).extend_seconds).toEqual(45);
       expect(calls[1].url).toEqual("http://x/v1/queues/tasks/task-1/complete");
@@ -265,9 +244,9 @@ describe("queue client URLs and bodies", () => {
     const { calls, restore } = captureFetch(404, { error: "task not found" });
     try {
       const c = new ActeonClient("http://x");
-      const task = await c.getTask("task-9", "ns", "t1");
+      const task = await c.getTask("task-9");
       expect(calls[0].url).toEqual(
-        "http://x/v1/queues/tasks/task-9?namespace=ns&tenant=t1",
+        "http://x/v1/queues/tasks/task-9",
       );
       expect(task).toBeNull();
     } finally {
@@ -279,9 +258,9 @@ describe("queue client URLs and bodies", () => {
     const { calls, restore } = captureFetch(200, { tasks: [] });
     try {
       const c = new ActeonClient("http://x");
-      const tasks = await c.listTasks("billing", "ns", "t1", "failed");
+      const tasks = await c.listTasks("billing", "failed");
       expect(calls[0].url).toEqual(
-        "http://x/v1/queues/billing/tasks?namespace=ns&tenant=t1&status=failed",
+        "http://x/v1/queues/billing/tasks?status=failed",
       );
       expect(tasks).toEqual([]);
     } finally {
@@ -294,10 +273,10 @@ describe("queue client URLs and bodies", () => {
     try {
       const c = new ActeonClient("http://x");
       await expect(
-        c.completeTask("task-1", "ns", "t1", "stale", null),
+        c.completeTask("task-1", "stale", null),
       ).rejects.toThrowError(HttpError);
       await expect(
-        c.completeTask("task-1", "ns", "t1", "stale", null),
+        c.completeTask("task-1", "stale", null),
       ).rejects.toThrow(/lease token mismatch/);
     } finally {
       restore();

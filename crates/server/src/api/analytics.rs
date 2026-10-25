@@ -1,5 +1,6 @@
+use crate::auth::context::ScopedQuery;
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -19,8 +20,10 @@ pub struct AnalyticsParams {
     /// Metric to compute: `volume`, `outcome_breakdown`, `top_action_types`, `latency`, `error_rate`.
     pub metric: AnalyticsMetric,
     /// Filter by namespace.
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Filter by tenant.
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Filter by provider.
     pub provider: Option<String>,
@@ -48,17 +51,15 @@ pub struct AnalyticsParams {
     summary = "Query action analytics",
     description = "Returns time-bucketed aggregated metrics over the audit trail. Supports volume, outcome breakdown, top action types, latency percentiles, and error rate metrics.",
     params(
-        ("metric" = AnalyticsMetric, Query, description = "Metric to compute"),
-        ("namespace" = Option<String>, Query, description = "Filter by namespace"),
-        ("tenant" = Option<String>, Query, description = "Filter by tenant"),
-        ("provider" = Option<String>, Query, description = "Filter by provider"),
-        ("action_type" = Option<String>, Query, description = "Filter by action type"),
-        ("outcome" = Option<String>, Query, description = "Filter by outcome"),
-        ("interval" = Option<AnalyticsInterval>, Query, description = "Time bucket interval (default: daily)"),
-        ("from" = Option<String>, Query, description = "Start of time range (RFC 3339)"),
-        ("to" = Option<String>, Query, description = "End of time range (RFC 3339)"),
-        ("group_by" = Option<String>, Query, description = "Dimension to group by"),
-        ("top_n" = Option<usize>, Query, description = "Number of top entries (default 10)"),
+        ("metric" = AnalyticsMetric, description = "Metric to compute"),
+        ("provider" = Option<String>, description = "Filter by provider"),
+        ("action_type" = Option<String>, description = "Filter by action type"),
+        ("outcome" = Option<String>, description = "Filter by outcome"),
+        ("interval" = Option<AnalyticsInterval>, description = "Time bucket interval (default: daily)"),
+        ("from" = Option<String>, description = "Start of time range (RFC 3339)"),
+        ("to" = Option<String>, description = "End of time range (RFC 3339)"),
+        ("group_by" = Option<String>, description = "Dimension to group by"),
+        ("top_n" = Option<usize>, description = "Number of top entries (default 10)"),
     ),
     responses(
         (status = 200, description = "Analytics results", body = acteon_core::AnalyticsResponse),
@@ -69,7 +70,7 @@ pub struct AnalyticsParams {
 pub async fn query_analytics(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<AnalyticsParams>,
+    ScopedQuery(params): ScopedQuery<AnalyticsParams>,
 ) -> impl IntoResponse {
     let Some(ref analytics) = state.analytics else {
         return (

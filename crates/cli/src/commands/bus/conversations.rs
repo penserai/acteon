@@ -21,10 +21,6 @@ pub struct ConversationsArgs {
 pub enum ConversationsCommand {
     /// List conversations, optionally filtered.
     List {
-        #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        tenant: Option<String>,
         /// `active`, `resolved`, or `archived`.
         #[arg(long)]
         state: Option<String>,
@@ -34,10 +30,6 @@ pub enum ConversationsCommand {
     /// Fetch a single conversation.
     Get {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
     },
     /// Register a conversation. First in a tenant auto-creates the
@@ -45,10 +37,6 @@ pub enum ConversationsCommand {
     Create {
         #[arg(long)]
         conversation_id: String,
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         title: Option<String>,
         /// Repeat for multiple participants.
@@ -62,10 +50,6 @@ pub enum ConversationsCommand {
     /// Update mutable fields. Use `transition` for state changes.
     Update {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
         #[arg(long)]
         title: Option<String>,
@@ -77,18 +61,10 @@ pub enum ConversationsCommand {
     /// Delete a conversation. Shared events topic is preserved.
     Delete {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
     },
     /// Drive the conversation through its state machine.
     Transition {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         conversation_id: String,
         /// `resolve`, `reopen`, or `archive`.
@@ -97,10 +73,6 @@ pub enum ConversationsCommand {
     },
     /// Append a message to the conversation thread (per-thread FIFO).
     Append {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         conversation_id: String,
         /// JSON payload, or `@path/to/file.json`.
@@ -113,10 +85,6 @@ pub enum ConversationsCommand {
     },
     /// Replay the message history for a conversation.
     Replay {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         conversation_id: String,
         /// Starting position label; ignored when `--cursor` is set.
@@ -156,15 +124,8 @@ pub async fn run(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        ConversationsCommand::List {
-            namespace,
-            tenant,
-            state,
-            participant,
-        } => {
+        ConversationsCommand::List { state, participant } => {
             let filter = BusConversationFilter {
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
                 state: state.clone(),
                 participant: participant.clone(),
             };
@@ -186,21 +147,13 @@ pub async fn run(
                 }
             }
         }
-        ConversationsCommand::Get {
-            namespace,
-            tenant,
-            conversation_id,
-        } => {
-            let c = ops
-                .client()
-                .get_bus_conversation(namespace, tenant, conversation_id)
-                .await?;
+        ConversationsCommand::Get { conversation_id } => {
+            let c = ops.client().get_bus_conversation(conversation_id).await?;
             info!("{}", serde_json::to_string_pretty(&c)?);
         }
         ConversationsCommand::Create {
             conversation_id,
-            namespace,
-            tenant,
+
             title,
             participants,
             events_topic,
@@ -208,8 +161,7 @@ pub async fn run(
         } => {
             let req = RegisterBusConversation {
                 conversation_id: conversation_id.clone(),
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
+
                 title: title.clone(),
                 participants: participants.clone(),
                 events_topic: events_topic.clone(),
@@ -226,8 +178,6 @@ pub async fn run(
             }
         }
         ConversationsCommand::Update {
-            namespace,
-            tenant,
             conversation_id,
             title,
             participants,
@@ -242,7 +192,7 @@ pub async fn run(
             };
             let c = ops
                 .client()
-                .update_bus_conversation(namespace, tenant, conversation_id, &req)
+                .update_bus_conversation(conversation_id, &req)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&c)?),
@@ -252,27 +202,19 @@ pub async fn run(
                 ),
             }
         }
-        ConversationsCommand::Delete {
-            namespace,
-            tenant,
-            conversation_id,
-        } => {
+        ConversationsCommand::Delete { conversation_id } => {
             ops.client()
-                .delete_bus_conversation(namespace, tenant, conversation_id)
+                .delete_bus_conversation(conversation_id)
                 .await?;
             info!(conversation_id = %conversation_id, "Conversation deleted");
         }
         ConversationsCommand::Transition {
-            namespace,
-            tenant,
             conversation_id,
             transition,
         } => {
             let c = ops
                 .client()
                 .transition_bus_conversation(
-                    namespace,
-                    tenant,
                     conversation_id,
                     BusConversationTransition::from(transition.clone()),
                 )
@@ -287,8 +229,6 @@ pub async fn run(
             }
         }
         ConversationsCommand::Append {
-            namespace,
-            tenant,
             conversation_id,
             payload,
             sender,
@@ -302,7 +242,7 @@ pub async fn run(
             };
             let receipt = ops
                 .client()
-                .append_bus_conversation_message(namespace, tenant, conversation_id, &req)
+                .append_bus_conversation_message(conversation_id, &req)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&receipt)?),
@@ -316,8 +256,6 @@ pub async fn run(
             }
         }
         ConversationsCommand::Replay {
-            namespace,
-            tenant,
             conversation_id,
             from,
             cursor,
@@ -332,7 +270,7 @@ pub async fn run(
             };
             let resp = ops
                 .client()
-                .replay_bus_conversation_messages(namespace, tenant, conversation_id, &params)
+                .replay_bus_conversation_messages(conversation_id, &params)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),

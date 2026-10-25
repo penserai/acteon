@@ -693,6 +693,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "utoipa 5.4.0",
  "utoipa-axum",
  "utoipa-swagger-ui",

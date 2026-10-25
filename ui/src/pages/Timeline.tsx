@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Plus, Search, X } from 'lucide-react'
 import {
   getTimelineLedgerStatus, queryTimeline, timelineErrorMessage,
-  type TimelineEvent, type TimelineLedgerStatus, type TimelinePage, type TimelineQuery, type TimelineScope,
+  type TimelineEvent, type TimelineLedgerStatus, type TimelinePage, type TimelineQuery,
 } from '../api/timeline'
 import { buildTimelineQuery, emptyTimelineDraft, type AttributeCondition, type TimelineQueryDraft } from '../lib/timelineQuery'
 import { PageHeader } from '../components/layout/PageHeader'
@@ -24,12 +24,10 @@ const attributeTypes = [
   { value: 'string', label: 'String' }, { value: 'number', label: 'Number' },
   { value: 'boolean', label: 'Boolean' }, { value: 'null', label: 'Null' }, { value: 'exists', label: 'Exists' },
 ]
-interface SubmittedQuery { scope: TimelineScope; query: TimelineQuery; draft: string }
+interface SubmittedQuery { query: TimelineQuery; draft: string }
 function displayDate(value: string) { return new Date(value).toLocaleString() }
 
 export function Timeline() {
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
   const [draft, setDraft] = useState(emptyTimelineDraft)
   const [submitted, setSubmitted] = useState<SubmittedQuery | null>(null)
   const [pages, setPages] = useState<TimelinePage[]>([])
@@ -61,12 +59,6 @@ export function Timeline() {
   function updateAttribute(id: number, patch: Partial<AttributeCondition>) {
     setDraft(current => ({ ...current, attributes: current.attributes.map(row => row.id === id ? { ...row, ...patch } : row) }))
   }
-  function scopeChanged(updateScope: () => void) {
-    ++request.current
-    queryController.current?.abort(); ledgerController.current?.abort()
-    updateScope(); setPages([]); setPageIndex(0); setSubmitted(null); setStatus(null)
-    setSelected(null); setError(''); setLedgerError(''); setBusy(false); setLedgerBusy(false)
-  }
   async function fetchPage(search: SubmittedQuery, next = false) {
     const sequence = ++request.current
     queryController.current?.abort()
@@ -74,7 +66,7 @@ export function Timeline() {
     queryController.current = controller
     setBusy(true); setError(''); setSelected(null)
     try {
-      const result = await queryTimeline(search.scope, { ...search.query, cursor: next ? page?.nextCursor ?? undefined : undefined }, controller.signal)
+      const result = await queryTimeline({ ...search.query, cursor: next ? page?.nextCursor ?? undefined : undefined }, controller.signal)
       if (sequence !== request.current || controller.signal.aborted) return
       setPages(next ? [...pages, result] : [result])
       setPageIndex(next ? pageIndex + 1 : 0)
@@ -87,9 +79,8 @@ export function Timeline() {
   }
   function search() {
     try {
-      if (!namespace.trim() || !tenant.trim()) throw new Error('Enter a namespace and tenant to search.')
       const query = buildTimelineQuery(draft)
-      void fetchPage({ scope: { namespace: namespace.trim(), tenant: tenant.trim() }, query, draft: JSON.stringify(draft) })
+      void fetchPage({ query, draft: JSON.stringify(draft) })
     } catch (e) { setError(timelineErrorMessage(e)) }
   }
   function nextPage() {
@@ -102,7 +93,7 @@ export function Timeline() {
     ledgerController.current = controller
     setLedgerBusy(true); setLedgerError('')
     try {
-      const result = await getTimelineLedgerStatus({ namespace: namespace.trim(), tenant: tenant.trim() }, controller.signal)
+      const result = await getTimelineLedgerStatus(controller.signal)
       if (!controller.signal.aborted) setStatus(result)
     } catch (e) { if (!controller.signal.aborted) { setStatus(null); setLedgerError(timelineErrorMessage(e)) } }
     finally { if (!controller.signal.aborted) setLedgerBusy(false) }
@@ -117,8 +108,6 @@ export function Timeline() {
     <PageHeader title="Event Timeline" subtitle="Follow a deployment or find events across a tenant’s units of work." actions={<Link to="/retention">Retention policies</Link>} />
     <form className={styles.queryPanel} onSubmit={e => { e.preventDefault(); search() }}>
       <div className={styles.scopeGrid}>
-        <Input label="Namespace" required value={namespace} onChange={e => scopeChanged(() => setNamespace(e.target.value))} placeholder="deployments" />
-        <Input label="Tenant" required value={tenant} onChange={e => scopeChanged(() => setTenant(e.target.value))} placeholder="acme" />
         <Input label="Event group" value={draft.group} onChange={e => update('group', e.target.value)} placeholder="cluster-deployment-42" />
         <Input label="Event type" value={draft.eventType} onChange={e => update('eventType', e.target.value)} placeholder="deployment.ready" />
       </div>
@@ -180,12 +169,11 @@ export function Timeline() {
     </form>
     {error && <div role="alert" className={styles.error}><strong>Query failed</strong><p>{error}</p>{page && <p>Last successful results remain below.</p>}</div>}
     {dirty && <p role="status" className={styles.notice}>Filters have changed. Search events to apply them; pagination uses the last submitted query.</p>}
-    {!page && !busy && !error && <EmptyState icon={<Search size={28} />} title="Find events for a unit of work" description="Enter a namespace and tenant, then search. Add an event group for a deployment timeline or use CEL to combine attributes." />}
+    {!page && !busy && !error && <EmptyState icon={<Search size={28} />} title="Find events for a unit of work" description="Search your timeline. Add an event group for a deployment timeline or use CEL to combine attributes." />}
     {busy && !page && <p role="status" className={styles.hint}>Searching timeline events…</p>}
     {page && submitted && <section aria-label="Timeline results" aria-busy={busy} className={styles.results}>
       <div className={styles.resultsHeader}>
         <h2>Results</h2><p role="status">{page.events.length} {page.events.length === 1 ? 'event' : 'events'} on page {pageIndex + 1}</p>
-        <span>{submitted.scope.namespace} / {submitted.scope.tenant}</span>
       </div>
       {page.events.length === 0 && <EmptyState title="No matching events" description="Try a wider time range or remove a condition. Only current, unexpired events are searchable." />}
       <ol className={styles.events}>{page.events.map(event => <li key={JSON.stringify([event.source, event.eventId])}>
@@ -213,7 +201,7 @@ export function Timeline() {
       <h3 className={styles.sectionTitle}>Event data</h3><div className={styles.payload}><JsonViewer data={selected.event} /></div>
     </section>}
     <div className={styles.ledger}>
-      <Button type="button" variant="ghost" size="sm" disabled={!namespace.trim() || !tenant.trim() || ledgerBusy} onClick={() => void inspectLedger()}>{ledgerBusy ? 'Loading ledger…' : 'Ledger status'}</Button>
+      <Button type="button" variant="ghost" size="sm" disabled={ledgerBusy} onClick={() => void inspectLedger()}>{ledgerBusy ? 'Loading ledger…' : 'Ledger status'}</Button>
       {ledgerError && <p role="alert" className={styles.error}>{ledgerError}</p>}
       {status && <p role="status">{status.records.toLocaleString()} retained CDC records; {(status.bytes / 1024 / 1024).toFixed(1)} MiB; {status.pending} pending.</p>}
     </div>

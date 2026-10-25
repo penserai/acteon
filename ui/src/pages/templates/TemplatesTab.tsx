@@ -29,18 +29,12 @@ const templateCol = createDataTableColumnHelper<Template>()
 export function TemplatesTab() {
   const { toast } = useToast()
 
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
-
   const [showCreate, setShowCreate] = useState(false)
   const [editTarget, setEditTarget] = useState<Template | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Template | null>(null)
 
-  const { data, isLoading } = useTemplates({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
+  const { data, isLoading } = useTemplates()
 
   const { data: selectedTemplate } = useTemplate(selectedId ?? undefined)
 
@@ -122,16 +116,6 @@ export function TemplatesTab() {
   return (
     <div>
       <div className={shared.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
         <Button
           icon={<Plus className="h-3.5 w-3.5" />}
           onClick={() => setShowCreate(true)}
@@ -244,8 +228,6 @@ function TemplateFormModal({
   const isEdit = !!initial
 
   const [name, setName] = useState(initial?.name ?? '')
-  const [ns, setNs] = useState(initial?.namespace ?? '')
-  const [tenant, setTenant] = useState(initial?.tenant ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [content, setContent] = useState(initial?.content ?? '')
   const [labelsText, setLabelsText] = useState(
@@ -256,15 +238,13 @@ function TemplateFormModal({
     const labels = parseLabels(labelsText)
     onSubmit({
       name,
-      namespace: ns,
-      tenant,
       content,
       description: description || undefined,
       labels: Object.keys(labels).length > 0 ? labels : undefined,
     })
   }
 
-  const isValid = name && ns && tenant && content
+  const isValid = name && content
 
   return (
     <Modal
@@ -306,20 +286,6 @@ function TemplateFormModal({
         </div>
 
         <div className={shared.formGrid}>
-          <Input
-            label="Namespace *"
-            value={ns}
-            onChange={(e) => setNs(e.target.value)}
-            placeholder="prod"
-            disabled={isEdit}
-          />
-          <Input
-            label="Tenant *"
-            value={tenant}
-            onChange={(e) => setTenant(e.target.value)}
-            placeholder="acme"
-            disabled={isEdit}
-          />
         </div>
 
         <div>

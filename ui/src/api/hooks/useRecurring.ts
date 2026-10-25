@@ -9,20 +9,19 @@ import type {
   PauseResumeResponse,
 } from '../../types'
 
-export function useRecurringActions(params: { namespace?: string; tenant?: string; enabled?: string }) {
+export function useRecurringActions(params: { enabled?: string }) {
   return useQuery({
     queryKey: ['recurring', params],
     queryFn: () => apiGet<RecurringActionListResponse>('/v1/recurring', params),
-    enabled: !!params.namespace && !!params.tenant,
     refetchInterval: 30000,
   })
 }
 
-export function useRecurringAction(id: string | undefined, params: { namespace?: string; tenant?: string }) {
+export function useRecurringAction(id: string | undefined) {
   return useQuery({
-    queryKey: ['recurring', id, params],
-    queryFn: () => apiGet<RecurringAction>(`/v1/recurring/${id}`, params),
-    enabled: !!id && !!params.namespace && !!params.tenant,
+    queryKey: ['recurring', id],
+    queryFn: () => apiGet<RecurringAction>(`/v1/recurring/${id}`),
+    enabled: !!id,
     refetchInterval: 30000,
   })
 }
@@ -49,8 +48,8 @@ export function useUpdateRecurring() {
 export function useDeleteRecurring() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, namespace, tenant }: { id: string; namespace: string; tenant: string }) =>
-      apiDelete(`/v1/recurring/${id}?namespace=${encodeURIComponent(namespace)}&tenant=${encodeURIComponent(tenant)}`),
+    mutationFn: ({ id }: { id: string }) =>
+      apiDelete(`/v1/recurring/${id}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['recurring'] }),
   })
 }
@@ -58,8 +57,8 @@ export function useDeleteRecurring() {
 export function usePauseRecurring() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, namespace, tenant }: { id: string; namespace: string; tenant: string }) =>
-      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/pause`, { namespace, tenant }),
+    mutationFn: ({ id }: { id: string }) =>
+      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/pause`, {}),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['recurring'] }),
   })
 }
@@ -67,8 +66,8 @@ export function usePauseRecurring() {
 export function useResumeRecurring() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, namespace, tenant }: { id: string; namespace: string; tenant: string }) =>
-      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/resume`, { namespace, tenant }),
+    mutationFn: ({ id }: { id: string }) =>
+      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/resume`, {}),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['recurring'] }),
   })
 }

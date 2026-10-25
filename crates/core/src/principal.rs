@@ -107,4 +107,46 @@ pub struct CredentialIdentity {
     pub auth_method: String,
     pub role: String,
     pub principal: Option<PrincipalIdentity>,
+    /// Exact data scope bound to the authenticated credential.
+    pub scope: TenantContext,
+}
+
+/// Exact tenant and namespace selected by credential provisioning, never by an
+/// API request. Resource grants constrain permissions within this context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TenantContext {
+    pub namespace: String,
+    pub tenant: String,
+}
+
+impl TenantContext {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, tenant: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+        }
+    }
+
+    /// Validate an exact context rather than a wildcard or a path expression.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        [&self.namespace, &self.tenant].into_iter().all(|value| {
+            !value.is_empty()
+                && value.len() <= 256
+                && value.trim() == value
+                && value != "."
+                && value != ".."
+                && !value
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '*' | '/' | '\\' | ':'))
+        })
+    }
+
+    #[must_use]
+    pub fn matches(&self, namespace: &str, tenant: &str) -> bool {
+        self.namespace == namespace && self.tenant == tenant
+    }
 }

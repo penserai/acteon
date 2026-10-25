@@ -1,4 +1,4 @@
-use acteon_core::Action;
+use acteon_core::ActionRequest;
 use serde::{Deserialize, Serialize};
 
 use crate::{ActeonClient, Error};
@@ -261,12 +261,10 @@ impl ActeonClient {
     /// ```no_run
     /// # async fn example() -> Result<(), acteon_client::Error> {
     /// use acteon_client::{ActeonClient, EvaluateRulesOptions};
-    /// use acteon_core::Action;
+    /// use acteon_core::ActionRequest;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new(
-    ///     "notifications",
-    ///     "tenant-1",
+    /// let action = ActionRequest::new(
     ///     "email",
     ///     "send_notification",
     ///     serde_json::json!({"to": "user@example.com"}),
@@ -287,13 +285,11 @@ impl ActeonClient {
     /// ```
     pub async fn evaluate_rules(
         &self,
-        action: &Action,
+        action: &ActionRequest,
         options: &EvaluateRulesOptions,
     ) -> Result<RuleEvaluationTrace, Error> {
         #[derive(Serialize)]
         struct Body<'a> {
-            namespace: &'a str,
-            tenant: &'a str,
             provider: &'a str,
             action_type: &'a str,
             payload: &'a serde_json::Value,
@@ -305,8 +301,6 @@ impl ActeonClient {
         let url = format!("{}/v1/rules/evaluate", self.base_url);
 
         let body = Body {
-            namespace: action.namespace.as_str(),
-            tenant: action.tenant.as_str(),
             provider: action.provider.as_str(),
             action_type: &action.action_type,
             payload: &action.payload,

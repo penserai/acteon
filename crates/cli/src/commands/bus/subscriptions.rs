@@ -22,10 +22,6 @@ pub enum SubscriptionsCommand {
     /// List subscriptions, optionally filtered.
     List {
         #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        tenant: Option<String>,
-        #[arg(long)]
         topic: Option<String>,
     },
     /// Create a durable subscription (Kafka consumer group).
@@ -36,10 +32,6 @@ pub enum SubscriptionsCommand {
         /// Topic Kafka name to consume.
         #[arg(long)]
         topic: String,
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         /// `earliest` or `latest`.
         #[arg(long)]
         starting_offset: Option<String>,
@@ -62,18 +54,10 @@ pub enum SubscriptionsCommand {
     /// Delete a subscription by `(namespace, tenant, id)`.
     Delete {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         id: String,
     },
     /// Report per-partition lag for a subscription's group.
     Lag {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         id: String,
     },
@@ -81,10 +65,6 @@ pub enum SubscriptionsCommand {
     /// **Performance warning**: full broker round-trip per call —
     /// suitable for end-of-batch checkpoints, not per-record acks.
     Ack {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         id: String,
         #[arg(long)]
@@ -118,14 +98,8 @@ pub async fn run(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     match &args.command {
-        SubscriptionsCommand::List {
-            namespace,
-            tenant,
-            topic,
-        } => {
+        SubscriptionsCommand::List { topic } => {
             let filter = BusSubscriptionFilter {
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
                 topic: topic.clone(),
             };
             let resp = ops.client().list_bus_subscriptions(&filter).await?;
@@ -150,8 +124,7 @@ pub async fn run(
         SubscriptionsCommand::Create {
             id,
             topic,
-            namespace,
-            tenant,
+
             starting_offset,
             ack_mode,
             receipt_required,
@@ -163,8 +136,7 @@ pub async fn run(
             let req = CreateSubscription {
                 id: id.clone(),
                 topic: topic.clone(),
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
+
                 starting_offset: starting_offset.clone(),
                 ack_mode: ack_mode.clone(),
                 receipt_required: *receipt_required,
@@ -183,22 +155,12 @@ pub async fn run(
                 ),
             }
         }
-        SubscriptionsCommand::Delete {
-            namespace,
-            tenant,
-            id,
-        } => {
-            ops.client()
-                .delete_bus_subscription(namespace, tenant, id)
-                .await?;
+        SubscriptionsCommand::Delete { id } => {
+            ops.client().delete_bus_subscription(id).await?;
             info!(id = %id, "Subscription deleted");
         }
-        SubscriptionsCommand::Lag {
-            namespace,
-            tenant,
-            id,
-        } => {
-            let lag = ops.client().get_bus_lag(namespace, tenant, id).await?;
+        SubscriptionsCommand::Lag { id } => {
+            let lag = ops.client().get_bus_lag(id).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&lag)?),
                 OutputFormat::Text => {
@@ -221,16 +183,12 @@ pub async fn run(
             }
         }
         SubscriptionsCommand::Ack {
-            namespace,
-            tenant,
             id,
             partition,
             offset,
         } => {
             ops.client()
                 .ack_bus_subscription(
-                    namespace,
-                    tenant,
                     id,
                     AckOffset {
                         partition: *partition,

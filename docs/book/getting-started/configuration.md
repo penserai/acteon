@@ -821,7 +821,7 @@ there is no audience request parameter. The card exposes the current agent
 binding, skill, protocol, replay/finality guarantees and authentication
 schemes. Its Ed25519 key must use dedicated material and the configured public
 key must match the environment secret at startup. The source fetches
-`GET /a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities`, verifies
+`GET /a2a/federation/agents/{agent}/capabilities`, verifies
 the exact epoch requirement before import, and journals the card digest and
 negotiated contract. A discovery timeout keeps the export registered and
 retryable without calling the import endpoint.

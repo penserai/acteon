@@ -46,12 +46,6 @@ pub enum RulesCommand {
     /// cross-references the result with the currently-loaded rule set.
     /// No raw audit records are transferred over the wire.
     Coverage {
-        /// Filter by namespace.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by tenant.
-        #[arg(long)]
-        tenant: Option<String>,
         /// Scan the last N hours of audit history (default: 24).
         ///
         /// Mutually exclusive with `--from`/`--to`.
@@ -169,8 +163,6 @@ async fn run_coverage(
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let RulesCommand::Coverage {
-        namespace,
-        tenant,
         since_hours,
         from,
         to,
@@ -192,12 +184,8 @@ async fn run_coverage(
     };
 
     let query = CoverageQuery {
-        namespace: namespace.clone(),
-        tenant: tenant.clone(),
         from: effective_from,
         to: effective_to,
-        // Authorization scope is applied server-side from grants.
-        ..Default::default()
     };
 
     let report = ops.rules_coverage(&query).await?;

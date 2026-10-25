@@ -5,10 +5,6 @@ use crate::{ActeonClient, Error};
 /// Request to create a data retention policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRetentionRequest {
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Override for the global audit TTL (seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audit_ttl_seconds: Option<u64>,
@@ -155,25 +151,12 @@ impl ActeonClient {
         }
     }
 
-    /// List retention policies, optionally filtered by namespace and tenant.
-    pub async fn list_retention(
-        &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
-    ) -> Result<ListRetentionResponse, Error> {
+    /// List retention policies, within the authenticated credential context.
+    pub async fn list_retention(&self) -> Result<ListRetentionResponse, Error> {
         let url = format!("{}/v1/retention", self.base_url);
-
-        let mut query: Vec<(&str, &str)> = Vec::new();
-        if let Some(ns) = namespace {
-            query.push(("namespace", ns));
-        }
-        if let Some(t) = tenant {
-            query.push(("tenant", t));
-        }
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&query)
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
