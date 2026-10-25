@@ -2,10 +2,11 @@
 //! spawn child workflows. Workflow code runs on external workers via the
 //! task queue API; this surface manages execution state.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -133,8 +134,10 @@ impl From<&WorkflowExecution> for WorkflowExecutionDto {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct StartWorkflowRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Workflow name (matched to a handler registered on workers).
     pub workflow: String,
@@ -154,8 +157,10 @@ pub struct StartWorkflowRequest {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct WorkflowsQueryParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
     /// Optional workflow name filter.
     pub workflow: Option<String>,
@@ -170,8 +175,10 @@ pub struct WorkflowsQueryParams {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct WorkflowNamespaceParams {
     /// Namespace.
+    #[param(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[param(ignore)]
     pub tenant: String,
 }
 
@@ -186,8 +193,10 @@ pub struct ListWorkflowsResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct WorkflowSignalRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Optional signal payload (returned by the awaiting
     /// `ctx.wait_for_signal` call).
@@ -200,8 +209,10 @@ pub struct WorkflowSignalRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct WorkflowCancelRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Optional reason.
     #[serde(default)]
@@ -212,8 +223,10 @@ pub struct WorkflowCancelRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RecordCheckpointRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Unique checkpoint name within the execution.
     pub name: String,
@@ -239,8 +252,10 @@ pub struct RecordCheckpointResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct StartChildRequest {
     /// Namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Idempotency checkpoint name recorded on the parent.
     pub checkpoint: String,
@@ -284,7 +299,7 @@ pub struct StartChildResponse {
 pub async fn start_workflow(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<StartWorkflowRequest>,
+    ScopedJson(req): ScopedJson<StartWorkflowRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -321,7 +336,7 @@ pub async fn start_workflow(
 pub async fn list_workflows(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<WorkflowsQueryParams>,
+    ScopedQuery(params): ScopedQuery<WorkflowsQueryParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -366,7 +381,7 @@ pub async fn get_workflow(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Query(params): Query<WorkflowNamespaceParams>,
+    ScopedQuery(params): ScopedQuery<WorkflowNamespaceParams>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&params.tenant, &params.namespace) {
         return tenant_forbidden(&params.namespace, &params.tenant);
@@ -412,7 +427,7 @@ pub async fn signal_workflow(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path((execution_id, signal_name)): Path<(String, String)>,
-    Json(req): Json<WorkflowSignalRequest>,
+    ScopedJson(req): ScopedJson<WorkflowSignalRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -459,7 +474,7 @@ pub async fn cancel_workflow(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Json(req): Json<WorkflowCancelRequest>,
+    ScopedJson(req): ScopedJson<WorkflowCancelRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -494,7 +509,7 @@ pub async fn record_checkpoint(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Json(req): Json<RecordCheckpointRequest>,
+    ScopedJson(req): ScopedJson<RecordCheckpointRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -544,7 +559,7 @@ pub async fn start_child_workflow(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(execution_id): Path<String>,
-    Json(req): Json<StartChildRequest>,
+    ScopedJson(req): ScopedJson<StartChildRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -588,3 +603,11 @@ pub async fn start_child_workflow(
         Err(e) => workflow_error_response(&e),
     }
 }
+
+crate::auth::context::scoped_body!(
+    RecordCheckpointRequest,
+    StartChildRequest,
+    StartWorkflowRequest,
+    WorkflowCancelRequest,
+    WorkflowSignalRequest
+);

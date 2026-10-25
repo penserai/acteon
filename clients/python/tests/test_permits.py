@@ -33,7 +33,7 @@ def handler():
 
 def test_sync_permit_headers_preserve_auth_and_legacy_calls():
     handle, seen = handler()
-    action = Action("prod", "acme", "incident", "execute", {"incident": 42})
+    action = Action("incident", "execute", {"incident": 42})
     with ActeonClient("http://localhost", api_key="test-key") as client:
         client._client.close()
         client._client = httpx.Client(transport=httpx.MockTransport(handle))
@@ -46,7 +46,7 @@ def test_sync_permit_headers_preserve_auth_and_legacy_calls():
 @pytest.mark.asyncio
 async def test_async_permit_headers_preserve_auth_and_legacy_calls():
     handle, seen = handler()
-    action = Action("prod", "acme", "incident", "execute", {"incident": 42})
+    action = Action("incident", "execute", {"incident": 42})
     async with AsyncActeonClient("http://localhost", api_key="test-key") as client:
         await client._client.aclose()
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
@@ -61,7 +61,7 @@ def test_dispatch_refusals_preserve_http_status(status):
     def handle(req):
         return httpx.Response(status, json={"error": "permit refused"})
 
-    action = Action("prod", "acme", "incident", "execute", {})
+    action = Action("incident", "execute", {})
     with ActeonClient("http://localhost") as client:
         client._client.close()
         client._client = httpx.Client(transport=httpx.MockTransport(handle))
@@ -76,7 +76,7 @@ def test_dispatch_refusals_preserve_http_status(status):
 
 @pytest.mark.asyncio
 async def test_async_dispatch_refusal_preserves_http_status():
-    action = Action("prod", "acme", "incident", "execute", {})
+    action = Action("incident", "execute", {})
     async with AsyncActeonClient("http://localhost") as client:
         await client._client.aclose()
         client._client = httpx.AsyncClient(

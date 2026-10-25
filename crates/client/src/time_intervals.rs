@@ -39,8 +39,6 @@ pub struct TimeRangeInput {
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateTimeIntervalRequest {
     pub name: String,
-    pub namespace: String,
-    pub tenant: String,
     #[serde(default)]
     pub time_ranges: Vec<TimeRangeInput>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +47,7 @@ pub struct CreateTimeIntervalRequest {
     pub description: Option<String>,
 }
 
-/// Partial update body for `PUT /v1/time-intervals/{ns}/{tenant}/{name}`.
+/// Partial update body for `PUT /v1/time-intervals/{name}`.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct UpdateTimeIntervalRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,10 +82,7 @@ pub struct ListTimeIntervalsResponse {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ListTimeIntervalsQuery {
-    pub namespace: Option<String>,
-    pub tenant: Option<String>,
-}
+pub struct ListTimeIntervalsQuery {}
 
 impl ActeonClient {
     /// Create a new time interval.
@@ -115,19 +110,10 @@ impl ActeonClient {
         }
     }
 
-    /// List time intervals filtered by namespace and/or tenant.
-    pub async fn list_time_intervals(
-        &self,
-        query: &ListTimeIntervalsQuery,
-    ) -> Result<ListTimeIntervalsResponse, Error> {
+    /// List time intervals within the authenticated credential context.
+    pub async fn list_time_intervals(&self) -> Result<ListTimeIntervalsResponse, Error> {
         let url = format!("{}/v1/time-intervals", self.base_url);
-        let mut req = self.add_auth(self.client.get(&url));
-        if let Some(ref ns) = query.namespace {
-            req = req.query(&[("namespace", ns)]);
-        }
-        if let Some(ref t) = query.tenant {
-            req = req.query(&[("tenant", t)]);
-        }
+        let req = self.add_auth(self.client.get(&url));
         let response = req
             .send()
             .await
@@ -148,14 +134,9 @@ impl ActeonClient {
     /// Fetch a single time interval. Returns `None` on 404.
     pub async fn get_time_interval(
         &self,
-        namespace: &str,
-        tenant: &str,
         name: &str,
     ) -> Result<Option<TimeIntervalResponse>, Error> {
-        let url = format!(
-            "{}/v1/time-intervals/{namespace}/{tenant}/{name}",
-            self.base_url
-        );
+        let url = format!("{}/v1/time-intervals/{name}", self.base_url);
         let response = self
             .add_auth(self.client.get(&url))
             .send()
@@ -180,15 +161,10 @@ impl ActeonClient {
     /// Update an existing time interval.
     pub async fn update_time_interval(
         &self,
-        namespace: &str,
-        tenant: &str,
         name: &str,
         req: &UpdateTimeIntervalRequest,
     ) -> Result<TimeIntervalResponse, Error> {
-        let url = format!(
-            "{}/v1/time-intervals/{namespace}/{tenant}/{name}",
-            self.base_url
-        );
+        let url = format!("{}/v1/time-intervals/{name}", self.base_url);
         let response = self
             .add_auth(self.client.put(&url))
             .json(req)
@@ -209,16 +185,8 @@ impl ActeonClient {
     }
 
     /// Delete a time interval.
-    pub async fn delete_time_interval(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        name: &str,
-    ) -> Result<(), Error> {
-        let url = format!(
-            "{}/v1/time-intervals/{namespace}/{tenant}/{name}",
-            self.base_url
-        );
+    pub async fn delete_time_interval(&self, name: &str) -> Result<(), Error> {
+        let url = format!("{}/v1/time-intervals/{name}", self.base_url);
         let response = self
             .add_auth(self.client.delete(&url))
             .send()

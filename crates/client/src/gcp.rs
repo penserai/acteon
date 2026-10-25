@@ -9,13 +9,13 @@
 //! use acteon_client::gcp;
 //!
 //! // Publish a message to Pub/Sub
-//! let action = gcp::pubsub::publish("messaging", "tenant-1")
+//! let action = gcp::pubsub::publish()
 //!     .data(r#"{"hello":"world"}"#)
 //!     .topic("my-topic")
 //!     .build();
 //!
 //! // Upload an object to Cloud Storage
-//! let action = gcp::storage::upload("storage", "tenant-1")
+//! let action = gcp::storage::upload()
 //!     .object_name("data.json")
 //!     .body(r#"{"hello":"world"}"#)
 //!     .content_type("application/json")
@@ -28,17 +28,12 @@
 
 /// Helpers for creating GCP `Pub/Sub` actions.
 pub mod pubsub {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for a GCP `Pub/Sub` `publish` action.
-    pub fn publish(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> PubSubPublishBuilder {
+    pub fn publish() -> PubSubPublishBuilder {
         PubSubPublishBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             data: None,
             data_base64: None,
             attributes: None,
@@ -49,13 +44,8 @@ pub mod pubsub {
     }
 
     /// Create a builder for a GCP `Pub/Sub` `publish_batch` action.
-    pub fn publish_batch(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> PubSubPublishBatchBuilder {
+    pub fn publish_batch() -> PubSubPublishBatchBuilder {
         PubSubPublishBatchBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             messages: Vec::new(),
             topic: None,
             dedup_key: None,
@@ -65,8 +55,6 @@ pub mod pubsub {
     /// Builder for a GCP `Pub/Sub` `publish` action.
     #[derive(Debug)]
     pub struct PubSubPublishBuilder {
-        namespace: String,
-        tenant: String,
         data: Option<String>,
         data_base64: Option<String>,
         attributes: Option<HashMap<String, String>>,
@@ -111,15 +99,15 @@ pub mod pubsub {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the GCP `Pub/Sub` `publish` Action.
-        pub fn build(self) -> Action {
+        /// Build the GCP `Pub/Sub` `publish` `ActionRequest`.
+        pub fn build(self) -> ActionRequest {
             let mut payload = serde_json::Map::new();
 
             if let Some(v) = self.data {
@@ -142,13 +130,8 @@ pub mod pubsub {
                 payload.insert("topic".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
-                "gcp-pubsub",
-                "publish",
-                serde_json::Value::Object(payload),
-            );
+            let mut action =
+                ActionRequest::new("gcp-pubsub", "publish", serde_json::Value::Object(payload));
 
             if let Some(key) = self.dedup_key {
                 action.dedup_key = Some(key);
@@ -161,8 +144,6 @@ pub mod pubsub {
     /// Builder for a GCP `Pub/Sub` `publish_batch` action.
     #[derive(Debug)]
     pub struct PubSubPublishBatchBuilder {
-        namespace: String,
-        tenant: String,
         messages: Vec<serde_json::Value>,
         topic: Option<String>,
         dedup_key: Option<String>,
@@ -183,19 +164,19 @@ pub mod pubsub {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the GCP `Pub/Sub` `publish_batch` Action.
+        /// Build the GCP `Pub/Sub` `publish_batch` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `messages` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.messages.is_empty(),
                 "Pub/Sub messages must not be empty"
@@ -211,9 +192,7 @@ pub mod pubsub {
                 payload.insert("topic".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "gcp-pubsub",
                 "publish_batch",
                 serde_json::Value::Object(payload),
@@ -234,14 +213,12 @@ pub mod pubsub {
 
 /// Helpers for creating GCP Cloud Storage actions.
 pub mod storage {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for a GCP Cloud Storage `upload_object` action.
-    pub fn upload(namespace: impl Into<String>, tenant: impl Into<String>) -> StorageUploadBuilder {
+    pub fn upload() -> StorageUploadBuilder {
         StorageUploadBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             object_name: String::new(),
             bucket: None,
             body: None,
@@ -253,13 +230,8 @@ pub mod storage {
     }
 
     /// Create a builder for a GCP Cloud Storage `download_object` action.
-    pub fn download(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> StorageDownloadBuilder {
+    pub fn download() -> StorageDownloadBuilder {
         StorageDownloadBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             object_name: String::new(),
             bucket: None,
             dedup_key: None,
@@ -267,10 +239,8 @@ pub mod storage {
     }
 
     /// Create a builder for a GCP Cloud Storage `delete_object` action.
-    pub fn delete(namespace: impl Into<String>, tenant: impl Into<String>) -> StorageDeleteBuilder {
+    pub fn delete() -> StorageDeleteBuilder {
         StorageDeleteBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             object_name: String::new(),
             bucket: None,
             dedup_key: None,
@@ -280,8 +250,6 @@ pub mod storage {
     /// Builder for a GCP Cloud Storage `upload_object` action.
     #[derive(Debug)]
     pub struct StorageUploadBuilder {
-        namespace: String,
-        tenant: String,
         object_name: String,
         bucket: Option<String>,
         body: Option<String>,
@@ -334,19 +302,19 @@ pub mod storage {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the GCP Cloud Storage `upload_object` Action.
+        /// Build the GCP Cloud Storage `upload_object` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `object_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.object_name.is_empty(),
                 "GCP Storage object_name must be set"
@@ -378,9 +346,7 @@ pub mod storage {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "gcp-storage",
                 "upload_object",
                 serde_json::Value::Object(payload),
@@ -397,8 +363,6 @@ pub mod storage {
     /// Builder for a GCP Cloud Storage `download_object` action.
     #[derive(Debug)]
     pub struct StorageDownloadBuilder {
-        namespace: String,
-        tenant: String,
         object_name: String,
         bucket: Option<String>,
         dedup_key: Option<String>,
@@ -419,19 +383,19 @@ pub mod storage {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the GCP Cloud Storage `download_object` Action.
+        /// Build the GCP Cloud Storage `download_object` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `object_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.object_name.is_empty(),
                 "GCP Storage object_name must be set"
@@ -447,9 +411,7 @@ pub mod storage {
                 payload.insert("bucket".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "gcp-storage",
                 "download_object",
                 serde_json::Value::Object(payload),
@@ -466,8 +428,6 @@ pub mod storage {
     /// Builder for a GCP Cloud Storage `delete_object` action.
     #[derive(Debug)]
     pub struct StorageDeleteBuilder {
-        namespace: String,
-        tenant: String,
         object_name: String,
         bucket: Option<String>,
         dedup_key: Option<String>,
@@ -488,19 +448,19 @@ pub mod storage {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the GCP Cloud Storage `delete_object` Action.
+        /// Build the GCP Cloud Storage `delete_object` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `object_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.object_name.is_empty(),
                 "GCP Storage object_name must be set"
@@ -516,9 +476,7 @@ pub mod storage {
                 payload.insert("bucket".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "gcp-storage",
                 "delete_object",
                 serde_json::Value::Object(payload),
@@ -544,9 +502,7 @@ mod tests {
 
     #[test]
     fn pubsub_publish_basic() {
-        let a = pubsub::publish("ns", "t1")
-            .data(r#"{"hello":"world"}"#)
-            .build();
+        let a = pubsub::publish().data(r#"{"hello":"world"}"#).build();
 
         assert_eq!(a.provider.as_str(), "gcp-pubsub");
         assert_eq!(a.action_type, "publish");
@@ -558,7 +514,7 @@ mod tests {
         let mut attrs = HashMap::new();
         attrs.insert("env".to_string(), "staging".to_string());
 
-        let a = pubsub::publish("ns", "t1")
+        let a = pubsub::publish()
             .data("hello")
             .data_base64("SGVsbG8gV29ybGQ=")
             .attributes(attrs)
@@ -577,7 +533,7 @@ mod tests {
 
     #[test]
     fn pubsub_publish_minimal() {
-        let a = pubsub::publish("ns", "t1").build();
+        let a = pubsub::publish().build();
 
         assert_eq!(a.provider.as_str(), "gcp-pubsub");
         assert_eq!(a.action_type, "publish");
@@ -590,7 +546,7 @@ mod tests {
             serde_json::json!({"data": "msg2"}),
         ];
 
-        let a = pubsub::publish_batch("ns", "t1").messages(messages).build();
+        let a = pubsub::publish_batch().messages(messages).build();
 
         assert_eq!(a.provider.as_str(), "gcp-pubsub");
         assert_eq!(a.action_type, "publish_batch");
@@ -602,7 +558,7 @@ mod tests {
     fn pubsub_publish_batch_with_topic() {
         let messages = vec![serde_json::json!({"data": "msg1"})];
 
-        let a = pubsub::publish_batch("ns", "t1")
+        let a = pubsub::publish_batch()
             .messages(messages)
             .topic("my-topic")
             .dedup_key("batch-dedup")
@@ -615,7 +571,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Pub/Sub messages must not be empty")]
     fn pubsub_publish_batch_panics_without_messages() {
-        pubsub::publish_batch("ns", "t1").build();
+        pubsub::publish_batch().build();
     }
 
     // =========================================================================
@@ -624,7 +580,7 @@ mod tests {
 
     #[test]
     fn storage_upload_basic() {
-        let a = storage::upload("ns", "t1")
+        let a = storage::upload()
             .object_name("data.json")
             .body(r#"{"hello":"world"}"#)
             .build();
@@ -640,7 +596,7 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("env".to_string(), "staging".to_string());
 
-        let a = storage::upload("ns", "t1")
+        let a = storage::upload()
             .object_name("data.bin")
             .bucket("my-bucket")
             .body_base64("SGVsbG8gV29ybGQ=")
@@ -659,9 +615,7 @@ mod tests {
 
     #[test]
     fn storage_download_basic() {
-        let a = storage::download("ns", "t1")
-            .object_name("data.json")
-            .build();
+        let a = storage::download().object_name("data.json").build();
 
         assert_eq!(a.provider.as_str(), "gcp-storage");
         assert_eq!(a.action_type, "download_object");
@@ -670,7 +624,7 @@ mod tests {
 
     #[test]
     fn storage_download_with_bucket() {
-        let a = storage::download("ns", "t1")
+        let a = storage::download()
             .object_name("data.json")
             .bucket("my-bucket")
             .build();
@@ -680,7 +634,7 @@ mod tests {
 
     #[test]
     fn storage_delete_basic() {
-        let a = storage::delete("ns", "t1").object_name("data.json").build();
+        let a = storage::delete().object_name("data.json").build();
 
         assert_eq!(a.provider.as_str(), "gcp-storage");
         assert_eq!(a.action_type, "delete_object");
@@ -689,7 +643,7 @@ mod tests {
 
     #[test]
     fn storage_delete_with_bucket() {
-        let a = storage::delete("ns", "t1")
+        let a = storage::delete()
             .object_name("data.json")
             .bucket("my-bucket")
             .dedup_key("del-dedup")
@@ -702,18 +656,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "GCP Storage object_name must be set")]
     fn storage_upload_panics_without_object_name() {
-        storage::upload("ns", "t1").build();
+        storage::upload().build();
     }
 
     #[test]
     #[should_panic(expected = "GCP Storage object_name must be set")]
     fn storage_download_panics_without_object_name() {
-        storage::download("ns", "t1").build();
+        storage::download().build();
     }
 
     #[test]
     #[should_panic(expected = "GCP Storage object_name must be set")]
     fn storage_delete_panics_without_object_name() {
-        storage::delete("ns", "t1").build();
+        storage::delete().build();
     }
 }

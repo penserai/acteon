@@ -19,10 +19,6 @@ pub enum AgentsCommand {
     /// List agents, optionally filtered.
     List {
         #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        tenant: Option<String>,
-        #[arg(long)]
         capability: Option<String>,
         /// `online`, `idle`, `offline`.
         #[arg(long)]
@@ -31,10 +27,6 @@ pub enum AgentsCommand {
     /// Fetch a single agent record.
     Get {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         agent_id: String,
     },
     /// Register an agent. First registration in a `(namespace, tenant)`
@@ -42,10 +34,6 @@ pub enum AgentsCommand {
     Register {
         #[arg(long)]
         agent_id: String,
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         display_name: Option<String>,
         /// Repeat for multiple capabilities: `--capability planner`.
@@ -62,10 +50,6 @@ pub enum AgentsCommand {
     /// registration.
     Update {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         agent_id: String,
         #[arg(long)]
         display_name: Option<String>,
@@ -79,28 +63,16 @@ pub enum AgentsCommand {
     /// Delete an agent record. The shared inbox topic is preserved.
     Delete {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         agent_id: String,
     },
     /// Record a heartbeat. Agents typically call this once per
     /// `heartbeat_ttl_ms / 3` to stay `Online`.
     Heartbeat {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         agent_id: String,
     },
     /// Send a message to the agent's inbox.
     Send {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         agent_id: String,
         /// JSON payload, or `@path/to/file.json`.
@@ -114,15 +86,8 @@ pub enum AgentsCommand {
 #[allow(clippy::too_many_lines)]
 pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
-        AgentsCommand::List {
-            namespace,
-            tenant,
-            capability,
-            status,
-        } => {
+        AgentsCommand::List { capability, status } => {
             let filter = BusAgentFilter {
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
                 capability: capability.clone(),
                 status: status.clone(),
                 // CLI surface doesn't expose admin-state filtering
@@ -149,21 +114,13 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
                 }
             }
         }
-        AgentsCommand::Get {
-            namespace,
-            tenant,
-            agent_id,
-        } => {
-            let a = ops
-                .client()
-                .get_bus_agent(namespace, tenant, agent_id)
-                .await?;
+        AgentsCommand::Get { agent_id } => {
+            let a = ops.client().get_bus_agent(agent_id).await?;
             info!("{}", serde_json::to_string_pretty(&a)?);
         }
         AgentsCommand::Register {
             agent_id,
-            namespace,
-            tenant,
+
             display_name,
             capabilities,
             inbox_topic,
@@ -172,8 +129,7 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
         } => {
             let req = RegisterBusAgent {
                 agent_id: agent_id.clone(),
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
+
                 display_name: display_name.clone(),
                 capabilities: capabilities.clone(),
                 inbox_topic: inbox_topic.clone(),
@@ -191,8 +147,6 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
             }
         }
         AgentsCommand::Update {
-            namespace,
-            tenant,
             agent_id,
             display_name,
             capabilities,
@@ -207,34 +161,18 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
                     .as_ref()
                     .map(|kvs| kvs.iter().cloned().collect::<HashMap<_, _>>()),
             };
-            let a = ops
-                .client()
-                .update_bus_agent(namespace, tenant, agent_id, &req)
-                .await?;
+            let a = ops.client().update_bus_agent(agent_id, &req).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&a)?),
                 OutputFormat::Text => info!(agent_id = %a.agent_id, "Agent updated"),
             }
         }
-        AgentsCommand::Delete {
-            namespace,
-            tenant,
-            agent_id,
-        } => {
-            ops.client()
-                .delete_bus_agent(namespace, tenant, agent_id)
-                .await?;
+        AgentsCommand::Delete { agent_id } => {
+            ops.client().delete_bus_agent(agent_id).await?;
             info!(agent_id = %agent_id, "Agent deleted");
         }
-        AgentsCommand::Heartbeat {
-            namespace,
-            tenant,
-            agent_id,
-        } => {
-            let h = ops
-                .client()
-                .heartbeat_bus_agent(namespace, tenant, agent_id)
-                .await?;
+        AgentsCommand::Heartbeat { agent_id } => {
+            let h = ops.client().heartbeat_bus_agent(agent_id).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&h)?),
                 OutputFormat::Text => info!(
@@ -246,8 +184,6 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
             }
         }
         AgentsCommand::Send {
-            namespace,
-            tenant,
             agent_id,
             payload,
             headers,
@@ -257,10 +193,7 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
                 payload,
                 headers: headers.iter().cloned().collect(),
             };
-            let receipt = ops
-                .client()
-                .send_to_bus_agent(namespace, tenant, agent_id, &req)
-                .await?;
+            let receipt = ops.client().send_to_bus_agent(agent_id, &req).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&receipt)?),
                 OutputFormat::Text => info!(

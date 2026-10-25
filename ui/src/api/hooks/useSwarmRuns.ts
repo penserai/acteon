@@ -33,8 +33,6 @@ export interface SwarmRunListResponse {
 }
 
 export function useSwarmRuns(params: {
-  namespace?: string
-  tenant?: string
   status?: string
   limit?: number
   offset?: number

@@ -29,18 +29,9 @@ public final class Bus {
     // =========================================================================
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record CreateBusTopic(
-        String name,
-        String namespace,
-        String tenant,
-        Integer partitions,
-        @JsonProperty("replication_factor") Integer replicationFactor,
-        @JsonProperty("retention_ms") Long retentionMs,
-        String description,
-        Map<String, String> labels
-    ) {
-        public CreateBusTopic(String name, String namespace, String tenant) {
-            this(name, namespace, tenant, null, null, null, null, null);
+    public record CreateBusTopic(String name, Integer partitions, @JsonProperty("replication_factor") Integer replicationFactor, @JsonProperty("retention_ms") Long retentionMs, String description, Map<String, String> labels) {
+        public CreateBusTopic(String name) {
+            this(name, null, null, null, null, null);
         }
     }
 
@@ -66,15 +57,7 @@ public final class Bus {
     ) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record PublishBusMessage(
-        String topic,
-        String namespace,
-        String tenant,
-        String name,
-        String key,
-        Object payload,
-        Map<String, String> headers
-    ) {}
+    public record PublishBusMessage(String topic, String name, String key, Object payload, Map<String, String> headers) {}
 
     public record PublishReceipt(
         String topic,
@@ -88,26 +71,12 @@ public final class Bus {
     // =========================================================================
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record CreateBusSubscription(
-        String id,
-        String topic,
-        String namespace,
-        String tenant,
-        @JsonProperty("starting_offset") String startingOffset,
-        @JsonProperty("ack_mode") String ackMode,
-        @JsonProperty("dead_letter_topic") String deadLetterTopic,
-        @JsonProperty("ack_timeout_ms") Long ackTimeoutMs,
-        String description,
-        Map<String, String> labels,
-        @JsonProperty("receipt_required") Boolean receiptRequired
-    ) {
-        public CreateBusSubscription(String id, String topic, String namespace, String tenant,
-            String startingOffset, String ackMode, String deadLetterTopic, Long ackTimeoutMs,
-            String description, Map<String, String> labels) {
-            this(id, topic, namespace, tenant, startingOffset, ackMode, deadLetterTopic, ackTimeoutMs, description, labels, null);
+    public record CreateBusSubscription(String id, String topic, @JsonProperty("starting_offset") String startingOffset, @JsonProperty("ack_mode") String ackMode, @JsonProperty("dead_letter_topic") String deadLetterTopic, @JsonProperty("ack_timeout_ms") Long ackTimeoutMs, String description, Map<String, String> labels, @JsonProperty("receipt_required") Boolean receiptRequired) {
+        public CreateBusSubscription(String id, String topic, String startingOffset, String ackMode, String deadLetterTopic, Long ackTimeoutMs, String description, Map<String, String> labels) {
+            this(id, topic, startingOffset, ackMode, deadLetterTopic, ackTimeoutMs, description, labels, null);
         }
-        public CreateBusSubscription(String id, String topic, String namespace, String tenant) {
-            this(id, topic, namespace, tenant, null, null, null, null, null, null, null);
+        public CreateBusSubscription(String id, String topic) {
+            this(id, topic, null, null, null, null, null, null, null);
         }
     }
 
@@ -159,15 +128,9 @@ public final class Bus {
     // =========================================================================
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record RegisterBusSchema(
-        String subject,
-        String namespace,
-        String tenant,
-        Object body,
-        Map<String, String> labels
-    ) {
-        public RegisterBusSchema(String subject, String namespace, String tenant, Object body) {
-            this(subject, namespace, tenant, body, null);
+    public record RegisterBusSchema(String subject, Object body, Map<String, String> labels) {
+        public RegisterBusSchema(String subject, Object body) {
+            this(subject, body, null);
         }
     }
 
@@ -191,18 +154,9 @@ public final class Bus {
     // =========================================================================
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record RegisterBusAgent(
-        @JsonProperty("agent_id") String agentId,
-        String namespace,
-        String tenant,
-        List<String> capabilities,
-        @JsonProperty("inbox_suffix") String inboxSuffix,
-        @JsonProperty("heartbeat_ttl_ms") Long heartbeatTtlMs,
-        String description,
-        Map<String, String> labels
-    ) {
-        public RegisterBusAgent(String agentId, String namespace, String tenant) {
-            this(agentId, namespace, tenant, null, null, null, null, null);
+    public record RegisterBusAgent(@JsonProperty("agent_id") String agentId, List<String> capabilities, @JsonProperty("inbox_suffix") String inboxSuffix, @JsonProperty("heartbeat_ttl_ms") Long heartbeatTtlMs, String description, Map<String, String> labels) {
+        public RegisterBusAgent(String agentId) {
+            this(agentId, null, null, null, null, null);
         }
     }
 
@@ -272,18 +226,9 @@ public final class Bus {
     // =========================================================================
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record CreateBusConversation(
-        @JsonProperty("conversation_id") String conversationId,
-        String namespace,
-        String tenant,
-        List<String> participants,
-        @JsonProperty("topic_subject") String topicSubject,
-        @JsonProperty("events_topic") String eventsTopic,
-        String description,
-        Map<String, String> labels
-    ) {
-        public CreateBusConversation(String conversationId, String namespace, String tenant) {
-            this(conversationId, namespace, tenant, null, null, null, null, null);
+    public record CreateBusConversation(@JsonProperty("conversation_id") String conversationId, List<String> participants, @JsonProperty("topic_subject") String topicSubject, @JsonProperty("events_topic") String eventsTopic, String description, Map<String, String> labels) {
+        public CreateBusConversation(String conversationId) {
+            this(conversationId, null, null, null, null, null);
         }
     }
 

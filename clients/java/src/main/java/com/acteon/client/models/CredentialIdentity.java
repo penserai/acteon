@@ -8,9 +8,10 @@ public record CredentialIdentity(
     @JsonProperty("auth_method") String authMethod,
     String role,
     PrincipalIdentity principal,
-    @JsonProperty("authority_id") String authorityId
+    @JsonProperty("authority_id") String authorityId,
+    TenantContext scope
 ) {
-    public CredentialIdentity(String credentialId, String authMethod, String role, PrincipalIdentity principal) {
-        this(credentialId, authMethod, role, principal, null);
+    public CredentialIdentity {
+        if (scope == null) throw new IllegalArgumentException("credential tenant context required");
     }
 }

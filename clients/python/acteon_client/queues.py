@@ -136,14 +136,7 @@ class _QueuesClientMixin:
         ) -> httpx.Response: ...
 
     def enqueue_task(
-        self,
-        queue: str,
-        namespace: str,
-        tenant: str,
-        action_type: str,
-        payload: Any,
-        *,
-        max_attempts: int | None = None,
+        self, queue: str, action_type: str, payload: Any, *, max_attempts: int | None = None
     ) -> WorkerTask:
         """Enqueue a new task on ``queue``.
 
@@ -162,12 +155,7 @@ class _QueuesClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns a validation error.
         """
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "action_type": action_type,
-            "payload": payload,
-        }
+        body: dict[str, Any] = {"action_type": action_type, "payload": payload}
         if max_attempts is not None:
             body["max_attempts"] = max_attempts
         resp = self._request("POST", f"/v1/queues/{_seg(queue)}/tasks", json=body)
@@ -177,8 +165,6 @@ class _QueuesClientMixin:
     def poll_tasks(
         self,
         queue: str,
-        namespace: str,
-        tenant: str,
         *,
         max_tasks: int | None = None,
         lease_seconds: int | None = None,
@@ -202,7 +188,7 @@ class _QueuesClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {}
         if max_tasks is not None:
             body["max_tasks"] = max_tasks
         if lease_seconds is not None:
@@ -214,13 +200,7 @@ class _QueuesClientMixin:
         return [WorkerTask.from_dict(t) for t in resp.json().get("tasks", [])]
 
     def heartbeat_task(
-        self,
-        task_id: str,
-        namespace: str,
-        tenant: str,
-        lease_token: str,
-        *,
-        extend_seconds: int | None = None,
+        self, task_id: str, lease_token: str, *, extend_seconds: int | None = None
     ) -> WorkerTask:
         """Extend the lease on a task that is still being worked.
 
@@ -238,25 +218,14 @@ class _QueuesClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the lease is no longer valid.
         """
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "lease_token": lease_token,
-        }
+        body: dict[str, Any] = {"lease_token": lease_token}
         if extend_seconds is not None:
             body["extend_seconds"] = extend_seconds
         resp = self._request("POST", f"/v1/queues/tasks/{_seg(task_id)}/heartbeat", json=body)
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    def complete_task(
-        self,
-        task_id: str,
-        namespace: str,
-        tenant: str,
-        lease_token: str,
-        result: Any,
-    ) -> WorkerTask:
+    def complete_task(self, task_id: str, lease_token: str, result: Any) -> WorkerTask:
         """Settle a leased task as completed.
 
         Args:
@@ -276,25 +245,12 @@ class _QueuesClientMixin:
         resp = self._request(
             "POST",
             f"/v1/queues/tasks/{_seg(task_id)}/complete",
-            json={
-                "namespace": namespace,
-                "tenant": tenant,
-                "lease_token": lease_token,
-                "result": result,
-            },
+            json={"lease_token": lease_token, "result": result},
         )
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    def fail_task(
-        self,
-        task_id: str,
-        namespace: str,
-        tenant: str,
-        lease_token: str,
-        error: str,
-        retryable: bool,
-    ) -> WorkerTask:
+    def fail_task(self, task_id: str, lease_token: str, error: str, retryable: bool) -> WorkerTask:
         """Settle a leased task as failed.
 
         Args:
@@ -316,18 +272,12 @@ class _QueuesClientMixin:
         resp = self._request(
             "POST",
             f"/v1/queues/tasks/{_seg(task_id)}/fail",
-            json={
-                "namespace": namespace,
-                "tenant": tenant,
-                "lease_token": lease_token,
-                "error": error,
-                "retryable": retryable,
-            },
+            json={"lease_token": lease_token, "error": error, "retryable": retryable},
         )
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    def get_task(self, task_id: str, namespace: str, tenant: str) -> WorkerTask | None:
+    def get_task(self, task_id: str) -> WorkerTask | None:
         """Get a single task by ID.
 
         Returns:
@@ -340,21 +290,14 @@ class _QueuesClientMixin:
         resp = self._request(
             "GET",
             f"/v1/queues/tasks/{_seg(task_id)}",
-            params={"namespace": namespace, "tenant": tenant},
+            params={},
         )
         if resp.status_code == 404:
             return None
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    def list_tasks(
-        self,
-        queue: str,
-        namespace: str,
-        tenant: str,
-        *,
-        status: str | None = None,
-    ) -> list[WorkerTask]:
+    def list_tasks(self, queue: str, *, status: str | None = None) -> list[WorkerTask]:
         """List tasks on ``queue``, optionally filtered by status.
 
         Args:
@@ -371,7 +314,7 @@ class _QueuesClientMixin:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        params: dict[str, Any] = {}
         if status is not None:
             params["status"] = status
         resp = self._request("GET", f"/v1/queues/{_seg(queue)}/tasks", params=params)
@@ -404,22 +347,10 @@ class _AsyncQueuesClientMixin:
         ) -> httpx.Response: ...
 
     async def enqueue_task(
-        self,
-        queue: str,
-        namespace: str,
-        tenant: str,
-        action_type: str,
-        payload: Any,
-        *,
-        max_attempts: int | None = None,
+        self, queue: str, action_type: str, payload: Any, *, max_attempts: int | None = None
     ) -> WorkerTask:
         """Enqueue a new task on ``queue``. See the sync mixin."""
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "action_type": action_type,
-            "payload": payload,
-        }
+        body: dict[str, Any] = {"action_type": action_type, "payload": payload}
         if max_attempts is not None:
             body["max_attempts"] = max_attempts
         resp = await self._request("POST", f"/v1/queues/{_seg(queue)}/tasks", json=body)
@@ -429,15 +360,13 @@ class _AsyncQueuesClientMixin:
     async def poll_tasks(
         self,
         queue: str,
-        namespace: str,
-        tenant: str,
         *,
         max_tasks: int | None = None,
         lease_seconds: int | None = None,
         worker_id: str | None = None,
     ) -> list[WorkerTask]:
         """Poll ``queue`` for available tasks. See the sync mixin."""
-        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {}
         if max_tasks is not None:
             body["max_tasks"] = max_tasks
         if lease_seconds is not None:
@@ -449,94 +378,53 @@ class _AsyncQueuesClientMixin:
         return [WorkerTask.from_dict(t) for t in resp.json().get("tasks", [])]
 
     async def heartbeat_task(
-        self,
-        task_id: str,
-        namespace: str,
-        tenant: str,
-        lease_token: str,
-        *,
-        extend_seconds: int | None = None,
+        self, task_id: str, lease_token: str, *, extend_seconds: int | None = None
     ) -> WorkerTask:
         """Extend the lease on a task. See the sync mixin."""
-        body: dict[str, Any] = {
-            "namespace": namespace,
-            "tenant": tenant,
-            "lease_token": lease_token,
-        }
+        body: dict[str, Any] = {"lease_token": lease_token}
         if extend_seconds is not None:
             body["extend_seconds"] = extend_seconds
         resp = await self._request("POST", f"/v1/queues/tasks/{_seg(task_id)}/heartbeat", json=body)
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    async def complete_task(
-        self,
-        task_id: str,
-        namespace: str,
-        tenant: str,
-        lease_token: str,
-        result: Any,
-    ) -> WorkerTask:
+    async def complete_task(self, task_id: str, lease_token: str, result: Any) -> WorkerTask:
         """Settle a leased task as completed. See the sync mixin."""
         resp = await self._request(
             "POST",
             f"/v1/queues/tasks/{_seg(task_id)}/complete",
-            json={
-                "namespace": namespace,
-                "tenant": tenant,
-                "lease_token": lease_token,
-                "result": result,
-            },
+            json={"lease_token": lease_token, "result": result},
         )
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
     async def fail_task(
-        self,
-        task_id: str,
-        namespace: str,
-        tenant: str,
-        lease_token: str,
-        error: str,
-        retryable: bool,
+        self, task_id: str, lease_token: str, error: str, retryable: bool
     ) -> WorkerTask:
         """Settle a leased task as failed. See the sync mixin."""
         resp = await self._request(
             "POST",
             f"/v1/queues/tasks/{_seg(task_id)}/fail",
-            json={
-                "namespace": namespace,
-                "tenant": tenant,
-                "lease_token": lease_token,
-                "error": error,
-                "retryable": retryable,
-            },
+            json={"lease_token": lease_token, "error": error, "retryable": retryable},
         )
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    async def get_task(self, task_id: str, namespace: str, tenant: str) -> WorkerTask | None:
+    async def get_task(self, task_id: str) -> WorkerTask | None:
         """Get a single task by ID, or None on 404. See the sync mixin."""
         resp = await self._request(
             "GET",
             f"/v1/queues/tasks/{_seg(task_id)}",
-            params={"namespace": namespace, "tenant": tenant},
+            params={},
         )
         if resp.status_code == 404:
             return None
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    async def list_tasks(
-        self,
-        queue: str,
-        namespace: str,
-        tenant: str,
-        *,
-        status: str | None = None,
-    ) -> list[WorkerTask]:
+    async def list_tasks(self, queue: str, *, status: str | None = None) -> list[WorkerTask]:
         """List tasks on ``queue``. See the sync mixin."""
-        params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        params: dict[str, Any] = {}
         if status is not None:
             params["status"] = status
         resp = await self._request("GET", f"/v1/queues/{_seg(queue)}/tasks", params=params)

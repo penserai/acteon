@@ -19,4 +19,4 @@ letters are bounded per Task and remain until an operator explicitly retries or
 discards the blocked sequence; automatic age-based deletion would silently
 change ordered delivery semantics. Operators can inspect or drain action
 entries with `/v1/dlq/stats` and `/v1/dlq/drain`, or inspect and discard A2A
-push entries under `/v1/a2a/{namespace}/{tenant}/push-dlq`.
+push entries under `/v1/a2a/push-dlq`.

@@ -54,6 +54,11 @@ impl IntoResponse for ServerError {
                     None,
                 )
             }
+            Self::Gateway(acteon_gateway::GatewayError::ApprovalNotFound) => (
+                StatusCode::NOT_FOUND,
+                "approval not found or expired".into(),
+                None,
+            ),
             Self::Gateway(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.public_message(), None),
             Self::RateLimited { retry_after } => (
                 StatusCode::TOO_MANY_REQUESTS,

@@ -197,11 +197,11 @@ class A2ATest {
             ActeonClient c = new ActeonClient(urlOf(server), "k");
             Map<String, Object> msg = A2A.makeMessage(
                 "m-1", "user", List.of(A2A.makePartText("hi")));
-            c.a2aSendMessage("ns", "tnt", msg);
+            c.a2aSendMessage(msg);
             Captured cap = sink.get();
             assertNotNull(cap);
             assertEquals("POST", cap.method);
-            assertEquals("/a2a/ns/tnt/v1/message:send", cap.path);
+            assertEquals("/a2a/v1/message:send", cap.path);
             assertEquals(A2A.PROTOCOL_VERSION,
                 firstHeader(cap.headers, A2A.VERSION_HEADER));
             assertEquals("Bearer k", firstHeader(cap.headers, "Authorization"));
@@ -222,8 +222,8 @@ class A2ATest {
             sink);
         try {
             ActeonClient c = new ActeonClient(urlOf(server));
-            c.a2aCancelTask("ns", "tnt", "task-1");
-            assertEquals("/a2a/ns/tnt/v1/tasks/task-1:cancel", sink.get().path);
+            c.a2aCancelTask("task-1");
+            assertEquals("/a2a/v1/tasks/task-1:cancel", sink.get().path);
             assertEquals("POST", sink.get().method);
         } finally {
             server.stop(0);
@@ -236,9 +236,9 @@ class A2ATest {
         HttpServer server = startCapturing(200, null, sink);
         try {
             ActeonClient c = new ActeonClient(urlOf(server));
-            c.a2aDeletePushConfig("ns", "tnt", "task-1", "cfg-a");
+            c.a2aDeletePushConfig("task-1", "cfg-a");
             assertEquals(
-                "/a2a/ns/tnt/v1/tasks/task-1/pushNotificationConfigs/cfg-a",
+                "/a2a/v1/tasks/task-1/pushNotificationConfigs/cfg-a",
                 sink.get().path);
             assertEquals("DELETE", sink.get().method);
         } finally {
@@ -247,18 +247,16 @@ class A2ATest {
     }
 
     @Test
-    void a2aDiscoverAgentIsUnauthenticated() throws Exception {
+    void a2aDiscoverAgentUsesCredentialContext() throws Exception {
         AtomicReference<Captured> sink = new AtomicReference<>();
         HttpServer server = startCapturing(200,
             Map.of("agent_id", "tenant"), sink);
         try {
-            // Configure an API key — discovery must still go out
-            // anonymous per A2A spec.
+            // Discovery is tenant-owned and carries the configured credential.
             ActeonClient c = new ActeonClient(urlOf(server), "k");
-            c.a2aDiscoverAgent("ns", "tnt");
-            assertEquals("/a2a/ns/tnt/.well-known/agent.json", sink.get().path);
-            assertNull(firstHeader(sink.get().headers, "Authorization"),
-                "discovery must not carry an Authorization header");
+            c.a2aDiscoverAgent();
+            assertEquals("/a2a/.well-known/agent.json", sink.get().path);
+            assertEquals("Bearer k", firstHeader(sink.get().headers, "Authorization"));
         } finally {
             server.stop(0);
         }
@@ -277,8 +275,8 @@ class A2ATest {
         try {
             ActeonClient c = new ActeonClient(urlOf(server), "k");
             Map<String, Object> card =
-                c.a2aGetAuthenticatedExtendedCard("ns", "tnt");
-            assertEquals("/a2a/ns/tnt", sink.get().path);
+                c.a2aGetAuthenticatedExtendedCard();
+            assertEquals("/a2a", sink.get().path);
             @SuppressWarnings("unchecked")
             Map<String, Object> bodyMap = MAPPER.readValue(sink.get().body, Map.class);
             assertEquals("agent/getAuthenticatedExtendedCard", bodyMap.get("method"));
@@ -300,7 +298,7 @@ class A2ATest {
         try {
             ActeonClient c = new ActeonClient(urlOf(server), "k");
             ApiException ex = assertThrows(ApiException.class,
-                () -> c.a2aGetAuthenticatedExtendedCard("ns", "tnt"));
+                () -> c.a2aGetAuthenticatedExtendedCard());
             assertTrue(ex.getMessage().contains("task not found"),
                 "got: " + ex.getMessage());
         } finally {
@@ -314,10 +312,10 @@ class A2ATest {
         HttpServer server = startCapturing(200, new HashMap<String, Object>(), sink);
         try {
             ActeonClient c = new ActeonClient(urlOf(server));
-            // A tenant id with a slash must be percent-encoded so
+            // A task id with a slash must be percent-encoded so
             // it cannot leak into additional path components.
-            c.a2aGetTask("ns/escape", "tnt", "t");
-            assertTrue(sink.get().path.contains("/ns%2Fescape/"),
+            c.a2aGetTask("task/escape");
+            assertTrue(sink.get().path.contains("/tasks/task%2Fescape"),
                 "path must percent-encode slash; got: " + sink.get().path);
         } finally {
             server.stop(0);

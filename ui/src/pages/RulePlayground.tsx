@@ -30,14 +30,11 @@ function verdictClass(verdict: string): string {
   return styles.verdictError
 }
 
-
 export function RulePlayground() {
   const evaluateMutation = useEvaluateRules()
   const { toast } = useToast()
 
   // Form state
-  const [ns, setNs] = useState('default')
-  const [tenant, setTenant] = useState('test-tenant')
   const [provider, setProvider] = useState('email')
   const [actionType, setActionType] = useState('notification')
   const [payload, setPayload] = useState('{\n  "to": "user@example.com",\n  "subject": "Hello"\n}')
@@ -103,8 +100,6 @@ export function RulePlayground() {
 
     evaluateMutation.mutate(
       {
-        namespace: ns,
-        tenant,
         provider,
         action_type: actionType,
         payload: parsedPayload.value,
@@ -125,7 +120,7 @@ export function RulePlayground() {
     )
   }
 
-  const isValid = ns && tenant && provider && actionType
+  const isValid = provider && actionType
 
   return (
     <div>
@@ -139,18 +134,6 @@ export function RulePlayground() {
           {/* Form panel */}
           <div className={styles.formCard}>
             <div className={shared.formGrid}>
-              <Input
-                label="Namespace *"
-                value={ns}
-                onChange={(e) => setNs(e.target.value)}
-                placeholder="default"
-              />
-              <Input
-                label="Tenant *"
-                value={tenant}
-                onChange={(e) => setTenant(e.target.value)}
-                placeholder="test-tenant"
-              />
               <Input
                 label="Provider *"
                 value={provider}

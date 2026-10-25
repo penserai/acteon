@@ -1,8 +1,9 @@
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 use std::path::Path;
 
 use axum::Json;
-use axum::extract::{self, Query, State};
+use axum::extract::{self, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -33,9 +34,11 @@ use super::schemas::{
 pub struct EvaluateRulesRequest {
     /// Namespace for the test action.
     #[schema(example = "default")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant for the test action.
     #[schema(example = "acme")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Provider for the test action.
     #[schema(example = "email")]
@@ -288,7 +291,7 @@ pub async fn reload_rules(
     summary = "Toggle rule",
     description = "Enables or disables a rule by name.",
     params(
-        ("name" = String, Path, description = "Rule name")
+        ("name" = String, description = "Rule name")
     ),
     request_body(content = SetEnabledRequest, description = "Desired enabled state"),
     responses(
@@ -363,7 +366,7 @@ pub async fn set_rule_enabled(
 pub async fn evaluate_rules(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<EvaluateRulesRequest>,
+    ScopedJson(req): ScopedJson<EvaluateRulesRequest>,
 ) -> impl IntoResponse {
     if !identity.role.has_permission(Permission::RulesTest) {
         return (
@@ -432,8 +435,10 @@ pub async fn evaluate_rules(
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct CoverageParams {
     /// Filter by namespace.
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Filter by tenant.
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Start of time range (RFC 3339). Defaults to 7 days ago.
     pub from: Option<DateTime<Utc>>,
@@ -463,7 +468,7 @@ pub struct CoverageParams {
 pub async fn rule_coverage(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<CoverageParams>,
+    ScopedQuery(params): ScopedQuery<CoverageParams>,
 ) -> impl IntoResponse {
     let Some(ref analytics) = state.analytics else {
         return (
@@ -529,3 +534,5 @@ pub async fn rule_coverage(
 
     (StatusCode::OK, Json(serde_json::json!(report)))
 }
+
+crate::auth::context::scoped_body!(EvaluateRulesRequest);

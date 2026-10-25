@@ -4,7 +4,7 @@ package com.acteon.client.models;
  * Options for the stream endpoint.
  */
 public class StreamOptions {
-    private String namespace;
+
     private String actionType;
     private String outcome;
     private String eventType;
@@ -14,9 +14,6 @@ public class StreamOptions {
     private String lastEventId;
 
     public StreamOptions() {}
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
 
     public String getActionType() { return actionType; }
     public void setActionType(String actionType) { this.actionType = actionType; }

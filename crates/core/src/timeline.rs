@@ -15,6 +15,15 @@ pub struct TimelineScope {
     pub tenant: String,
 }
 
+impl From<crate::TenantContext> for TimelineScope {
+    fn from(context: crate::TenantContext) -> Self {
+        Self {
+            namespace: context.namespace,
+            tenant: context.tenant,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]

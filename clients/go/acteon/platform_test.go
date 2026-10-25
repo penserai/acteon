@@ -151,9 +151,13 @@ func TestGovernanceOutcomeContract(t *testing.T) {
 func TestTypedTopicDeletionResolvesScopedKafkaName(t *testing.T) {
 	var seen []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/auth/identity" {
+			fmt.Fprint(w, `{"credential_id":"test","auth_method":"api_key","role":"admin","principal":null,"scope":{"namespace":"n","tenant":"t"}}`)
+			return
+		}
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		if r.Method == "GET" {
-			if r.URL.Query().Get("namespace") != "n" || r.URL.Query().Get("tenant") != "t" {
+			if r.URL.Query().Get("namespace") != "" || r.URL.Query().Get("tenant") != "" {
 				t.Error("missing scope")
 			}
 			fmt.Fprint(w, `{"topics":[{"name":"logs","namespace":"n","tenant":"other","kafka_name":"wrong"},{"name":"logs","namespace":"n","tenant":"t","kafka_name":"actual.logs"}]}`)
@@ -162,7 +166,7 @@ func TestTypedTopicDeletionResolvesScopedKafkaName(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if err := NewClient(server.URL).DeleteBusTopic(context.Background(), "n", "t", "logs"); err != nil {
+	if err := NewClient(server.URL).DeleteBusTopic(context.Background(), "logs"); err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(seen) != "[GET /v1/bus/topics DELETE /v1/bus/topics/actual.logs]" {

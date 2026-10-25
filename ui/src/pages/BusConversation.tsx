@@ -23,9 +23,9 @@ import { relativeTime } from '../lib/format'
 import styles from './BusConversation.module.css'
 
 export function BusConversation() {
-  const { namespace, tenant, id } = useParams<{ namespace: string; tenant: string; id: string }>()
-  const { data: conv, isLoading } = useBusConversation(namespace, tenant, id)
-  const { data: replay, isLoading: replayLoading } = useBusConversationMessages(namespace, tenant, id, {
+  const { id } = useParams<{ id: string }>()
+  const { data: conv, isLoading } = useBusConversation(id)
+  const { data: replay, isLoading: replayLoading } = useBusConversationMessages(id, {
     limit: 200,
   })
 
@@ -98,7 +98,7 @@ export function BusConversation() {
                     )}
                     {approvalId && (
                       <Link
-                        to={`/bus?tab=approvals&ns=${namespace}&tenant=${tenant}&approval_id=${encodeURIComponent(approvalId)}`}
+                        to={`/bus?tab=approvals&approval_id=${encodeURIComponent(approvalId)}`}
                         className={styles.headerLine}
                       >
                         approval: {approvalId.slice(0, 8)}…

@@ -249,13 +249,8 @@ class _A2AClientMixin:
 
     # ---- Task lifecycle ----
 
-    def a2a_send_message(
-        self,
-        namespace: str,
-        tenant: str,
-        message: dict[str, Any],
-    ) -> dict[str, Any]:
-        """``POST /a2a/{namespace}/{tenant}/v1/message:send``.
+    def a2a_send_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """``POST /a2a/v1/message:send``.
 
         Start a new A2A Task or continue an existing one. Set
         ``message["taskId"]`` to thread into an existing Task's
@@ -263,38 +258,28 @@ class _A2AClientMixin:
         """
         resp = self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/message:send",
+            "/a2a/v1/message:send",
             json={"message": message},
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    def a2a_get_task(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-    ) -> dict[str, Any]:
-        """``GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`` — read a
+    def a2a_get_task(self, task_id: str) -> dict[str, Any]:
+        """``GET /a2a/v1/tasks/{id}`` — read a
         Task by id. Raises ``ApiError`` with HTTP 404 when the task
         does not exist for the caller.
         """
         resp = self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}",
+            f"/a2a/v1/tasks/{_seg(task_id)}",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    def a2a_cancel_task(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-    ) -> dict[str, Any]:
-        """``POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel``.
+    def a2a_cancel_task(self, task_id: str) -> dict[str, Any]:
+        """``POST /a2a/v1/tasks/{id}:cancel``.
 
         The ``:cancel`` verb is part of the URL (spec §11) — the
         server splits it off in-handler. Raises ``ApiError`` with
@@ -302,7 +287,7 @@ class _A2AClientMixin:
         """
         resp = self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}:cancel",
+            f"/a2a/v1/tasks/{_seg(task_id)}:cancel",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
@@ -310,13 +295,7 @@ class _A2AClientMixin:
 
     # ---- Push-notification configs ----
 
-    def a2a_set_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-        config: dict[str, Any],
-    ) -> dict[str, Any]:
+    def a2a_set_push_config(self, task_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """``POST .../v1/tasks/{id}/pushNotificationConfigs`` — register
         or upsert a push-notification webhook for a Task.
 
@@ -324,79 +303,54 @@ class _A2AClientMixin:
         """
         resp = self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}"
-            f"/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
             json=config,
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    def a2a_list_push_configs(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-    ) -> list[dict[str, Any]]:
+    def a2a_list_push_configs(self, task_id: str) -> list[dict[str, Any]]:
         """``GET .../v1/tasks/{id}/pushNotificationConfigs`` — list
         every config registered for the task.
         """
         resp = self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}"
-            f"/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_objects(resp.json())
 
-    def a2a_get_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-        config_id: str,
-    ) -> dict[str, Any]:
+    def a2a_get_push_config(self, task_id: str, config_id: str) -> dict[str, Any]:
         """``GET …/pushNotificationConfigs/{cfgId}`` — read one
         config.
         """
         resp = self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}"
-            f"/pushNotificationConfigs/{_seg(config_id)}",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs/{_seg(config_id)}",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    def a2a_delete_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-        config_id: str,
-    ) -> None:
+    def a2a_delete_push_config(self, task_id: str, config_id: str) -> None:
         """``DELETE …/pushNotificationConfigs/{cfgId}``. Raises
         ``ApiError`` with HTTP 404 when the config doesn't exist —
         the server never silently no-ops.
         """
         resp = self._request(
             "DELETE",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}"
-            f"/pushNotificationConfigs/{_seg(config_id)}",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs/{_seg(config_id)}",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
 
     # ---- Discovery ----
 
-    def a2a_discover_agent(
-        self,
-        namespace: str,
-        tenant: str,
-    ) -> dict[str, Any]:
-        """``GET /a2a/{namespace}/{tenant}/.well-known/agent.json`` —
-        unauthenticated discovery endpoint.
+    def a2a_discover_agent(self) -> dict[str, Any]:
+        """``GET /a2a/.well-known/agent.json`` —
+        authenticated discovery endpoint.
 
         Sent **without** the API-key header per the A2A spec. Returns
         the tenant's ``AgentCard`` (single-card verbatim or
@@ -405,17 +359,13 @@ class _A2AClientMixin:
         """
         resp = self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/.well-known/agent.json",
-            skip_auth=True,
+            "/a2a/.well-known/agent.json",
+            skip_auth=False,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    def a2a_get_authenticated_extended_card(
-        self,
-        namespace: str,
-        tenant: str,
-    ) -> dict[str, Any]:
+    def a2a_get_authenticated_extended_card(self) -> dict[str, Any]:
         """JSON-RPC ``agent/getAuthenticatedExtendedCard`` — the
         authenticated discovery variant.
 
@@ -431,7 +381,7 @@ class _A2AClientMixin:
         }
         resp = self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}",
+            "/a2a",
             json=envelope,
             extra_headers=_A2A_HEADERS,
         )
@@ -460,138 +410,88 @@ class _AsyncA2AClientMixin:
             skip_auth: bool = False,
         ) -> httpx.Response: ...
 
-    async def a2a_send_message(
-        self,
-        namespace: str,
-        tenant: str,
-        message: dict[str, Any],
-    ) -> dict[str, Any]:
+    async def a2a_send_message(self, message: dict[str, Any]) -> dict[str, Any]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_send_message`."""
         resp = await self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/message:send",
+            "/a2a/v1/message:send",
             json={"message": message},
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    async def a2a_get_task(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-    ) -> dict[str, Any]:
+    async def a2a_get_task(self, task_id: str) -> dict[str, Any]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_get_task`."""
         resp = await self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}",
+            f"/a2a/v1/tasks/{_seg(task_id)}",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    async def a2a_cancel_task(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-    ) -> dict[str, Any]:
+    async def a2a_cancel_task(self, task_id: str) -> dict[str, Any]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_cancel_task`."""
         resp = await self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}:cancel",
+            f"/a2a/v1/tasks/{_seg(task_id)}:cancel",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    async def a2a_set_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-        config: dict[str, Any],
-    ) -> dict[str, Any]:
+    async def a2a_set_push_config(self, task_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_set_push_config`."""
         resp = await self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}"
-            f"/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
             json=config,
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    async def a2a_list_push_configs(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-    ) -> list[dict[str, Any]]:
+    async def a2a_list_push_configs(self, task_id: str) -> list[dict[str, Any]]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_list_push_configs`."""
         resp = await self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}"
-            f"/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_objects(resp.json())
 
-    async def a2a_get_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-        config_id: str,
-    ) -> dict[str, Any]:
+    async def a2a_get_push_config(self, task_id: str, config_id: str) -> dict[str, Any]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_get_push_config`."""
         resp = await self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}"
-            f"/pushNotificationConfigs/{_seg(config_id)}",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs/{_seg(config_id)}",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    async def a2a_delete_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        task_id: str,
-        config_id: str,
-    ) -> None:
+    async def a2a_delete_push_config(self, task_id: str, config_id: str) -> None:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_delete_push_config`."""
         resp = await self._request(
             "DELETE",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/v1/tasks/{_seg(task_id)}"
-            f"/pushNotificationConfigs/{_seg(config_id)}",
+            f"/a2a/v1/tasks/{_seg(task_id)}/pushNotificationConfigs/{_seg(config_id)}",
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
 
-    async def a2a_discover_agent(
-        self,
-        namespace: str,
-        tenant: str,
-    ) -> dict[str, Any]:
+    async def a2a_discover_agent(self) -> dict[str, Any]:
         """Async counterpart of :meth:`_A2AClientMixin.a2a_discover_agent`."""
         resp = await self._request(
             "GET",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}/.well-known/agent.json",
-            skip_auth=True,
+            "/a2a/.well-known/agent.json",
+            skip_auth=False,
         )
         _raise_for_status(resp)
         return json_object(resp.json())
 
-    async def a2a_get_authenticated_extended_card(
-        self,
-        namespace: str,
-        tenant: str,
-    ) -> dict[str, Any]:
+    async def a2a_get_authenticated_extended_card(self) -> dict[str, Any]:
         """Async counterpart of
         :meth:`_A2AClientMixin.a2a_get_authenticated_extended_card`.
         """
@@ -602,7 +502,7 @@ class _AsyncA2AClientMixin:
         }
         resp = await self._request(
             "POST",
-            f"/a2a/{_seg(namespace)}/{_seg(tenant)}",
+            "/a2a",
             json=envelope,
             extra_headers=_A2A_HEADERS,
         )

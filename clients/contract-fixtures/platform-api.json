@@ -3,20 +3,15 @@
     {
       "name": "a2a_a2a_rest_message_send",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/v1/message:send",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/a2a/v1/message:send",
+      "parameters": [],
       "response": "json"
     },
     {
       "name": "a2a_a2a_rest_task_cancel",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
+      "path": "/a2a/v1/tasks/{id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -24,10 +19,8 @@
     {
       "name": "a2a_a2a_rest_task_get",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
+      "path": "/a2a/v1/tasks/{id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -35,20 +28,15 @@
     {
       "name": "a2a_a2a_rpc",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/a2a",
+      "parameters": [],
       "response": "stream"
     },
     {
       "name": "a2a_a2a_task_events",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/events",
+      "path": "/a2a/v1/tasks/{id}/events",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "stream"
@@ -56,10 +44,8 @@
     {
       "name": "a2a_discovery_delete_agent_card",
       "method": "DELETE",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+      "path": "/v1/bus/agents/{agent_id}/card",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -67,30 +53,22 @@
     {
       "name": "a2a_discovery_discover_agent",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/.well-known/agent.json",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/a2a/.well-known/agent.json",
+      "parameters": [],
       "response": "json"
     },
     {
       "name": "a2a_discovery_discover_agent_v1",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/a2a/.well-known/agent-card.json",
+      "parameters": [],
       "response": "json"
     },
     {
       "name": "a2a_discovery_get_agent_card",
       "method": "GET",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+      "path": "/v1/bus/agents/{agent_id}/card",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -98,10 +76,8 @@
     {
       "name": "a2a_discovery_put_agent_card",
       "method": "PUT",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+      "path": "/v1/bus/agents/{agent_id}/card",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -109,10 +85,8 @@
     {
       "name": "a2a_push_rest_delete_push_config",
       "method": "DELETE",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
+      "path": "/a2a/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "cfgId"
       ],
@@ -121,10 +95,8 @@
     {
       "name": "a2a_push_rest_delete_push_dlq",
       "method": "DELETE",
-      "path": "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
+      "path": "/v1/a2a/push-dlq/{entryId}",
       "parameters": [
-        "namespace",
-        "tenant",
         "entryId"
       ],
       "response": "json"
@@ -132,10 +104,8 @@
     {
       "name": "a2a_push_rest_get_push_config",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
+      "path": "/a2a/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "cfgId"
       ],
@@ -144,10 +114,8 @@
     {
       "name": "a2a_push_rest_get_push_dlq",
       "method": "GET",
-      "path": "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
+      "path": "/v1/a2a/push-dlq/{entryId}",
       "parameters": [
-        "namespace",
-        "tenant",
         "entryId"
       ],
       "response": "json"
@@ -155,10 +123,8 @@
     {
       "name": "a2a_push_rest_list_push_configs",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
+      "path": "/a2a/v1/tasks/{id}/pushNotificationConfigs",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -166,20 +132,15 @@
     {
       "name": "a2a_push_rest_list_push_dlq",
       "method": "GET",
-      "path": "/v1/a2a/{namespace}/{tenant}/push-dlq",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/v1/a2a/push-dlq",
+      "parameters": [],
       "response": "json"
     },
     {
       "name": "a2a_push_rest_set_push_config",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
+      "path": "/a2a/v1/tasks/{id}/pushNotificationConfigs",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -187,10 +148,8 @@
     {
       "name": "agent_services_message_send",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+      "path": "/a2a/agents/{agent}/v1/message:send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent"
       ],
       "response": "json"
@@ -198,10 +157,8 @@
     {
       "name": "agent_services_peer_authorization_resolve",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id",
         "target",
@@ -213,10 +170,8 @@
     {
       "name": "agent_services_peer_cancel",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id",
         "target",
@@ -228,10 +183,8 @@
     {
       "name": "agent_services_peer_continue",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id",
         "target",
@@ -243,10 +196,8 @@
     {
       "name": "agent_services_peer_discover",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id"
       ],
@@ -255,10 +206,8 @@
     {
       "name": "agent_services_peer_refresh",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id",
         "target",
@@ -270,10 +219,8 @@
     {
       "name": "agent_services_peer_send",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id",
         "target",
@@ -284,10 +231,8 @@
     {
       "name": "agent_services_rpc",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}",
+      "path": "/a2a/agents/{agent}",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent"
       ],
       "response": "stream"
@@ -295,10 +240,8 @@
     {
       "name": "agent_services_task_authorization_request",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/authorization:request",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id"
       ],
@@ -307,10 +250,8 @@
     {
       "name": "agent_services_task_authorization_resolve",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/authorization:resolve",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id"
       ],
@@ -319,10 +260,8 @@
     {
       "name": "agent_services_task_continue",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/message:send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id"
       ],
@@ -331,10 +270,8 @@
     {
       "name": "agent_services_task_get",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id"
       ],
@@ -343,10 +280,8 @@
     {
       "name": "agent_services_task_stop",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop",
+      "path": "/a2a/agents/{agent}/v1/tasks/{id}/stop",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "id"
       ],
@@ -362,10 +297,8 @@
     {
       "name": "approvals_approve",
       "method": "POST",
-      "path": "/v1/approvals/{namespace}/{tenant}/{id}/approve",
+      "path": "/v1/approvals/{id}/approve",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -373,10 +306,8 @@
     {
       "name": "approvals_get_approval",
       "method": "GET",
-      "path": "/v1/approvals/{namespace}/{tenant}/{id}",
+      "path": "/v1/approvals/{id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -391,10 +322,8 @@
     {
       "name": "approvals_reject",
       "method": "POST",
-      "path": "/v1/approvals/{namespace}/{tenant}/{id}/reject",
+      "path": "/v1/approvals/{id}/reject",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -439,10 +368,8 @@
     {
       "name": "bus_ack_subscription",
       "method": "POST",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
+      "path": "/v1/bus/subscriptions/{id}/ack",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -450,10 +377,8 @@
     {
       "name": "bus_append_conversation_message",
       "method": "POST",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+      "path": "/v1/bus/conversations/{conversation_id}/messages",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -461,10 +386,8 @@
     {
       "name": "bus_approve_bus_approval",
       "method": "POST",
-      "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/approve",
+      "path": "/v1/bus/approvals/{approval_id}/approve",
       "parameters": [
-        "namespace",
-        "tenant",
         "approval_id"
       ],
       "response": "json"
@@ -472,10 +395,8 @@
     {
       "name": "bus_bind_topic_schema",
       "method": "PUT",
-      "path": "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+      "path": "/v1/bus/topics/{name}/schema",
       "parameters": [
-        "namespace",
-        "tenant",
         "name"
       ],
       "response": "json"
@@ -483,10 +404,8 @@
     {
       "name": "bus_consume_stream",
       "method": "GET",
-      "path": "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
+      "path": "/v1/bus/streams/{conversation_id}/{stream_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id",
         "stream_id"
       ],
@@ -516,10 +435,8 @@
     {
       "name": "bus_deadletter_subscription",
       "method": "POST",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
+      "path": "/v1/bus/subscriptions/{id}/deadletter",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -527,10 +444,8 @@
     {
       "name": "bus_delete_agent",
       "method": "DELETE",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+      "path": "/v1/bus/agents/{agent_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -538,10 +453,8 @@
     {
       "name": "bus_delete_conversation",
       "method": "DELETE",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+      "path": "/v1/bus/conversations/{conversation_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -549,10 +462,8 @@
     {
       "name": "bus_delete_schema_version",
       "method": "DELETE",
-      "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+      "path": "/v1/bus/schemas/{subject}/{version}",
       "parameters": [
-        "namespace",
-        "tenant",
         "subject",
         "version"
       ],
@@ -561,10 +472,8 @@
     {
       "name": "bus_delete_subscription",
       "method": "DELETE",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}",
+      "path": "/v1/bus/subscriptions/{id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -581,10 +490,8 @@
     {
       "name": "bus_get_agent",
       "method": "GET",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+      "path": "/v1/bus/agents/{agent_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -592,10 +499,8 @@
     {
       "name": "bus_get_bus_approval",
       "method": "GET",
-      "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
+      "path": "/v1/bus/approvals/{approval_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "approval_id"
       ],
       "response": "json"
@@ -603,10 +508,8 @@
     {
       "name": "bus_get_conversation",
       "method": "GET",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+      "path": "/v1/bus/conversations/{conversation_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -614,10 +517,8 @@
     {
       "name": "bus_get_schema_version",
       "method": "GET",
-      "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+      "path": "/v1/bus/schemas/{subject}/{version}",
       "parameters": [
-        "namespace",
-        "tenant",
         "subject",
         "version"
       ],
@@ -626,10 +527,8 @@
     {
       "name": "bus_get_subject_versions",
       "method": "GET",
-      "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
+      "path": "/v1/bus/schemas/{subject}",
       "parameters": [
-        "namespace",
-        "tenant",
         "subject"
       ],
       "response": "json"
@@ -637,10 +536,8 @@
     {
       "name": "bus_heartbeat_agent",
       "method": "POST",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
+      "path": "/v1/bus/agents/{agent_id}/heartbeat",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -655,11 +552,8 @@
     {
       "name": "bus_list_bus_approvals",
       "method": "GET",
-      "path": "/v1/bus/approvals/{namespace}/{tenant}",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/v1/bus/approvals",
+      "parameters": [],
       "response": "json"
     },
     {
@@ -693,10 +587,8 @@
     {
       "name": "bus_lookup_tool_result",
       "method": "GET",
-      "path": "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+      "path": "/v1/bus/tool-calls/{call_id}/result",
       "parameters": [
-        "namespace",
-        "tenant",
         "call_id"
       ],
       "response": "json"
@@ -704,10 +596,8 @@
     {
       "name": "bus_post_stream_chunk",
       "method": "POST",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-chunks",
+      "path": "/v1/bus/conversations/{conversation_id}/stream-chunks",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -715,10 +605,8 @@
     {
       "name": "bus_post_stream_end",
       "method": "POST",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-end",
+      "path": "/v1/bus/conversations/{conversation_id}/stream-end",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -726,10 +614,8 @@
     {
       "name": "bus_post_tool_call",
       "method": "POST",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+      "path": "/v1/bus/conversations/{conversation_id}/tool-calls",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -737,10 +623,8 @@
     {
       "name": "bus_post_tool_result",
       "method": "POST",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+      "path": "/v1/bus/conversations/{conversation_id}/tool-results",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -769,10 +653,8 @@
     {
       "name": "bus_reject_bus_approval",
       "method": "POST",
-      "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
+      "path": "/v1/bus/approvals/{approval_id}/reject",
       "parameters": [
-        "namespace",
-        "tenant",
         "approval_id"
       ],
       "response": "json"
@@ -780,10 +662,8 @@
     {
       "name": "bus_replay_conversation_messages",
       "method": "GET",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+      "path": "/v1/bus/conversations/{conversation_id}/messages",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -791,10 +671,8 @@
     {
       "name": "bus_send_to_agent",
       "method": "POST",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
+      "path": "/v1/bus/agents/{agent_id}/send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -802,10 +680,8 @@
     {
       "name": "bus_sessions_ack",
       "method": "POST",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack",
+      "path": "/v1/bus/subscriptions/{id}/sessions/{session}/ack",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "session"
       ],
@@ -814,10 +690,8 @@
     {
       "name": "bus_sessions_close",
       "method": "DELETE",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+      "path": "/v1/bus/subscriptions/{id}/sessions/{session}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "session"
       ],
@@ -826,10 +700,8 @@
     {
       "name": "bus_sessions_get",
       "method": "GET",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+      "path": "/v1/bus/subscriptions/{id}/sessions/{session}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "session"
       ],
@@ -838,10 +710,8 @@
     {
       "name": "bus_sessions_open",
       "method": "POST",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions",
+      "path": "/v1/bus/subscriptions/{id}/sessions",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -849,10 +719,8 @@
     {
       "name": "bus_sessions_receive",
       "method": "POST",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/receive",
+      "path": "/v1/bus/subscriptions/{id}/sessions/{session}/receive",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "session"
       ],
@@ -861,10 +729,8 @@
     {
       "name": "bus_sessions_validate",
       "method": "POST",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/validate",
+      "path": "/v1/bus/subscriptions/{id}/sessions/{session}/validate",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "session"
       ],
@@ -873,10 +739,8 @@
     {
       "name": "bus_set_agent_admin_state",
       "method": "PUT",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state",
+      "path": "/v1/bus/agents/{agent_id}/admin-state",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -884,10 +748,8 @@
     {
       "name": "bus_stages_control",
       "method": "POST",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/control",
+      "path": "/v1/bus/stages/{id}/control",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -895,10 +757,8 @@
     {
       "name": "bus_stages_control_audit",
       "method": "GET",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}",
+      "path": "/v1/bus/stages/{id}/controls/{request}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "request"
       ],
@@ -907,10 +767,8 @@
     {
       "name": "bus_stages_discard",
       "method": "DELETE",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+      "path": "/v1/bus/stages/{id}/quarantine/{entry}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "entry"
       ],
@@ -919,10 +777,8 @@
     {
       "name": "bus_stages_get",
       "method": "GET",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+      "path": "/v1/bus/stages/{id}/quarantine/{entry}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "entry"
       ],
@@ -931,10 +787,8 @@
     {
       "name": "bus_stages_list",
       "method": "GET",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine",
+      "path": "/v1/bus/stages/{id}/quarantine",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -942,10 +796,8 @@
     {
       "name": "bus_stages_replay",
       "method": "POST",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay",
+      "path": "/v1/bus/stages/{id}/quarantine/{entry}/replay",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "entry"
       ],
@@ -954,10 +806,8 @@
     {
       "name": "bus_stages_replay_audit",
       "method": "GET",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
+      "path": "/v1/bus/stages/{id}/replays/{request}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id",
         "request"
       ],
@@ -966,10 +816,8 @@
     {
       "name": "bus_stages_status",
       "method": "GET",
-      "path": "/v1/bus/stages/{namespace}/{tenant}/{id}",
+      "path": "/v1/bus/stages/{id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -986,10 +834,8 @@
     {
       "name": "bus_subscription_lag",
       "method": "GET",
-      "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/lag",
+      "path": "/v1/bus/subscriptions/{id}/lag",
       "parameters": [
-        "namespace",
-        "tenant",
         "id"
       ],
       "response": "json"
@@ -997,10 +843,8 @@
     {
       "name": "bus_transition_conversation",
       "method": "POST",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+      "path": "/v1/bus/conversations/{conversation_id}/transition",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -1008,10 +852,8 @@
     {
       "name": "bus_unbind_topic_schema",
       "method": "DELETE",
-      "path": "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+      "path": "/v1/bus/topics/{name}/schema",
       "parameters": [
-        "namespace",
-        "tenant",
         "name"
       ],
       "response": "json"
@@ -1019,10 +861,8 @@
     {
       "name": "bus_update_agent",
       "method": "PUT",
-      "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+      "path": "/v1/bus/agents/{agent_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent_id"
       ],
       "response": "json"
@@ -1030,10 +870,8 @@
     {
       "name": "bus_update_conversation",
       "method": "PUT",
-      "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+      "path": "/v1/bus/conversations/{conversation_id}",
       "parameters": [
-        "namespace",
-        "tenant",
         "conversation_id"
       ],
       "response": "json"
@@ -1286,10 +1124,8 @@
     {
       "name": "federation_capabilities",
       "method": "GET",
-      "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+      "path": "/a2a/federation/agents/{agent}/capabilities",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent"
       ],
       "response": "json"
@@ -1297,10 +1133,8 @@
     {
       "name": "federation_export_message",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+      "path": "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "task_id",
         "profile"
@@ -1310,20 +1144,15 @@
     {
       "name": "federation_import_envelope",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/federation/envelopes:import",
-      "parameters": [
-        "namespace",
-        "tenant"
-      ],
+      "path": "/a2a/federation/envelopes:import",
+      "parameters": [],
       "response": "json"
     },
     {
       "name": "federation_invoke_agent",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+      "path": "/a2a/federation/agents/{agent}/v1/message:send",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent"
       ],
       "response": "json"
@@ -1331,10 +1160,8 @@
     {
       "name": "federation_observe_export_message",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+      "path": "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "task_id",
         "profile"
@@ -1344,10 +1171,8 @@
     {
       "name": "federation_replay_export_message",
       "method": "POST",
-      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+      "path": "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
       "parameters": [
-        "namespace",
-        "tenant",
         "agent",
         "task_id",
         "profile"
@@ -2022,10 +1847,8 @@
     {
       "name": "time_intervals_delete_time_interval",
       "method": "DELETE",
-      "path": "/v1/time-intervals/{namespace}/{tenant}/{name}",
+      "path": "/v1/time-intervals/{name}",
       "parameters": [
-        "namespace",
-        "tenant",
         "name"
       ],
       "response": "json"
@@ -2033,10 +1856,8 @@
     {
       "name": "time_intervals_get_time_interval",
       "method": "GET",
-      "path": "/v1/time-intervals/{namespace}/{tenant}/{name}",
+      "path": "/v1/time-intervals/{name}",
       "parameters": [
-        "namespace",
-        "tenant",
         "name"
       ],
       "response": "json"
@@ -2051,10 +1872,8 @@
     {
       "name": "time_intervals_update_time_interval",
       "method": "PUT",
-      "path": "/v1/time-intervals/{namespace}/{tenant}/{name}",
+      "path": "/v1/time-intervals/{name}",
       "parameters": [
-        "namespace",
-        "tenant",
         "name"
       ],
       "response": "json"

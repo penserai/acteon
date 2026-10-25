@@ -134,7 +134,7 @@ duplicate peers and unknown trust IDs. An independent manager grant names the
 only trust IDs that caller may publish or terminally revoke. Public request
 fields can select a configured declaration but cannot expand it.
 
-`POST /a2a/{namespace}/{tenant}/federation/envelopes:import` requires current
+`POST /a2a/federation/envelopes:import` requires current
 private authentication as the configured peer. The runtime verifies the signed
 envelope and binds it to the exact prepared local service recipient, skill,
 agent resource, binding digest, ingress effect and direct effects before calling
@@ -142,7 +142,7 @@ the coordinator. Its typed receipt always reports `execution_started: false`.
 The coordinator may fund the imported root, but the server creates no task,
 accepted execution context, effect attempt or external call.
 
-`POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send`
+`POST /a2a/federation/agents/{agent}/v1/message:send`
 accepts a `SignedFederationInvocation` and its exact A2A message. For new work,
 the peer credential, retained import, agent ID, current service binding, signed
 message equality, trust, closures and budget must all pass before provider delivery.

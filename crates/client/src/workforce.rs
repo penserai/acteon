@@ -2,19 +2,19 @@
 use crate::{ActeonClient, Error, PlatformOperation};
 pub use acteon_core::workforce::*;
 
+/// Mutation within the authenticated credential context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkforceChangeRequest {
+    pub change_id: String,
+    pub change: WorkforceChange,
+    pub reason: String,
+}
+
 impl ActeonClient {
-    pub async fn workforce(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<WorkforceScopeView, Error> {
+    pub async fn workforce(&self) -> Result<WorkforceScopeView, Error> {
         let value = self
-            .platform_request(
-                PlatformOperation::WorkforceInspect,
-                &[],
-                &[("namespace", namespace), ("tenant", tenant)],
-                None,
-            )
+            .platform_request(PlatformOperation::WorkforceInspect, &[], &[], None)
             .await?;
         serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
     }
@@ -59,8 +59,7 @@ mod tests {
         headers: HeaderMap,
     ) -> Json<serde_json::Value> {
         assert_eq!(headers["authorization"], "Bearer operator-key");
-        assert!(uri.query().unwrap().contains("namespace=prod"));
-        assert!(uri.query().unwrap().contains("tenant=acme"));
+        assert!(uri.query().is_none_or(str::is_empty));
         Json(f.wire["scope"].clone())
     }
     async fn change(
@@ -102,7 +101,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(
-            serde_json::to_value(client.workforce("prod", "acme").await.unwrap()).unwrap(),
+            serde_json::to_value(client.workforce().await.unwrap()).unwrap(),
             fixture.wire["scope"]
         );
         for wire in fixture.wire["changes"].as_array().unwrap() {

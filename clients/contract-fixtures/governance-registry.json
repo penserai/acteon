@@ -1,7 +1,5 @@
 {
   "request": {
-    "namespace": "prod",
-    "tenant": "acme",
     "agent_id": "maya",
     "change_id": "remove-maya-card",
     "expected_registry_revision": 7,

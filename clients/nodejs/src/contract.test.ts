@@ -72,12 +72,7 @@ function scenarioClient(
 ): ActeonClient {
   let children = 0;
   return {
-    async recordWorkflowCheckpoint(
-      _executionId: string,
-      _namespace: string,
-      _tenant: string,
-      name: string,
-      data: unknown,
+    async recordWorkflowCheckpoint(_executionId: string, name: string, data: unknown
     ) {
       if (!checkpoints.has(name)) {
         keys.push(name);
@@ -85,11 +80,7 @@ function scenarioClient(
       }
       return { name, seq: keys.length, data: checkpoints.get(name) };
     },
-    async startChildWorkflow(
-      _executionId: string,
-      _namespace: string,
-      _tenant: string,
-      checkpoint: string,
+    async startChildWorkflow(_executionId: string, checkpoint: string
     ) {
       if (!checkpoints.has(checkpoint)) {
         keys.push(checkpoint);
@@ -138,13 +129,7 @@ async function runScenario(
   };
 
   for (let round = 0; round < 100; round++) {
-    const ctx = new WorkflowContext(
-      scenarioClient(checkpoints, keys),
-      "ns",
-      "t1",
-      "ex-1",
-      {},
-      toCheckpoints(checkpoints),
+    const ctx = new WorkflowContext(scenarioClient(checkpoints, keys), "ex-1", {}, toCheckpoints(checkpoints)
     );
     try {
       await workflow(ctx);
@@ -167,13 +152,7 @@ async function runScenario(
 async function suspensionDirective(
   run: (ctx: WorkflowContext) => Promise<unknown>,
 ): Promise<WorkflowDirective> {
-  const ctx = new WorkflowContext(
-    undefined as unknown as ActeonClient,
-    "ns",
-    "t1",
-    "ex-1",
-    {},
-    [],
+  const ctx = new WorkflowContext(undefined as unknown as ActeonClient, "ex-1", {}, []
   );
   try {
     await run(ctx);
@@ -232,23 +211,13 @@ describe("contract: directive shapes", () => {
     };
     const client = undefined as unknown as ActeonClient;
 
-    const complete = await runWorkflowTask(
-      client,
-      "ns",
-      "t1",
-      async () => ({ ok: true, count: 3 }),
-      payload,
+    const complete = await runWorkflowTask(client, async () => ({ ok: true, count: 3 }), payload
     );
     expect(complete).toEqual(directiveFixture("complete"));
 
-    const fail = await runWorkflowTask(
-      client,
-      "ns",
-      "t1",
-      async () => {
+    const fail = await runWorkflowTask(client, async () => {
         throw new Error("provisioning broke");
-      },
-      payload,
+      }, payload
     );
     expect(fail).toEqual(directiveFixture("fail"));
   });
@@ -278,20 +247,14 @@ describe("contract: integer-seconds coercions", () => {
 
 describe("contract: timed-out marker", () => {
   it("replays as null", async () => {
-    const ctx = new WorkflowContext(
-      undefined as unknown as ActeonClient,
-      "ns",
-      "t1",
-      "ex-1",
-      {},
-      [
+    const ctx = new WorkflowContext(undefined as unknown as ActeonClient, "ex-1", {}, [
         {
           seq: 1,
           name: "signal:x#0",
           data: FIXTURES.constants.timed_out_marker,
           recordedAt: "2026-06-11T00:00:00Z",
         },
-      ],
+      ]
     );
     expect(await ctx.waitForSignal("x")).toBeNull();
   });

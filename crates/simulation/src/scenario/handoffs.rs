@@ -73,6 +73,15 @@ impl DeadLetterSink for Sink {
     async fn drain(&self) -> Vec<DeadLetterEntry> {
         Vec::new()
     }
+    async fn drain_selected(
+        &self,
+        _: &acteon_executor::DeadLetterSelection,
+    ) -> Vec<DeadLetterEntry> {
+        Vec::new()
+    }
+    async fn len_selected(&self, _: &acteon_executor::DeadLetterSelection) -> usize {
+        0 // This fault-injection sink records effects, not readable entries.
+    }
     async fn len(&self) -> usize {
         self.effects.load(Ordering::SeqCst)
     }

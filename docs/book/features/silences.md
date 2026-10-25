@@ -95,11 +95,17 @@ being able to modify the rule set.
 
 ```json
 {
-  "namespace": "prod",
-  "tenant": "acme",
   "matchers": [
-    { "name": "severity", "value": "warning", "op": "equal" },
-    { "name": "service", "value": "api|worker", "op": "regex" }
+    {
+      "name": "severity",
+      "value": "warning",
+      "op": "equal"
+    },
+    {
+      "name": "service",
+      "value": "api|worker",
+      "op": "regex"
+    }
   ],
   "duration_seconds": 7200,
   "comment": "deploying api v2.3.0 to acme.us-east"
@@ -114,8 +120,6 @@ matcher is required — an empty matcher list is rejected.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `namespace` | (none) | Filter by namespace |
-| `tenant` | (auto-injected for single-tenant callers) | Filter by tenant |
 | `include_expired` | `false` | Include silences whose `ends_at` is in the past |
 
 ## CLI

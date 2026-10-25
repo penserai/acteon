@@ -305,21 +305,13 @@ def _change(data: dict[str, Any]) -> WorkforceChange:
 
 @dataclass
 class WorkforceChangeRequest:
-    namespace: str
-    tenant: str
     change_id: str
     change: WorkforceChange
     reason: str
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorkforceChangeRequest":
-        return cls(
-            data["namespace"],
-            data["tenant"],
-            data["change_id"],
-            _change(data["change"]),
-            data["reason"],
-        )
+        return cls(data["change_id"], _change(data["change"]), data["reason"])
 
 
 T = TypeVar("T")
@@ -424,11 +416,11 @@ class _WorkforceMixin:
             body: Any = None,
         ) -> Any: ...
 
-    def workforce(self, namespace: str, tenant: str) -> WorkforceScopeView:
+    def workforce(self) -> WorkforceScopeView:
         return WorkforceScopeView.from_dict(
             self.platform_request(
                 PlatformOperation.WORKFORCE_INSPECT,
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
@@ -450,11 +442,11 @@ class _AsyncWorkforceMixin:
             body: Any = None,
         ) -> Any: ...
 
-    async def workforce(self, namespace: str, tenant: str) -> WorkforceScopeView:
+    async def workforce(self) -> WorkforceScopeView:
         return WorkforceScopeView.from_dict(
             await self.platform_request(
                 PlatformOperation.WORKFORCE_INSPECT,
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 

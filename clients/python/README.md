@@ -1,5 +1,9 @@
 # acteon-client (Python)
 
+Each credential belongs to one exact namespace and tenant. SDK requests omit
+tenant metadata; the server derives it from the JWT or API key. See the
+[request contract](https://penserai.github.io/acteon/api/tenant-context/).
+
 Python client for the Acteon action gateway.
 
 ## Complete platform API
@@ -12,7 +16,7 @@ from acteon_client import ActeonClient, PlatformOperation
 with ActeonClient("http://localhost:8080", api_key="your-api-key") as client:
     status = client.platform_request(
         PlatformOperation.BUS_STAGES_STATUS,
-        path={"namespace": "observability", "tenant": "demo", "id": "log-detector"},
+        path={"id": "log-detector"},
     )
 ```
 
@@ -22,7 +26,7 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 
 ## Typed governance management
 
-Use `governance`, `publish_governance_permit`, and `intervene_governance` (sync and async) to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+Use `governance`, `publish_governance_permit`, and `intervene_governance` (sync and async) to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the credential’s namespace and tenant; an executor credential alone does not grant management authority.
 
 Cross-domain execution uses `publish_federation_trust`,
 `revoke_federation_trust`, `federation_capabilities`, `import_federation_envelope`, and
@@ -34,7 +38,7 @@ signed intent and message, validates the returned task scope and ID, and does
 not retry automatically. Accepted source tasks use
 `export_federated_message`, `observe_federated_export`, and
 `replay_federated_export`; both sync and async clients return a typed retained
-receipt and never accept endpoint, credential, signer, permit, or timestamps. Reconciliation managers use `federation_delivery_evidence` for typed sanitized pages and `abandon_federation_delivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
+receipt and never accept endpoint, credential, signer, permit, or timestamps. Reconciliation managers use `federation_delivery_evidence` for typed sanitized pages and `abandon_federation_delivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only delivery identity and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 
@@ -67,8 +71,6 @@ if client.health():
 
 # Dispatch an action
 action = Action(
-    namespace="notifications",
-    tenant="tenant-1",
     provider="email",
     action_type="send_notification",
     payload={"to": "user@example.com", "subject": "Hello"},
@@ -98,8 +100,6 @@ from acteon_client import AsyncActeonClient, Action
 async def main():
     async with AsyncActeonClient("http://localhost:8080") as client:
         action = Action(
-            namespace="notifications",
-            tenant="tenant-1",
             provider="email",
             action_type="send_notification",
             payload={"to": "user@example.com"},
@@ -114,10 +114,7 @@ asyncio.run(main())
 ## Batch Dispatch
 
 ```python
-actions = [
-    Action(namespace="ns", tenant="t1", provider="email", action_type="send", payload={"i": i})
-    for i in range(10)
-]
+actions = [Action(provider="email", action_type="send", payload={"i": i}) for i in range(10)]
 
 results = client.dispatch_batch(actions)
 for result in results:
@@ -186,7 +183,7 @@ Available `time` fields: `hour` (0–23), `minute`, `second`, `day`, `month`, `y
 from acteon_client import AuditQuery
 
 # Query audit records
-query = AuditQuery(tenant="tenant-1", limit=10)
+query = AuditQuery(limit=10)
 page = client.query_audit(query)
 print(f"Found {page.total} records")
 for record in page.records:
@@ -209,10 +206,10 @@ client = ActeonClient(
 ```
 
 API keys are sent via the `Authorization: Bearer <key>` header. The server
-accepts both JWTs and raw API keys on that header. API keys are scoped by
-tenant, namespace, provider, and action type on the server side — see the
+accepts both JWTs and raw API keys on that header. Each API key has one exact namespace and tenant; grants restrict
+provider and action type on the server side — see the
 [API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
-documentation for the grant model and hierarchical tenant matching.
+documentation for credential context and the grant model.
 
 ## Task-Queue Worker
 
@@ -227,7 +224,7 @@ handlers are supported.
 from acteon_client import ActeonClient, NonRetryableError, Worker
 
 client = ActeonClient("http://localhost:8080", api_key="your-key")
-worker = Worker(client, "jobs", "tenant-1", queue="emails", max_concurrent=4)
+worker = Worker(client, queue="emails", max_concurrent=4)
 
 
 def send_email(payload):
@@ -240,9 +237,7 @@ worker.register("send_email", send_email)
 worker.run()  # blocks; call worker.stop() from a signal handler to drain
 
 # Producers enqueue work with:
-client.enqueue_task(
-    "emails", "jobs", "tenant-1", "send_email", {"to": "user@example.com"}, max_attempts=5
-)
+client.enqueue_task("emails", "send_email", {"to": "user@example.com"}, max_attempts=5)
 ```
 
 `worker.run_once()` polls and processes a single batch — useful in tests
@@ -261,7 +256,7 @@ deterministic; side effects belong inside `ctx.step`.
 from acteon_client import ActeonClient, Worker
 
 client = ActeonClient("http://localhost:8080", api_key="your-key")
-worker = Worker(client, "jobs", "tenant-1", queue="wf-queue")
+worker = Worker(client, queue="wf-queue")
 
 
 def onboarding(ctx, input):
@@ -282,11 +277,9 @@ worker.run()
 Drive executions from any client:
 
 ```python
-execution = client.start_workflow("jobs", "tenant-1", "onboarding", "wf-queue", {"user": "u-1"})
-client.signal_workflow(
-    execution.execution_id, "approved", "jobs", "tenant-1", payload={"by": "ops"}
-)
-execution = client.get_workflow_execution(execution.execution_id, "jobs", "tenant-1")
+execution = client.start_workflow("onboarding", "wf-queue", {"user": "u-1"})
+client.signal_workflow(execution.execution_id, "approved", payload={"by": "ops"})
+execution = client.get_workflow_execution(execution.execution_id)
 print(execution.status, execution.result)
 ```
 
@@ -331,8 +324,6 @@ except HttpError as e:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | str | Yes | Logical grouping |
-| `tenant` | str | Yes | Tenant identifier |
 | `provider` | str | Yes | Target provider |
 | `action_type` | str | Yes | Type of action |
 | `payload` | dict | Yes | Action-specific data |
@@ -415,7 +406,7 @@ from acteon_client import (
 )
 
 with ActeonClient("http://localhost:8080", api_key="operator-key") as client:
-    roster = client.workforce("prod", "acme")
+    roster = client.workforce()
     receipt = client.change_workforce(
         WorkforceChangeRequest(
             "prod",

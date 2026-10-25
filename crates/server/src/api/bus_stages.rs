@@ -3,7 +3,7 @@
 use super::AppState;
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -74,13 +74,17 @@ async fn load(
     })?
     .ok_or_else(|| error(StatusCode::NOT_FOUND, "stage not found"))
 }
-#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID")), responses((status=200, description="Durable stage metrics", body=serde_json::Value),(status=403, description="Forbidden"),(status=404, description="Stage not found")))]
+#[utoipa::path(get, path="/v1/bus/stages/{id}", tag="bus", params(("id"=String, description="Processor ID")), responses((status=200, description="Durable stage metrics", body=serde_json::Value),(status=403, description="Forbidden"),(status=404, description="Stage not found")))]
 pub async fn status(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
 ) -> Response {
     #[cfg(feature = "bus")]
     {
@@ -104,13 +108,17 @@ pub async fn status(
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }
-#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("limit"=Option<usize>, Query, description="Page size 1..100, default 50"),("after"=Option<String>, Query, description="Last retained input UUID from previous page")), responses((status=200, description="Bounded metadata page without message payloads", body=serde_json::Value)))]
+#[utoipa::path(get, path="/v1/bus/stages/{id}/quarantine", tag="bus", params(("id"=String, description="Processor ID"),("limit"=Option<usize>, Query, description="Page size 1..100, default 50"),("after"=Option<String>, Query, description="Last retained input UUID from previous page")), responses((status=200, description="Bounded metadata page without message payloads", body=serde_json::Value)))]
 pub async fn list(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
     Query(page): Query<Page>,
 ) -> Response {
     if !(1..=100).contains(&page.limit) {
@@ -158,13 +166,18 @@ pub async fn list(
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }
-#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("entry"=String, Path, description="Quarantined input UUID")), responses((status=200, description="Retained original input; may contain sensitive telemetry", body=serde_json::Value),(status=404, description="Not retained")))]
+#[utoipa::path(get, path="/v1/bus/stages/{id}/quarantine/{entry}", tag="bus", params(("id"=String, description="Processor ID"),("entry"=String, description="Quarantined input UUID")), responses((status=200, description="Retained original input; may contain sensitive telemetry", body=serde_json::Value),(status=404, description="Not retained")))]
 pub async fn get(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id, entry)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, entry)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+        String,
+    )>,
 ) -> Response {
     #[cfg(feature = "bus")]
     {
@@ -191,13 +204,18 @@ pub async fn get(
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }
-#[utoipa::path(delete, path="/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("entry"=String, Path, description="Quarantined input UUID")), responses((status=200, description="Idempotent explicit discard result", body=serde_json::Value)))]
+#[utoipa::path(delete, path="/v1/bus/stages/{id}/quarantine/{entry}", tag="bus", params(("id"=String, description="Processor ID"),("entry"=String, description="Quarantined input UUID")), responses((status=200, description="Idempotent explicit discard result", body=serde_json::Value)))]
 pub async fn discard(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id, entry)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, entry)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+        String,
+    )>,
 ) -> Response {
     #[cfg(feature = "bus")]
     {
@@ -258,13 +276,17 @@ pub struct ControlRequest {
     #[serde(default)]
     pub reset_retry_budget: bool,
 }
-#[utoipa::path(post, path="/v1/bus/stages/{namespace}/{tenant}/{id}/control", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID")), request_body=ControlRequest, responses((status=200, description="Committed control audit", body=serde_json::Value),(status=409, description="Stale revision or conflicting request"),(status=429, description="Audit retention full")))]
+#[utoipa::path(post, path="/v1/bus/stages/{id}/control", tag="bus", params(("id"=String, description="Processor ID")), request_body=ControlRequest, responses((status=200, description="Committed control audit", body=serde_json::Value),(status=409, description="Stale revision or conflicting request"),(status=429, description="Audit retention full")))]
 pub async fn control(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
     Json(request): Json<ControlRequest>,
 ) -> Response {
     #[cfg(feature = "bus")]
@@ -329,13 +351,15 @@ pub async fn control(
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }
-#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("request"=String, Path, description="Control request UUID")), responses((status=200, description="Control audit", body=serde_json::Value),(status=404, description="Unknown request")))]
+#[utoipa::path(get, path="/v1/bus/stages/{id}/controls/{request}", tag="bus", params(("id"=String, description="Processor ID"),("request"=String, description="Control request UUID")), responses((status=200, description="Control audit", body=serde_json::Value),(status=404, description="Unknown request")))]
 pub async fn control_audit(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id, request)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, request)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
 ) -> Response {
     #[cfg(feature = "bus")]
     {
@@ -366,13 +390,18 @@ pub async fn control_audit(
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }
-#[utoipa::path(post, path="/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("entry"=String, Path, description="Quarantined input UUID")), request_body=ReplayRequest, responses((status=202, description="Durable replay audit", body=serde_json::Value),(status=409, description="Conflicting request")))]
+#[utoipa::path(post, path="/v1/bus/stages/{id}/quarantine/{entry}/replay", tag="bus", params(("id"=String, description="Processor ID"),("entry"=String, description="Quarantined input UUID")), request_body=ReplayRequest, responses((status=202, description="Durable replay audit", body=serde_json::Value),(status=409, description="Conflicting request")))]
 pub async fn replay(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id, entry)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, entry)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+        String,
+    )>,
     Json(request): Json<ReplayRequest>,
 ) -> Response {
     #[cfg(feature = "bus")]
@@ -431,13 +460,15 @@ pub async fn replay(
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }
-#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("request"=String, Path, description="Replay request UUID")), responses((status=200, description="Replay audit without payload", body=serde_json::Value),(status=404, description="Unknown request")))]
+#[utoipa::path(get, path="/v1/bus/stages/{id}/replays/{request}", tag="bus", params(("id"=String, description="Processor ID"),("request"=String, description="Replay request UUID")), responses((status=200, description="Replay audit without payload", body=serde_json::Value),(status=404, description="Unknown request")))]
 pub async fn replay_audit(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
         crate::auth::identity::CallerIdentity,
     >,
-    Path((ns, tenant, id, request)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, request)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
 ) -> Response {
     #[cfg(feature = "bus")]
     {

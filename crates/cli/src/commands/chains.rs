@@ -14,12 +14,6 @@ pub struct ChainsArgs {
 pub enum ChainsCommand {
     /// List action chains.
     List {
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
         /// Filter by status.
         #[arg(long)]
         status: Option<String>,
@@ -28,23 +22,11 @@ pub enum ChainsCommand {
     Get {
         /// Chain ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Cancel a running chain.
     Cancel {
         /// Chain ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
         /// Reason for cancellation.
         #[arg(long)]
         reason: Option<String>,
@@ -56,23 +38,11 @@ pub enum ChainsCommand {
     History {
         /// Chain ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Get the DAG for a chain instance.
     Dag {
         /// Chain ID.
         id: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
     /// Manage chain definitions.
     Definitions(DefinitionsArgs),
@@ -124,58 +94,26 @@ fn parse_json_data(input: &str) -> anyhow::Result<serde_json::Value> {
 
 pub async fn run(ops: &OpsClient, args: &ChainsArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
-        ChainsCommand::List {
-            namespace,
-            tenant,
-            status,
-        } => run_list(ops, namespace, tenant, status.as_ref(), format).await,
-        ChainsCommand::Get {
-            id,
-            namespace,
-            tenant,
-        } => run_get(ops, id, namespace, tenant, format).await,
+        ChainsCommand::List { status } => run_list(ops, status.as_ref(), format).await,
+        ChainsCommand::Get { id } => run_get(ops, id, format).await,
         ChainsCommand::Cancel {
             id,
-            namespace,
-            tenant,
+
             reason,
             cancelled_by,
-        } => {
-            run_cancel(
-                ops,
-                id,
-                namespace,
-                tenant,
-                reason.as_ref(),
-                cancelled_by.as_ref(),
-                format,
-            )
-            .await
-        }
-        ChainsCommand::History {
-            id,
-            namespace,
-            tenant,
-        } => run_history(ops, id, namespace, tenant, format).await,
-        ChainsCommand::Dag {
-            id,
-            namespace,
-            tenant,
-        } => run_dag(ops, id, namespace, tenant, format).await,
+        } => run_cancel(ops, id, reason.as_ref(), cancelled_by.as_ref(), format).await,
+        ChainsCommand::History { id } => run_history(ops, id, format).await,
+        ChainsCommand::Dag { id } => run_dag(ops, id, format).await,
         ChainsCommand::Definitions(def_args) => run_definitions(ops, def_args, format).await,
     }
 }
 
 async fn run_list(
     ops: &OpsClient,
-    namespace: &str,
-    tenant: &str,
     status: Option<&String>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let resp = ops
-        .list_chains(namespace.to_string(), tenant.to_string(), status.cloned())
-        .await?;
+    let resp = ops.list_chains(status.cloned()).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);
@@ -197,14 +135,8 @@ async fn run_list(
     Ok(())
 }
 
-async fn run_get(
-    ops: &OpsClient,
-    id: &str,
-    namespace: &str,
-    tenant: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let resp = ops.get_chain(id, namespace, tenant).await?;
+async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let resp = ops.get_chain(id).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);
@@ -241,8 +173,6 @@ async fn run_get(
 async fn run_cancel(
     ops: &OpsClient,
     id: &str,
-    namespace: &str,
-    tenant: &str,
     reason: Option<&String>,
     cancelled_by: Option<&String>,
     format: &OutputFormat,
@@ -250,8 +180,6 @@ async fn run_cancel(
     let resp = ops
         .cancel_chain(
             id,
-            namespace,
-            tenant,
             reason.map(String::as_str),
             cancelled_by.map(String::as_str),
         )
@@ -271,14 +199,8 @@ async fn run_cancel(
     Ok(())
 }
 
-async fn run_history(
-    ops: &OpsClient,
-    id: &str,
-    namespace: &str,
-    tenant: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let resp = ops.get_chain_history(id, namespace, tenant).await?;
+async fn run_history(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let resp = ops.get_chain_history(id).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);
@@ -318,14 +240,8 @@ async fn run_history(
     Ok(())
 }
 
-async fn run_dag(
-    ops: &OpsClient,
-    id: &str,
-    namespace: &str,
-    tenant: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let resp = ops.get_chain_dag(id, namespace, tenant).await?;
+async fn run_dag(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let resp = ops.get_chain_dag(id).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);

@@ -26,15 +26,11 @@ import {
 
 describe("createWebhookAction", () => {
   it("creates a basic webhook action with defaults", () => {
-    const action = createWebhookAction(
-      "notifications",
-      "tenant-1",
-      "https://example.com/hook",
-      { message: "hello" }
+    const action = createWebhookAction("https://example.com/hook", { message: "hello" }
     );
 
-    assert.equal(action.namespace, "notifications");
-    assert.equal(action.tenant, "tenant-1");
+    assert.equal("namespace" in action, false);
+    assert.equal("tenant" in action, false);
     assert.equal(action.provider, "webhook");
     assert.equal(action.actionType, "webhook");
     assert.equal(action.payload.url, "https://example.com/hook");
@@ -46,24 +42,14 @@ describe("createWebhookAction", () => {
   });
 
   it("uses custom method", () => {
-    const action = createWebhookAction(
-      "ns",
-      "t1",
-      "https://example.com/hook",
-      { key: "value" },
-      { method: "PUT" }
+    const action = createWebhookAction("https://example.com/hook", { key: "value" }, { method: "PUT" }
     );
 
     assert.equal(action.payload.method, "PUT");
   });
 
   it("includes custom headers", () => {
-    const action = createWebhookAction(
-      "ns",
-      "t1",
-      "https://example.com/hook",
-      {},
-      { headers: { "X-Custom": "abc", "Authorization": "Bearer tok" } }
+    const action = createWebhookAction("https://example.com/hook", {}, { headers: { "X-Custom": "abc", "Authorization": "Bearer tok" } }
     );
 
     const headers = action.payload.headers as Record<string, string>;
@@ -72,24 +58,14 @@ describe("createWebhookAction", () => {
   });
 
   it("sets custom action type", () => {
-    const action = createWebhookAction(
-      "ns",
-      "t1",
-      "https://example.com/hook",
-      {},
-      { actionType: "custom_hook" }
+    const action = createWebhookAction("https://example.com/hook", {}, { actionType: "custom_hook" }
     );
 
     assert.equal(action.actionType, "custom_hook");
   });
 
   it("passes through dedupKey and metadata", () => {
-    const action = createWebhookAction(
-      "ns",
-      "t1",
-      "https://example.com/hook",
-      {},
-      {
+    const action = createWebhookAction("https://example.com/hook", {}, {
         dedupKey: "dedup-1",
         metadata: { env: "prod" },
       }
@@ -100,22 +76,14 @@ describe("createWebhookAction", () => {
   });
 
   it("omits headers from payload when not provided", () => {
-    const action = createWebhookAction(
-      "ns",
-      "t1",
-      "https://example.com/hook",
-      { data: 123 }
+    const action = createWebhookAction("https://example.com/hook", { data: 123 }
     );
 
     assert.equal(action.payload.headers, undefined);
   });
 
   it("provider is always webhook", () => {
-    const action = createWebhookAction(
-      "ns",
-      "t1",
-      "https://example.com/hook",
-      {}
+    const action = createWebhookAction("https://example.com/hook", {}
     );
 
     assert.equal(action.provider, "webhook");

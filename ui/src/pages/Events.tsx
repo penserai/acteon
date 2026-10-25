@@ -16,18 +16,16 @@ import styles from './Events.module.css'
 const col = createDataTableColumnHelper<EventState>()
 
 export function Events() {
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
-  const { data: events, isLoading } = useEvents({ namespace: ns || undefined, tenant: tenant || undefined })
+  const { data: events, isLoading } = useEvents()
   const transition = useTransitionEvent()
   const { toast } = useToast()
   const [selected, setSelected] = useState<EventState | null>(null)
   const [targetState, setTargetState] = useState('')
 
   const handleTransition = () => {
-    if (!selected || !targetState || !ns || !tenant) return
+    if (!selected || !targetState) return
     transition.mutate(
-      { fingerprint: selected.fingerprint, namespace: ns, tenant, to: targetState },
+      { fingerprint: selected.fingerprint, to: targetState },
       {
         onSuccess: () => { toast('success', 'State transitioned'); setSelected(null) },
         onError: (e) => toast('error', 'Transition failed', (e as Error).message),
@@ -54,11 +52,6 @@ export function Events() {
   return (
     <div>
       <PageHeader title="Events" />
-
-      <div className={styles.filterContainer}>
-        <Input placeholder="Namespace" value={ns} onChange={(e) => setNs(e.target.value)} />
-        <Input placeholder="Tenant" value={tenant} onChange={(e) => setTenant(e.target.value)} />
-      </div>
 
       <DataTable
         data={events ?? []}

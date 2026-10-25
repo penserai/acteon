@@ -36,10 +36,6 @@ pub struct HashChainVerification {
 /// Request body for hash chain verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyHashChainRequest {
-    /// Namespace to verify.
-    pub namespace: String,
-    /// Tenant to verify.
-    pub tenant: String,
     /// Optional start of the time range (ISO 8601).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,

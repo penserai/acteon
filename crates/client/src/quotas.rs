@@ -6,10 +6,6 @@ use crate::{ActeonClient, Error};
 /// Request to create a quota policy.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CreateQuotaRequest {
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Optional provider scope. When omitted, the policy is
     /// generic and counts every dispatch for the tenant. When set,
     /// only dispatches to the named provider count against this
@@ -44,10 +40,6 @@ pub struct CreateQuotaRequest {
 /// Request to update a quota policy.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateQuotaRequest {
-    /// Namespace (required for key lookup).
-    pub namespace: String,
-    /// Tenant (required for key lookup).
-    pub tenant: String,
     /// Updated maximum actions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_actions: Option<u64>,
@@ -169,8 +161,8 @@ impl ActeonClient {
         }
     }
 
-    /// List quota policies filtered by optional namespace, tenant,
-    /// provider scope, and principal scope. Pass `Some("generic")`
+    /// List quota policies filtered by provider and principal within the
+    /// authenticated credential context. Pass `Some("generic")`
     /// as `provider` to match only policies without a provider
     /// scope, or a provider name for that provider. Pass
     /// `Some("any")` as `principal` to match only policies without
@@ -178,20 +170,12 @@ impl ActeonClient {
     /// scoped to that caller.
     pub async fn list_quotas(
         &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
         provider: Option<&str>,
         principal: Option<&str>,
     ) -> Result<ListQuotasResponse, Error> {
         let url = format!("{}/v1/quotas", self.base_url);
 
         let mut query: Vec<(&str, &str)> = Vec::new();
-        if let Some(ns) = namespace {
-            query.push(("namespace", ns));
-        }
-        if let Some(t) = tenant {
-            query.push(("tenant", t));
-        }
         if let Some(p) = provider {
             query.push(("provider", p));
         }
@@ -288,12 +272,11 @@ impl ActeonClient {
     }
 
     /// Delete a quota policy.
-    pub async fn delete_quota(&self, id: &str, namespace: &str, tenant: &str) -> Result<(), Error> {
+    pub async fn delete_quota(&self, id: &str) -> Result<(), Error> {
         let url = format!("{}/v1/quotas/{}", self.base_url, id);
 
         let response = self
             .add_auth(self.client.delete(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;

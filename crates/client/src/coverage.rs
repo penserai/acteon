@@ -4,11 +4,18 @@
 //! the shared types and `AnalyticsStore::rule_coverage` for the backend
 //! aggregation). This module just serializes the query and parses the response.
 
-pub use acteon_core::coverage::{
-    CoverageAggregate, CoverageEntry, CoverageKey, CoverageQuery, CoverageReport,
-};
+pub use acteon_core::coverage::{CoverageAggregate, CoverageEntry, CoverageKey, CoverageReport};
 
 use crate::{ActeonClient, Error};
+
+/// Coverage filters within the authenticated context.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CoverageQuery {
+    /// Inclusive start time.
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Inclusive end time.
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+}
 
 impl ActeonClient {
     /// Analyze rule coverage by querying the server's aggregation endpoint.
@@ -27,7 +34,6 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let query = CoverageQuery {
-    ///     namespace: Some("prod".into()),
     ///     from: Some(Utc::now() - Duration::hours(24)),
     ///     ..Default::default()
     /// };
@@ -40,12 +46,6 @@ impl ActeonClient {
         let url = format!("{}/v1/rules/coverage", self.base_url);
 
         let mut req = self.add_auth(self.client.get(&url));
-        if let Some(ref ns) = query.namespace {
-            req = req.query(&[("namespace", ns)]);
-        }
-        if let Some(ref t) = query.tenant {
-            req = req.query(&[("tenant", t)]);
-        }
         if let Some(from) = query.from {
             req = req.query(&[("from", from.to_rfc3339())]);
         }

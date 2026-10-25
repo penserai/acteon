@@ -8,15 +8,16 @@ const event = {
 }
 async function openTimeline(page: Page) {
   await page.route('**/v1/stream', route => route.abort())
+  await page.route('**/v1/auth/identity', route => route.fulfill({ json: { credential_id: 'alice', auth_method: 'jwt', role: 'admin', principal: null, scope: event.scope } }))
   await page.goto('/timeline')
-  await page.getByLabel('Namespace', { exact: true }).fill('deployments')
-  await page.getByLabel('Tenant', { exact: true }).fill('acme')
 }
 
 test('timeline sends exact attribute search and shows event details', async ({ page }, testInfo) => {
   await page.route('**/v1/timeline/query', async route => {
     const body = route.request().postDataJSON()
-    expect(body.scope).toEqual({ namespace: 'deployments', tenant: 'acme' })
+    expect(body).not.toHaveProperty('scope')
+    expect(body).not.toHaveProperty('namespace')
+    expect(body).not.toHaveProperty('tenant')
     expect(body.query.equals).toEqual([{ path: '/customId', value: 'uuid-exact' }])
     await route.fulfill({ json: { events: [event], nextCursor: null } })
   })
@@ -140,38 +141,45 @@ test('invalid dates and numbers are rejected locally; reset keeps the scope', as
   await expect(page.getByRole('alert')).toContainText('numeric representation')
   expect(requests).toBe(0)
   await page.getByRole('button', { name: 'Reset filters' }).click()
-  await expect(page.getByLabel('Namespace', { exact: true })).toHaveValue('deployments')
-  await expect(page.getByLabel('Tenant', { exact: true })).toHaveValue('acme')
+  await expect(page.getByLabel('Namespace', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Tenant', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Authenticated context')).toHaveText('deployments / acme')
   await expect(page.getByLabel('From', { exact: true })).toHaveValue('')
   await page.getByRole('button', { name: 'Search events' }).click()
   await expect(page.getByText('No matching events', { exact: true })).toBeVisible()
 })
 
-test('scope changes discard an in-flight query and ledger result', async ({ page }) => {
+test('navigation cancels an in-flight query and ledger result', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = window.fetch
+    const aborted: string[] = []
+    Object.assign(window, { abortedTimelineRequests: aborted })
+    window.fetch = (input, init) => {
+      const url = String(input)
+      if (url.includes('/timeline/')) init?.signal?.addEventListener('abort', () => aborted.push(url))
+      return original(input, init)
+    }
+  })
+  await page.route('**/v1/retention', route => route.fulfill({ json: { policies: [], count: 0 } }))
   let releaseQuery!: () => void
   let releaseLedger!: () => void
   const queryGate = new Promise<void>(resolve => { releaseQuery = resolve })
   const ledgerGate = new Promise<void>(resolve => { releaseLedger = resolve })
   await page.route('**/v1/timeline/query', async route => { await queryGate; await route.fulfill({ json: { events: [event], nextCursor: null } }).catch(() => {}) })
-  await page.route('**/v1/timeline/ledger/status?**', async route => { await ledgerGate; await route.fulfill({ json: { records: 42, bytes: 100, pending: 0, oldestReceivedAt: null } }).catch(() => {}) })
+  await page.route('**/v1/timeline/ledger/status', async route => { await ledgerGate; await route.fulfill({ json: { records: 42, bytes: 100, pending: 0, oldestReceivedAt: null } }).catch(() => {}) })
   await openTimeline(page)
   const queryStarted = page.waitForRequest('**/v1/timeline/query')
   await page.getByRole('button', { name: 'Search events' }).click()
   await queryStarted
-  const ledgerStarted = page.waitForRequest('**/v1/timeline/ledger/status?**')
+  const ledgerStarted = page.waitForRequest('**/v1/timeline/ledger/status')
   await page.getByRole('button', { name: 'Ledger status' }).click()
   await ledgerStarted
-  const aborted = Promise.all([
-    page.waitForEvent('requestfailed', r => r.url().includes('/timeline/query')),
-    page.waitForEvent('requestfailed', r => r.url().includes('/timeline/ledger/status')),
-  ])
-  await page.getByLabel('Tenant', { exact: true }).fill('other')
+  await page.getByRole('link', { name: 'Retention policies', exact: true }).click()
   releaseQuery(); releaseLedger()
-  await aborted
+  await expect.poll(() => page.evaluate(() => (window as unknown as { abortedTimelineRequests: string[] }).abortedTimelineRequests.length)).toBe(2)
   await expect(page.getByRole('region', { name: 'Timeline results' })).toHaveCount(0)
   await expect(page.getByText(/42 retained CDC/)).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Search events' })).toBeEnabled()
-  await expect(page.getByRole('button', { name: 'Ledger status' })).toBeEnabled()
+
 })
 
 test('CEL examples append without executing and keyboard submit works', async ({ page }) => {

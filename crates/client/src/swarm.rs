@@ -64,12 +64,6 @@ pub struct SwarmRunSnapshot {
 /// Filter for listing swarm runs.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct SwarmRunFilter {
-    /// Restrict to a specific namespace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Restrict to a specific tenant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
     /// Restrict by status (`accepted`, `running`, `completed`, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,

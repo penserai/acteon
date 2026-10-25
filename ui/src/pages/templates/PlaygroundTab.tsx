@@ -18,8 +18,6 @@ export function PlaygroundTab() {
 
   // Form state
   const [profile, setProfile] = useState('')
-  const [ns, setNs] = useState('default')
-  const [tenant, setTenant] = useState('test-tenant')
   const [payload, setPayload] = useState('{\n  "name": "Jane Doe",\n  "email": "jane@example.com",\n  "amount": 99.50\n}')
 
   // Validation
@@ -30,10 +28,7 @@ export function PlaygroundTab() {
   const [renderError, setRenderError] = useState('')
 
   // Load available profiles for the selected scope
-  const { data: profilesData } = useTemplateProfiles({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
+  const { data: profilesData } = useTemplateProfiles()
   const availableProfiles = profilesData?.profiles ?? []
 
   const handleRender = useCallback(() => {
@@ -55,8 +50,6 @@ export function PlaygroundTab() {
     renderMutation.mutate(
       {
         profile: profile.trim(),
-        namespace: ns,
-        tenant,
         payload: parsed.value,
       },
       {
@@ -70,9 +63,9 @@ export function PlaygroundTab() {
         },
       },
     )
-  }, [profile, ns, tenant, payload, renderMutation, toast])
+  }, [profile, payload, renderMutation, toast])
 
-  const isValid = profile.trim() && ns.trim() && tenant.trim() && !payloadError
+  const isValid = profile.trim() && !payloadError
 
   return (
     <div className={styles.playgroundContainer}>
@@ -82,18 +75,6 @@ export function PlaygroundTab() {
           <h3 className={styles.playgroundCardTitle}>Configuration</h3>
 
           <div className={shared.formGrid}>
-            <Input
-              label="Namespace"
-              value={ns}
-              onChange={(e) => setNs(e.target.value)}
-              placeholder="default"
-            />
-            <Input
-              label="Tenant"
-              value={tenant}
-              onChange={(e) => setTenant(e.target.value)}
-              placeholder="test-tenant"
-            />
           </div>
 
           <div>

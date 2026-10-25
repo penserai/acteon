@@ -13,6 +13,8 @@ use super::role::Role;
 /// JWT claims embedded in issued tokens.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
+    /// Exact context fixed at issuance. Tokens without a context are rejected.
+    pub scope: acteon_core::TenantContext,
     /// Subject (username).
     pub sub: String,
     /// Logical credential enrollment pinned when issued.
@@ -68,6 +70,7 @@ impl JwtManager {
         let exp = jsonwebtoken::get_current_timestamp() as usize + self.expiry_seconds as usize;
 
         let claims = Claims {
+            scope: identity.scope.clone(),
             sub: identity.id.clone(),
             authority_id: authority_id.map(str::to_owned),
             principal: identity.principal.clone(),
@@ -113,6 +116,9 @@ impl JwtManager {
             .map_err(|e| format!("invalid token: {e}"))?;
 
         let claims = token_data.claims;
+        if !claims.scope.is_valid() {
+            return Err("invalid tenant context in token".into());
+        }
 
         // Check revocation: jti must exist in state store.
         let state_key = StateKey::new(
@@ -135,6 +141,7 @@ impl JwtManager {
 
         Ok((
             CallerIdentity {
+                scope: claims.scope,
                 id: claims.sub,
                 principal: claims.principal,
                 role,

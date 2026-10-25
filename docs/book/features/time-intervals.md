@@ -51,17 +51,25 @@ curl -X POST $ACTEON_URL/v1/time-intervals \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "business-hours",
-    "namespace": "prod",
-    "tenant": "acme",
-    "location": "America/New_York",
-    "time_ranges": [
-      {
-        "times": [{"start": "09:00", "end": "17:00"}],
-        "weekdays": [{"start": 1, "end": 5}]
-      }
-    ]
-  }'
+  "name": "business-hours",
+  "location": "America/New_York",
+  "time_ranges": [
+    {
+      "times": [
+        {
+          "start": "09:00",
+          "end": "17:00"
+        }
+      ],
+      "weekdays": [
+        {
+          "start": 1,
+          "end": 5
+        }
+      ]
+    }
+  ]
+}'
 ```
 
 ## Referencing intervals from rules

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { openEventStream } from '../api/sse'
 import { shortTime } from '../lib/format'
 import type { StreamEvent, MetricsResponse } from '../types'
 
@@ -65,56 +66,37 @@ export const useEventStore = create<EventState>((set) => ({
   clear: () => set({ events: [], metricsHistory: [] }),
 }))
 
-let source: EventSource | null = null
+let source: AbortController | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 export function connectEvents() {
   if (source) return
-
-  const baseUrl = import.meta.env.VITE_API_URL ?? ''
-  const url = `${baseUrl}/v1/stream`
-
   useEventStore.getState().setStatus('connecting')
-  source = new EventSource(url)
-
-  source.onopen = () => {
-    useEventStore.getState().setStatus('connected')
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
-  }
-
-  const handler = (e: MessageEvent) => {
-    try {
-      const data = JSON.parse(e.data) as StreamEvent
-      if (!data.event_type) {
-        data.event_type = e.type
-      }
-      useEventStore.getState().addEvent(data)
-    } catch {
-      // ignore
-    }
-  }
-
-  for (const eventType of SSE_EVENT_TYPES) {
-    source.addEventListener(eventType, handler)
-  }
-
-  source.onerror = () => {
-    useEventStore.getState().setStatus('disconnected')
-    source?.close()
-    source = null
-    // Auto-reconnect after 3s
-    reconnectTimer = setTimeout(() => connectEvents(), 3000)
-  }
+  source = openEventStream('/v1/stream', {
+    open: () => useEventStore.getState().setStatus('connected'),
+    event: (event) => {
+      if (!SSE_EVENT_TYPES.some(type => type === event.type)) return
+      try {
+        const data = JSON.parse(event.data) as StreamEvent
+        data.event_type ||= event.type
+        useEventStore.getState().addEvent(data)
+      } catch { /* Ignore malformed frames. */ }
+    },
+    error: () => {
+      useEventStore.getState().setStatus('disconnected')
+      source?.abort()
+      source = null
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connectEvents()
+      }, 3000)
+    },
+  })
 }
 
 export function disconnectEvents() {
-  if (source) {
-    source.close()
-    source = null
-  }
+  source?.abort()
+  source = null
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null

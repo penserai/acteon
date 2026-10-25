@@ -19,10 +19,6 @@ pub enum SchemasCommand {
     /// List schemas, optionally filtered.
     List {
         #[arg(long)]
-        namespace: Option<String>,
-        #[arg(long)]
-        tenant: Option<String>,
-        #[arg(long)]
         subject: Option<String>,
         /// Show only the latest version per subject.
         #[arg(long)]
@@ -31,19 +27,11 @@ pub enum SchemasCommand {
     /// Fetch every version of a subject (oldest-to-newest).
     Versions {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         subject: String,
     },
     /// Fetch a specific schema version. `--version` accepts `latest`
     /// or any numeric version.
     Get {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         subject: String,
         #[arg(long, default_value = "latest")]
@@ -54,10 +42,6 @@ pub enum SchemasCommand {
     Register {
         #[arg(long)]
         subject: String,
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         /// JSON Schema body, or `@path/to/schema.json`.
         #[arg(long)]
         body: String,
@@ -68,20 +52,12 @@ pub enum SchemasCommand {
     /// pins it.
     Delete {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         subject: String,
         #[arg(long)]
         version: i32,
     },
     /// Bind a topic to a schema subject + version.
     Bind {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         /// Logical topic name (no `namespace.tenant.` prefix).
         #[arg(long)]
         topic: String,
@@ -93,10 +69,6 @@ pub enum SchemasCommand {
     /// Drop a topic's schema binding.
     Unbind {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         topic: String,
     },
 }
@@ -105,14 +77,10 @@ pub enum SchemasCommand {
 pub async fn run(ops: &OpsClient, args: &SchemasArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
         SchemasCommand::List {
-            namespace,
-            tenant,
             subject,
             latest_only,
         } => {
             let filter = BusSchemaFilter {
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
                 subject: subject.clone(),
                 latest_only: *latest_only,
             };
@@ -133,15 +101,8 @@ pub async fn run(ops: &OpsClient, args: &SchemasArgs, format: &OutputFormat) -> 
                 }
             }
         }
-        SchemasCommand::Versions {
-            namespace,
-            tenant,
-            subject,
-        } => {
-            let resp = ops
-                .client()
-                .get_bus_schema_versions(namespace, tenant, subject)
-                .await?;
+        SchemasCommand::Versions { subject } => {
+            let resp = ops.client().get_bus_schema_versions(subject).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),
                 OutputFormat::Text => {
@@ -157,30 +118,20 @@ pub async fn run(ops: &OpsClient, args: &SchemasArgs, format: &OutputFormat) -> 
                 }
             }
         }
-        SchemasCommand::Get {
-            namespace,
-            tenant,
-            subject,
-            version,
-        } => {
-            let s = ops
-                .client()
-                .get_bus_schema(namespace, tenant, subject, version)
-                .await?;
+        SchemasCommand::Get { subject, version } => {
+            let s = ops.client().get_bus_schema(subject, version).await?;
             info!("{}", serde_json::to_string_pretty(&s)?);
         }
         SchemasCommand::Register {
             subject,
-            namespace,
-            tenant,
+
             body,
             labels,
         } => {
             let body = parse_json_arg(body)?;
             let req = RegisterBusSchema {
                 subject: subject.clone(),
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
+
                 body,
                 labels: labels.iter().cloned().collect::<HashMap<_, _>>(),
             };
@@ -194,27 +145,18 @@ pub async fn run(ops: &OpsClient, args: &SchemasArgs, format: &OutputFormat) -> 
                 ),
             }
         }
-        SchemasCommand::Delete {
-            namespace,
-            tenant,
-            subject,
-            version,
-        } => {
-            ops.client()
-                .delete_bus_schema(namespace, tenant, subject, *version)
-                .await?;
+        SchemasCommand::Delete { subject, version } => {
+            ops.client().delete_bus_schema(subject, *version).await?;
             info!(subject = %subject, version = *version, "Schema deleted");
         }
         SchemasCommand::Bind {
-            namespace,
-            tenant,
             topic,
             subject,
             version,
         } => {
             let resp = ops
                 .client()
-                .bind_topic_schema(namespace, tenant, topic, subject, *version)
+                .bind_topic_schema(topic, subject, *version)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),
@@ -226,14 +168,8 @@ pub async fn run(ops: &OpsClient, args: &SchemasArgs, format: &OutputFormat) -> 
                 ),
             }
         }
-        SchemasCommand::Unbind {
-            namespace,
-            tenant,
-            topic,
-        } => {
-            ops.client()
-                .unbind_topic_schema(namespace, tenant, topic)
-                .await?;
+        SchemasCommand::Unbind { topic } => {
+            ops.client().unbind_topic_schema(topic).await?;
             info!(topic = %topic, "Topic schema binding removed");
         }
     }

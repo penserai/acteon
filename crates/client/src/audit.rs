@@ -5,12 +5,6 @@ use crate::{ActeonClient, Error};
 /// Query parameters for audit search.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct AuditQuery {
-    /// Filter by namespace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
     /// Filter by provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -112,12 +106,6 @@ impl AuditRecord {
 /// Query parameters for bulk audit replay.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ReplayQuery {
-    /// Filter by namespace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
     /// Filter by provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -181,7 +169,6 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let query = AuditQuery {
-    ///     tenant: Some("tenant-1".to_string()),
     ///     limit: Some(10),
     ///     ..Default::default()
     /// };

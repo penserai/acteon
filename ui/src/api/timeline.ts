@@ -38,13 +38,13 @@ export interface TimelineLedgerStatus {
   oldestReceivedAt: string | null
 }
 
-export function queryTimeline(scope: TimelineScope, query: TimelineQuery, signal: AbortSignal) {
+export function queryTimeline(query: TimelineQuery, signal: AbortSignal) {
   return apiFetch<TimelinePage>('/v1/timeline/query', {
-    method: 'POST', body: JSON.stringify({ scope, query }), signal,
+    method: 'POST', body: JSON.stringify({ query }), signal,
   })
 }
-export function getTimelineLedgerStatus(scope: TimelineScope, signal: AbortSignal) {
-  return apiFetch<TimelineLedgerStatus>(`/v1/timeline/ledger/status?${new URLSearchParams({ ...scope })}`, { signal })
+export function getTimelineLedgerStatus(signal: AbortSignal) {
+  return apiFetch<TimelineLedgerStatus>('/v1/timeline/ledger/status', { signal })
 }
 
 export function timelineErrorMessage(error: unknown): string {

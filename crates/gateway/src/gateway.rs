@@ -1540,6 +1540,28 @@ impl Gateway {
         }
     }
 
+    /// Count only entries permitted by a credential's exact context and grants.
+    pub async fn dlq_len_selected(
+        &self,
+        selection: &acteon_executor::DeadLetterSelection,
+    ) -> Option<usize> {
+        match &self.dlq {
+            Some(dlq) => Some(dlq.len_selected(selection).await),
+            None => None,
+        }
+    }
+
+    /// Drain only entries permitted by a credential's exact context and grants.
+    pub async fn dlq_drain_selected(
+        &self,
+        selection: &acteon_executor::DeadLetterSelection,
+    ) -> Vec<DeadLetterEntry> {
+        match &self.dlq {
+            Some(dlq) => dlq.drain_selected(selection).await,
+            None => Vec::new(),
+        }
+    }
+
     /// Remove expired entries from a DLQ that has a local retention policy.
     ///
     /// Returns `None` when the DLQ is disabled. Custom sinks may return zero
@@ -2716,7 +2738,7 @@ impl Gateway {
             .set(&pending_key, &pending_val.to_string(), ttl)
             .await?;
 
-        // Build HMAC-signed URLs with namespace/tenant in the path
+        // Approval routes derive context from the recipient's credential.
         let external_url = self.external_url.as_deref().unwrap_or_else(|| {
             warn!("`external_url` not configured, using http://localhost:8080");
             "http://localhost:8080"
@@ -2726,13 +2748,11 @@ impl Gateway {
             warn!(url = %external_url, "external_url is not HTTPS - approval links will not be secure");
         }
 
-        let ns = &action.namespace;
-        let tenant = &action.tenant;
         let approve_url = format!(
-            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
+            "{external_url}/v1/approvals/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
         let reject_url = format!(
-            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
+            "{external_url}/v1/approvals/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
 
         let notification_payload = serde_json::json!({
@@ -7884,6 +7904,18 @@ impl Gateway {
             return Err(GatewayError::ApprovalNotFound);
         }
 
+        self.execute_approval_authenticated(namespace, tenant, id)
+            .await
+    }
+
+    /// Process an approval after the transport has authenticated the caller and
+    /// checked its role, exact context, and operation grants against the record.
+    pub async fn execute_approval_authenticated(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<ActionOutcome, GatewayError> {
         // 2. Atomically claim the approval (first writer wins)
         let claim_key = StateKey::new(namespace, tenant, KeyKind::Approval, format!("{id}:claim"));
         let is_claimed = self
@@ -8091,6 +8123,18 @@ impl Gateway {
             return Err(GatewayError::ApprovalNotFound);
         }
 
+        self.reject_approval_authenticated(namespace, tenant, id)
+            .await
+    }
+
+    /// Process an approval after the transport has authenticated the caller and
+    /// checked its role, exact context, and operation grants against the record.
+    pub async fn reject_approval_authenticated(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<(), GatewayError> {
         // 2. Atomically claim the approval (first writer wins)
         let claim_key = StateKey::new(namespace, tenant, KeyKind::Approval, format!("{id}:claim"));
         let is_claimed = self
@@ -8205,10 +8249,10 @@ impl Gateway {
             .as_deref()
             .unwrap_or("http://localhost:8080");
         let approve_url = format!(
-            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
+            "{external_url}/v1/approvals/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
         let reject_url = format!(
-            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
+            "{external_url}/v1/approvals/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
 
         let notification_payload = serde_json::json!({

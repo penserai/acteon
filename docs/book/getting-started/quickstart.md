@@ -39,9 +39,9 @@ The JSON response has `"status": "ok"` and a `metrics` object.
 
 ## 3. Dispatch an Action
 
-Raw HTTP actions require an `id` and `created_at` in addition to namespace,
-tenant, provider, action type, and payload. SDK constructors supply these fields
-for you. This example uses a fixed ID and timestamp for reproducibility; use a
+Raw HTTP actions require an `id` and `created_at` in addition to provider, action type, and payload. SDK constructors supply the ID and timestamp
+for you. Namespace and tenant come from the credential; this local auth-disabled
+server uses `default/default`. This example uses a fixed ID and timestamp for reproducibility; use a
 fresh UUID and current UTC timestamp for new actions in your application.
 
 <!-- quickstart-check: dispatch -->
@@ -49,15 +49,15 @@ fresh UUID and current UTC timestamp for new actions in your application.
 curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/v1/dispatch" \
   -H 'Content-Type: application/json' \
   -d '{
-    "id": "550e8400-e29b-41d4-a716-446655440001",
-    "created_at": "2026-01-01T00:00:00Z",
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {"to": "user@example.com"},
-    "dedup_key": "welcome-user@example.com"
-  }'
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "created_at": "2026-01-01T00:00:00Z",
+  "provider": "email",
+  "action_type": "send_email",
+  "payload": {
+    "to": "user@example.com"
+  },
+  "dedup_key": "welcome-user@example.com"
+}'
 ```
 
 Response:
@@ -85,14 +85,14 @@ Run the same dispatch command again within 300 seconds. It returns the JSON stri
 curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/v1/dispatch" \
   -H 'Content-Type: application/json' \
   -d '{
-    "id": "550e8400-e29b-41d4-a716-446655440002",
-    "created_at": "2026-01-01T00:00:00Z",
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {"to": "qa@test.example.com"}
-  }'
+  "id": "550e8400-e29b-41d4-a716-446655440002",
+  "created_at": "2026-01-01T00:00:00Z",
+  "provider": "email",
+  "action_type": "send_email",
+  "payload": {
+    "to": "qa@test.example.com"
+  }
+}'
 ```
 
 Response:
@@ -130,27 +130,27 @@ The batch endpoint accepts a JSON **array**, with a complete action in each entr
 curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/v1/dispatch/batch" \
   -H 'Content-Type: application/json' \
   -d '[
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440003",
-      "created_at": "2026-01-01T00:00:00Z",
-      "namespace": "notifications",
-      "tenant": "tenant-1",
-      "provider": "email",
-      "action_type": "send_email",
-      "payload": {"to": "alice@example.com"},
-      "dedup_key": "welcome-alice@example.com"
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440003",
+    "created_at": "2026-01-01T00:00:00Z",
+    "provider": "email",
+    "action_type": "send_email",
+    "payload": {
+      "to": "alice@example.com"
     },
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440004",
-      "created_at": "2026-01-01T00:00:00Z",
-      "namespace": "notifications",
-      "tenant": "tenant-1",
-      "provider": "email",
-      "action_type": "send_email",
-      "payload": {"to": "bob@example.com"},
-      "dedup_key": "welcome-bob@example.com"
-    }
-  ]'
+    "dedup_key": "welcome-alice@example.com"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440004",
+    "created_at": "2026-01-01T00:00:00Z",
+    "provider": "email",
+    "action_type": "send_email",
+    "payload": {
+      "to": "bob@example.com"
+    },
+    "dedup_key": "welcome-bob@example.com"
+  }
+]'
 ```
 
 The response is an array containing two `Executed` results.

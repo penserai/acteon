@@ -42,7 +42,6 @@ combined with AND logic.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `namespace` | string | Only receive events from this namespace |
 | `action_type` | string | Only receive events for this action type |
 | `outcome` | string | Only receive dispatch events with this outcome category (e.g., `executed`, `suppressed`, `failed`, `throttled`, `rerouted`, `deduplicated`) |
 | `event_type` | string | Only receive events of this type (e.g., `action_dispatched`, `group_flushed`, `timeout`, `chain_advanced`, `approval_required`) |
@@ -54,7 +53,7 @@ a Bearer token or API key, the same as any other protected endpoint:
 
 ```bash
 curl -N -H "Authorization: Bearer <token>" \
-  "http://localhost:8080/v1/stream?namespace=alerts"
+  "http://localhost:8080/v1/stream"
 ```
 
 ## Tenant Isolation
@@ -128,7 +127,7 @@ curl -N -H "Authorization: Bearer <token>" \
 
 # Only executed email actions in the alerts namespace
 curl -N -H "Authorization: Bearer <token>" \
-  "http://localhost:8080/v1/stream?namespace=alerts&action_type=send_email&outcome=executed"
+  "http://localhost:8080/v1/stream?action_type=send_email&outcome=executed"
 
 # Only group flush and timeout events
 curl -N -H "Authorization: Bearer <token>" \
@@ -145,7 +144,6 @@ let client = ActeonClient::new("http://localhost:8080")
     .with_bearer_token("my-token");
 
 let filter = StreamFilter::new()
-    .namespace("alerts")
     .action_type("send_email");
 
 let mut stream = client.stream(&filter).await?;
@@ -170,7 +168,7 @@ import requests
 
 url = "http://localhost:8080/v1/stream"
 headers = {"Authorization": "Bearer <token>"}
-params = {"namespace": "alerts", "outcome": "failed"}
+params = {"outcome": "failed"}
 
 with requests.get(url, headers=headers, params=params, stream=True) as resp:
     for line in resp.iter_lines(decode_unicode=True):
@@ -183,28 +181,18 @@ with requests.get(url, headers=headers, params=params, stream=True) as resp:
 ### Node.js
 
 ```javascript
-import { EventSource } from "eventsource";
+import { ActeonClient } from "@acteon/client";
 
-const es = new EventSource(
-  "http://localhost:8080/v1/stream?namespace=alerts",
-  { headers: { Authorization: "Bearer <token>" } }
-);
-
-es.addEventListener("action_dispatched", (e) => {
-  const event = JSON.parse(e.data);
-  console.log(`Dispatched: ${event.action_id} -> ${event.provider}`);
-});
-
-es.addEventListener("lagged", (e) => {
-  const { skipped } = JSON.parse(e.data);
-  console.warn(`Missed ${skipped} events`);
-});
+const client = new ActeonClient("http://localhost:8080", { apiKey: process.env.ACTEON_API_KEY });
+for await (const event of client.stream({ eventType: "action_dispatched" })) {
+  console.log(event);
+}
 ```
 
 ### Go
 
 ```go
-req, _ := http.NewRequest("GET", "http://localhost:8080/v1/stream?namespace=alerts", nil)
+req, _ := http.NewRequest("GET", "http://localhost:8080/v1/stream", nil)
 req.Header.Set("Authorization", "Bearer <token>")
 
 resp, _ := http.DefaultClient.Do(req)

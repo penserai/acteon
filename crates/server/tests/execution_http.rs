@@ -1,4 +1,21 @@
 //! Real binary, middleware, configured memory backend and actual network send.
+fn http_input(value: impl serde::Serialize) -> serde_json::Value {
+    let mut value = serde_json::to_value(value).unwrap();
+    fn strip(value: &mut serde_json::Value) {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("namespace");
+            object.remove("tenant");
+            object.remove("scope");
+        } else if let Some(items) = value.as_array_mut() {
+            for item in items {
+                strip(item);
+            }
+        }
+    }
+    strip(&mut value);
+    value
+}
+
 use acteon_core::Action;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -137,6 +154,7 @@ authority_revision = 1
 [settings]
 jwt_secret = "jwt-test-secret-at-least-32-bytes"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "maya-agent"
 authority_id = "credential/maya"
 principal = {{id="agent/maya",kind="agent"}}
@@ -168,6 +186,7 @@ actions = ["execute"]
                     auth,
                     r#"
 [[api_keys]]
+scope = {{ namespace = {namespace:?}, tenant = "acme" }}
 name = {name:?}
 authority_id = "credential/{name}"
 principal = {{id={principal:?},kind="human"}}
@@ -291,7 +310,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
     let permits = r#"[{"id":"maya-incident","accepted_revision":1}]"#;
     let response = client
         .post(&url)
-        .json(&action)
+        .json(&http_input(&action))
         .header("x-acteon-execution-permits", permits)
         .send()
         .await
@@ -300,7 +319,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
     let response = client
         .post(&url)
         .bearer_auth("maya-secret")
-        .json(&action)
+        .json(&http_input(&action))
         .send()
         .await
         .unwrap();
@@ -310,7 +329,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
         let response = client
             .post(&url)
             .bearer_auth("maya-secret")
-            .json(&action)
+            .json(&http_input(&action))
             .header("x-acteon-execution-permits", permits)
             .send()
             .await
@@ -326,7 +345,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
         let response = client
             .post(&url)
             .bearer_auth("maya-secret")
-            .json(&action)
+            .json(&http_input(&action))
             .header("x-acteon-execution-permits", permits)
             .send()
             .await
@@ -341,7 +360,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
     let response = client
         .post(&url)
         .bearer_auth("maya-secret")
-        .json(&changed)
+        .json(&http_input(&changed))
         .header("x-acteon-execution-permits", permits)
         .send()
         .await
@@ -357,7 +376,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
     let response = client
         .post(&url)
         .bearer_auth("maya-secret")
-        .json(&denied)
+        .json(&http_input(&denied))
         .header(
             "x-acteon-execution-permits",
             r#"[{"id":"unissued","accepted_revision":1}]"#,
@@ -372,7 +391,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
     let response = client
         .post(&url)
         .bearer_auth("maya-secret")
-        .json(&denied)
+        .json(&http_input(&denied))
         .header("x-acteon-execution-permits", permits)
         .send()
         .await
@@ -400,7 +419,7 @@ async fn execution_http_contract(state: &str, restart: bool) {
     let response = client
         .post(format!("{}/v1/dispatch/batch", server.url))
         .bearer_auth("maya-secret")
-        .json(&batch)
+        .json(&http_input(&batch))
         .header("x-acteon-execution-permits", permits)
         .send()
         .await
@@ -533,7 +552,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
     let mut server = Server::governance(&webhook, state);
     let client = reqwest::Client::new();
     server.ready(&client).await;
-    let inspect_url = format!("{}/v1/governance?namespace=prod&tenant=acme", server.url);
+    let inspect_url = format!("{}/v1/governance", server.url);
     for credential in [
         "maya-secret",
         "imposter-secret",
@@ -576,7 +595,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
             client
                 .post(format!("{}/v1/governance/permits", server.url))
                 .bearer_auth(credential)
-                .json(&issue)
+                .json(&http_input(&issue))
                 .send()
                 .await
                 .unwrap()
@@ -587,7 +606,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
     let issued = client
         .post(format!("{}/v1/governance/permits", server.url))
         .bearer_auth("operator-secret")
-        .json(&issue)
+        .json(&http_input(&issue))
         .send()
         .await
         .unwrap();
@@ -598,7 +617,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
     let replay: acteon_core::GovernanceChangeReceipt = client
         .post(format!("{}/v1/governance/permits", server.url))
         .bearer_auth("operator-secret")
-        .json(&issue)
+        .json(&http_input(&issue))
         .send()
         .await
         .unwrap()
@@ -614,7 +633,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
         client
             .post(format!("{}/v1/governance/permits", server.url))
             .bearer_auth("operator-secret")
-            .json(&oversized)
+            .json(&http_input(&oversized))
             .send()
             .await
             .unwrap()
@@ -629,13 +648,13 @@ async fn governance_http_contract(state: &str, restart: bool) {
                 "x-acteon-execution-permits",
                 r#"[{"id":"online-maya","accepted_revision":1}]"#,
             )
-            .json(&Action::new(
+            .json(&http_input(&Action::new(
                 "prod",
                 "acme",
                 "incident",
                 "execute",
                 json!({"ticket":42}),
-            ))
+            )))
     };
     assert_eq!(send("operator-secret").send().await.unwrap().status(), 403);
     let outcome: Value = send("maya-secret")
@@ -658,7 +677,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
             client
                 .post(format!("{}/v1/governance/changes", server.url))
                 .bearer_auth(credential)
-                .json(&close)
+                .json(&http_input(&close))
                 .send()
                 .await
                 .unwrap()
@@ -670,7 +689,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
         client
             .post(format!("{}/v1/governance/changes", server.url))
             .bearer_auth("operator-secret")
-            .json(&close)
+            .json(&http_input(&close))
             .send()
             .await
             .unwrap()
@@ -699,13 +718,13 @@ async fn governance_http_contract(state: &str, restart: bool) {
             "x-acteon-execution-permits",
             r#"[{"id":"online-maya","accepted_revision":1}]"#,
         )
-        .json(&Action::new(
+        .json(&http_input(&Action::new(
             "prod",
             "acme",
             "incident",
             "execute",
             json!({"ticket":43}),
-        ))
+        )))
         .send()
         .await
         .unwrap()
@@ -719,7 +738,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
         client
             .post(format!("{}/v1/governance/changes", server.url))
             .bearer_auth("operator-secret")
-            .json(&reopen)
+            .json(&http_input(&reopen))
             .send()
             .await
             .unwrap()
@@ -733,13 +752,13 @@ async fn governance_http_contract(state: &str, restart: bool) {
             "x-acteon-execution-permits",
             r#"[{"id":"online-maya","accepted_revision":1}]"#,
         )
-        .json(&Action::new(
+        .json(&http_input(&Action::new(
             "prod",
             "acme",
             "incident",
             "execute",
             json!({"ticket":44}),
-        ))
+        )))
         .send()
         .await
         .unwrap()
@@ -753,7 +772,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
         client
             .post(format!("{}/v1/governance/changes", server.url))
             .bearer_auth("operator-secret")
-            .json(&revoke)
+            .json(&http_input(&revoke))
             .send()
             .await
             .unwrap()
@@ -767,13 +786,13 @@ async fn governance_http_contract(state: &str, restart: bool) {
             "x-acteon-execution-permits",
             r#"[{"id":"online-maya","accepted_revision":1}]"#,
         )
-        .json(&Action::new(
+        .json(&http_input(&Action::new(
             "prod",
             "acme",
             "incident",
             "execute",
             json!({"ticket":45}),
-        ))
+        )))
         .send()
         .await
         .unwrap()
@@ -787,7 +806,7 @@ async fn governance_http_contract(state: &str, restart: bool) {
         client
             .post(format!("{}/v1/governance/changes", server.url))
             .bearer_auth("operator-secret")
-            .json(&revoke_credential)
+            .json(&http_input(&revoke_credential))
             .send()
             .await
             .unwrap()
@@ -802,13 +821,13 @@ async fn governance_http_contract(state: &str, restart: bool) {
                 "x-acteon-execution-permits",
                 r#"[{"id":"maya-incident","accepted_revision":1}]"#
             )
-            .json(&Action::new(
+            .json(&http_input(Action::new(
                 "prod",
                 "acme",
                 "incident",
                 "execute",
                 json!({"ticket":46})
-            ))
+            )))
             .send()
             .await
             .unwrap()
@@ -850,7 +869,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
     let mut server = Server::workforce(&webhook, state);
     server.ready(&client).await;
     let changes_url = format!("{}/v1/workforce/changes", server.url);
-    let inspect_url = format!("{}/v1/workforce?namespace=prod&tenant=acme", server.url);
+    let inspect_url = format!("{}/v1/workforce", server.url);
     let team = json!({"domain":"prod","tenant":"acme","id":"reliability"});
     let actor = json!({"id":"agent/maya","kind":"agent"});
     let limits = json!({"max_units":5,"max_concurrent":1,"deadline_ms":4102444800000_i64});
@@ -880,7 +899,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
             client
                 .post(&changes_url)
                 .bearer_auth(key)
-                .json(&put_team)
+                .json(&http_input(&put_team))
                 .send()
                 .await
                 .unwrap()
@@ -913,7 +932,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
             client
                 .post(&changes_url)
                 .bearer_auth("operator-secret")
-                .json(&forbidden)
+                .json(&http_input(&forbidden))
                 .send()
                 .await
                 .unwrap()
@@ -945,7 +964,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
         let response = client
             .post(&changes_url)
             .bearer_auth("operator-secret")
-            .json(&body)
+            .json(&http_input(&body))
             .send()
             .await
             .unwrap();
@@ -970,7 +989,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
     let replay: Value = client
         .post(&changes_url)
         .bearer_auth("operator-secret")
-        .json(&put_team)
+        .json(&http_input(&put_team))
         .send()
         .await
         .unwrap()
@@ -1004,7 +1023,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
                 "x-acteon-execution-permits",
                 r#"[{"id":"represented-permit","accepted_revision":1}]"#,
             )
-            .json(action)
+            .json(&http_input(action))
     };
     for _ in 0..2 {
         let response = dispatch(&action).send().await.unwrap();
@@ -1022,7 +1041,7 @@ async fn workforce_http_contract(state: &str, restart: bool) {
         client
             .post(&changes_url)
             .bearer_auth("operator-secret")
-            .json(&revoke)
+            .json(&http_input(&revoke))
             .send()
             .await
             .unwrap()

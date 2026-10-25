@@ -4,12 +4,12 @@ import type { GovernanceChangeReceipt, WorkforceChangeRequest, WorkforceScopeVie
 
 export function useWorkforce(namespace: string, tenant: string) {
   return useQuery({ queryKey: ['workforce', namespace, tenant],
-    queryFn: () => apiGet<WorkforceScopeView>('/v1/workforce', { namespace, tenant }),
+    queryFn: () => apiGet<WorkforceScopeView>('/v1/workforce'),
     enabled: !!namespace && !!tenant, retry: false })
 }
 export function useWorkforceChange() {
   const client = useQueryClient()
-  return useMutation({ mutationFn: (request: WorkforceChangeRequest) => apiPost<GovernanceChangeReceipt>('/v1/workforce/changes', request),
+  return useMutation({ mutationFn: (request: WorkforceChangeRequest) => apiPost<GovernanceChangeReceipt>('/v1/workforce/changes', { change_id: request.change_id, change: request.change, reason: request.reason }),
     retry: false, onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['workforce'] })
       void client.invalidateQueries({ queryKey: ['governance'] })

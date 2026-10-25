@@ -210,7 +210,7 @@ impl AuthAuthority {
             let mut entry = json!({
                 "username": user.username, "principal": principal, "role": role,
                 "password_hash": user.password_hash.expose_secret(),
-                "grants": canonical_grants(&user.grants)?,
+                "grants": canonical_grants(&user.grants)?, "scope": user.scope,
             });
             if let Some(id) = &user.authority_id {
                 entry["authority_id"] = json!(id);
@@ -226,7 +226,7 @@ impl AuthAuthority {
             let role = Role::from_str_loose(&key.role).ok_or("invalid auth role")?;
             let mut entry = json!({
                 "name": key.name, "principal": principal, "role": role,
-                "key_hash": key.key_hash.expose_secret(), "grants": canonical_grants(&key.grants)?,
+                "key_hash": key.key_hash.expose_secret(), "grants": canonical_grants(&key.grants)?, "scope": key.scope,
             });
             if let Some(id) = &key.authority_id {
                 entry["authority_id"] = json!(id);

@@ -199,20 +199,9 @@ export interface StartWorkflowOptions {
 }
 
 /** Build the `POST /v1/workflows/start` request body. */
-export function startWorkflowBody(
-  namespace: string,
-  tenant: string,
-  workflow: string,
-  queue: string,
-  input: unknown,
-  options: StartWorkflowOptions = {},
+export function startWorkflowBody(workflow: string, queue: string, input: unknown, options: StartWorkflowOptions = {}
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    namespace,
-    tenant,
-    workflow,
-    queue,
-    input,
+  const body: Record<string, unknown> = {workflow, queue, input
   };
   if (options.searchAttributes !== undefined) {
     body.search_attributes = options.searchAttributes;
@@ -296,22 +285,12 @@ export class WorkflowContext {
   readonly input: unknown;
 
   private readonly client: ActeonClient;
-  private readonly namespace: string;
-  private readonly tenant: string;
   private readonly checkpoints: Map<string, unknown>;
   private readonly counters = new Map<string, number>();
 
-  constructor(
-    client: ActeonClient,
-    namespace: string,
-    tenant: string,
-    executionId: string,
-    input: unknown,
-    checkpoints: WorkflowCheckpoint[],
+  constructor(client: ActeonClient, executionId: string, input: unknown, checkpoints: WorkflowCheckpoint[]
   ) {
     this.client = client;
-    this.namespace = namespace;
-    this.tenant = tenant;
     this.executionId = executionId;
     this.input = input;
     this.checkpoints = new Map(checkpoints.map((c) => [c.name, c.data]));
@@ -340,12 +319,7 @@ export class WorkflowContext {
       return this.checkpoints.get(key) as T;
     }
     const result = await fn();
-    const recorded = await this.client.recordWorkflowCheckpoint(
-      this.executionId,
-      this.namespace,
-      this.tenant,
-      key,
-      result ?? null,
+    const recorded = await this.client.recordWorkflowCheckpoint(this.executionId, key, result ?? null
     );
     this.checkpoints.set(key, recorded.data);
     return recorded.data as T;
@@ -413,14 +387,7 @@ export class WorkflowContext {
       const data = this.checkpoints.get(key) as Record<string, unknown>;
       return data.child_id as string;
     }
-    const childId = await this.client.startChildWorkflow(
-      this.executionId,
-      this.namespace,
-      this.tenant,
-      key,
-      workflow,
-      input,
-      options,
+    const childId = await this.client.startChildWorkflow(this.executionId, key, workflow, input, options
     );
     this.checkpoints.set(key, { child_id: childId });
     return childId;
@@ -494,21 +461,13 @@ export class WorkflowExecutionNotFoundError extends Error {
  * execution does not exist, and propagates transport errors from the
  * execution fetch — both mean the task was not run.
  */
-export async function runWorkflowTask(
-  client: ActeonClient,
-  namespace: string,
-  tenant: string,
-  fn: WorkflowFn,
-  payload: WorkflowTaskPayload,
+export async function runWorkflowTask(client: ActeonClient, fn: WorkflowFn, payload: WorkflowTaskPayload
 ): Promise<WorkflowDirective> {
   let input = payload.input;
   let checkpoints: WorkflowCheckpoint[];
   if (payload.checkpoints === undefined) {
     // Slim payload: the task carries only the execution reference.
-    const execution = await client.getWorkflowExecution(
-      payload.execution_id,
-      namespace,
-      tenant,
+    const execution = await client.getWorkflowExecution(payload.execution_id
     );
     if (!execution) {
       throw new WorkflowExecutionNotFoundError(payload.execution_id);
@@ -518,13 +477,7 @@ export async function runWorkflowTask(
   } else {
     checkpoints = payload.checkpoints.map(parseWorkflowCheckpoint);
   }
-  const ctx = new WorkflowContext(
-    client,
-    namespace,
-    tenant,
-    payload.execution_id,
-    input,
-    checkpoints,
+  const ctx = new WorkflowContext(client, payload.execution_id, input, checkpoints
   );
   try {
     const result = await fn(ctx, input);

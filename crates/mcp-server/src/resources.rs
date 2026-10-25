@@ -35,24 +35,16 @@ pub async fn read_resource(
 ) -> Result<ReadResourceResult, McpError> {
     let uri = request.uri.as_str();
 
-    // Parse the URI: acteon://{kind}/{arg1}/{arg2?}
+    // Resource ownership comes from the configured credential.
     let path = uri
         .strip_prefix("acteon://")
         .ok_or_else(|| McpError::invalid_params("URI must start with acteon://", None))?;
 
-    let segments: Vec<&str> = path.splitn(3, '/').collect();
-
-    match segments.first().copied() {
-        Some("health") => read_health(ops, &request.uri).await,
-        Some("rules") => read_rules(ops, &request.uri).await,
-        Some("audit") => {
-            let tenant = segments.get(1).copied().unwrap_or("default");
-            read_audit(ops, tenant, &request.uri).await
-        }
-        Some("events") => {
-            let tenant = segments.get(1).copied().unwrap_or("default");
-            read_events(ops, tenant, &request.uri).await
-        }
+    match path {
+        "health" => read_health(ops, &request.uri).await,
+        "rules" => read_rules(ops, &request.uri).await,
+        "audit" => read_audit(ops, &request.uri).await,
+        "events" => read_events(ops, &request.uri).await,
         _ => Err(McpError::resource_not_found(
             "unknown resource",
             Some(json!({"uri": uri})),
@@ -89,13 +81,8 @@ async fn read_rules(ops: &OpsClient, uri: &str) -> Result<ReadResourceResult, Mc
     )]))
 }
 
-async fn read_audit(
-    ops: &OpsClient,
-    tenant: &str,
-    uri: &str,
-) -> Result<ReadResourceResult, McpError> {
+async fn read_audit(ops: &OpsClient, uri: &str) -> Result<ReadResourceResult, McpError> {
     let query = AuditQuery {
-        tenant: Some(tenant.to_string()),
         limit: Some(25),
         ..AuditQuery::default()
     };
@@ -113,14 +100,8 @@ async fn read_audit(
     )]))
 }
 
-async fn read_events(
-    ops: &OpsClient,
-    tenant: &str,
-    uri: &str,
-) -> Result<ReadResourceResult, McpError> {
+async fn read_events(ops: &OpsClient, uri: &str) -> Result<ReadResourceResult, McpError> {
     let query = EventQuery {
-        namespace: "default".to_string(),
-        tenant: tenant.to_string(),
         status: None,
         limit: Some(50),
     };

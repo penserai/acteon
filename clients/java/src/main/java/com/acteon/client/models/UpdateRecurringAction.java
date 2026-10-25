@@ -10,11 +10,6 @@ import java.util.Map;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class UpdateRecurringAction {
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     @JsonProperty("name")
     private String name;
@@ -47,17 +42,6 @@ public class UpdateRecurringAction {
     private Map<String, String> labels;
 
     public UpdateRecurringAction() {}
-
-    public UpdateRecurringAction(String namespace, String tenant) {
-        this.namespace = namespace;
-        this.tenant = tenant;
-    }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }

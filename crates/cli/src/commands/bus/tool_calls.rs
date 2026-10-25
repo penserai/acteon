@@ -23,10 +23,6 @@ pub enum ToolCallsCommand {
     /// server parks it under a HITL approval row and returns 202.
     Post {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
         #[arg(long)]
         call_id: String,
@@ -58,10 +54,6 @@ pub enum ToolCallsCommand {
     /// Post a tool-result envelope.
     PostResult {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         conversation_id: String,
         #[arg(long)]
         call_id: String,
@@ -83,10 +75,6 @@ pub enum ToolCallsCommand {
     /// Look up a tool result by `call_id`. Strongly recommend passing
     /// `--cursor` from the originating call's receipt.
     Lookup {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         call_id: String,
         /// Required: which conversation to scan.
@@ -125,8 +113,6 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     match &args.command {
         ToolCallsCommand::Post {
-            namespace,
-            tenant,
             conversation_id,
             call_id,
             tool,
@@ -158,7 +144,7 @@ pub async fn run(
             };
             let outcome = ops
                 .client()
-                .post_bus_tool_call(namespace, tenant, conversation_id, &req)
+                .post_bus_tool_call(conversation_id, &req)
                 .await?;
             match (format, outcome) {
                 (OutputFormat::Json, PostBusToolCallOutcome::Produced(r)) => {
@@ -196,8 +182,6 @@ pub async fn run(
             }
         }
         ToolCallsCommand::PostResult {
-            namespace,
-            tenant,
             conversation_id,
             call_id,
             status,
@@ -223,7 +207,7 @@ pub async fn run(
             };
             let receipt = ops
                 .client()
-                .post_bus_tool_result(namespace, tenant, conversation_id, &req)
+                .post_bus_tool_result(conversation_id, &req)
                 .await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&receipt)?),
@@ -237,8 +221,6 @@ pub async fn run(
             }
         }
         ToolCallsCommand::Lookup {
-            namespace,
-            tenant,
             call_id,
             conversation_id,
             cursor,
@@ -251,7 +233,7 @@ pub async fn run(
             };
             let lookup = ops
                 .client()
-                .lookup_bus_tool_result(namespace, tenant, call_id, &params)
+                .lookup_bus_tool_result(call_id, &params)
                 .await?;
             info!("{}", serde_json::to_string_pretty(&lookup)?);
         }

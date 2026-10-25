@@ -131,7 +131,7 @@ class WorkerTest {
     }
 
     private static Worker.Builder testWorkerBuilder(ActeonClient client) {
-        return Worker.builder(client, "ns", "tnt", "q").workerId("w-1");
+        return Worker.builder(client, "q").workerId("w-1");
     }
 
     // -------------------------------------------------------------------------
@@ -139,21 +139,19 @@ class WorkerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void builderRequiresScope() {
+    void builderRequiresQueue() {
         try (ActeonClient client = new ActeonClient("http://localhost")) {
+            assertDoesNotThrow(() -> Worker.builder(client, "q"));
+            assertDoesNotThrow(() -> Worker.builder(client, "q"));
             assertThrows(IllegalArgumentException.class,
-                () -> Worker.builder(client, "", "tnt", "q"));
-            assertThrows(IllegalArgumentException.class,
-                () -> Worker.builder(client, "ns", null, "q"));
-            assertThrows(IllegalArgumentException.class,
-                () -> Worker.builder(client, "ns", "tnt", ""));
+                () -> Worker.builder(client, ""));
         }
     }
 
     @Test
     void builderGeneratesWorkerIdWhenOmitted() {
         try (ActeonClient client = new ActeonClient("http://localhost");
-             Worker worker = Worker.builder(client, "ns", "tnt", "q").build()) {
+             Worker worker = Worker.builder(client, "q").build()) {
             assertTrue(worker.getWorkerId().startsWith("worker-"), worker.getWorkerId());
         }
     }
@@ -183,8 +181,8 @@ class WorkerTest {
             assertEquals(1, mock.completes.size());
             Map<String, Object> complete = mock.completes.get(0);
             assertEquals("lease-1", complete.get("lease_token"));
-            assertEquals("ns", complete.get("namespace"));
-            assertEquals("tnt", complete.get("tenant"));
+            assertNull(complete.get("namespace"));
+            assertNull(complete.get("tenant"));
             @SuppressWarnings("unchecked")
             Map<String, Object> result = (Map<String, Object>) complete.get("result");
             assertEquals(Boolean.TRUE, result.get("sent"));
@@ -192,8 +190,8 @@ class WorkerTest {
             // Poll body must carry the worker's scope, identity, and
             // the documented defaults (max_tasks=1, lease_seconds=60).
             Map<String, Object> poll = mock.pollBodies.get(0);
-            assertEquals("ns", poll.get("namespace"));
-            assertEquals("tnt", poll.get("tenant"));
+            assertNull(poll.get("namespace"));
+            assertNull(poll.get("tenant"));
             assertEquals("w-1", poll.get("worker_id"));
             assertEquals(1, poll.get("max_tasks"));
             assertEquals(60, poll.get("lease_seconds"));
@@ -359,7 +357,7 @@ class WorkerTest {
         try {
             int port = server.getAddress().getPort();
             try (ActeonClient client = new ActeonClient("http://127.0.0.1:" + port);
-                 Worker worker = Worker.builder(client, "ns", "tnt", "q").build()) {
+                 Worker worker = Worker.builder(client, "q").build()) {
                 assertThrows(com.acteon.client.exceptions.ActeonException.class, worker::runOnce);
             }
         } finally {

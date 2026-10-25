@@ -17,10 +17,6 @@ pub struct ApprovalsArgs {
 pub enum ApprovalsCommand {
     /// List parked approvals for a tenant.
     List {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         /// Filter by status: `pending`, `approved`, `rejected`, `expired`.
         #[arg(long)]
         status: Option<ApprovalStatusKind>,
@@ -30,18 +26,10 @@ pub enum ApprovalsCommand {
     /// Fetch a single approval by id.
     Get {
         #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
-        #[arg(long)]
         approval_id: String,
     },
     /// Approve a parked tool-call. Produces the original envelope.
     Approve {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         approval_id: String,
         #[arg(long)]
@@ -51,10 +39,6 @@ pub enum ApprovalsCommand {
     },
     /// Reject a parked tool-call. No Kafka record is produced.
     Reject {
-        #[arg(long)]
-        namespace: String,
-        #[arg(long)]
-        tenant: String,
         #[arg(long)]
         approval_id: String,
         #[arg(long)]
@@ -91,8 +75,6 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     match &args.command {
         ApprovalsCommand::List {
-            namespace,
-            tenant,
             status,
             conversation_id,
         } => {
@@ -100,10 +82,7 @@ pub async fn run(
                 status: status.clone().map(BusApprovalStatus::from),
                 conversation_id: conversation_id.clone(),
             };
-            let resp = ops
-                .client()
-                .list_bus_approvals(namespace, tenant, &params)
-                .await?;
+            let resp = ops.client().list_bus_approvals(&params).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),
                 OutputFormat::Text => {
@@ -123,20 +102,11 @@ pub async fn run(
                 }
             }
         }
-        ApprovalsCommand::Get {
-            namespace,
-            tenant,
-            approval_id,
-        } => {
-            let a = ops
-                .client()
-                .get_bus_approval(namespace, tenant, approval_id)
-                .await?;
+        ApprovalsCommand::Get { approval_id } => {
+            let a = ops.client().get_bus_approval(approval_id).await?;
             info!("{}", serde_json::to_string_pretty(&a)?);
         }
         ApprovalsCommand::Approve {
-            namespace,
-            tenant,
             approval_id,
             decided_by,
             decision_note,
@@ -145,10 +115,7 @@ pub async fn run(
                 decided_by: decided_by.clone(),
                 decision_note: decision_note.clone(),
             };
-            let resp = ops
-                .client()
-                .approve_bus_approval(namespace, tenant, approval_id, &req)
-                .await?;
+            let resp = ops.client().approve_bus_approval(approval_id, &req).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),
                 OutputFormat::Text => {
@@ -169,8 +136,6 @@ pub async fn run(
             }
         }
         ApprovalsCommand::Reject {
-            namespace,
-            tenant,
             approval_id,
             decided_by,
             decision_note,
@@ -179,10 +144,7 @@ pub async fn run(
                 decided_by: decided_by.clone(),
                 decision_note: decision_note.clone(),
             };
-            let resp = ops
-                .client()
-                .reject_bus_approval(namespace, tenant, approval_id, &req)
-                .await?;
+            let resp = ops.client().reject_bus_approval(approval_id, &req).await?;
             match format {
                 OutputFormat::Json => info!("{}", serde_json::to_string_pretty(&resp)?),
                 OutputFormat::Text => info!(

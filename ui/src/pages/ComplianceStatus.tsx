@@ -6,7 +6,6 @@ import { useComplianceStatus, useVerifyChain } from '../api/hooks/useCompliance'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Skeleton } from '../components/ui/Skeleton'
 import type { ComplianceMode, HashChainVerification } from '../types'
@@ -34,15 +33,12 @@ export function ComplianceStatus() {
   const { data: status, isLoading, error } = useComplianceStatus()
   const verifyMutation = useVerifyChain()
 
-  const [verifyNs, setVerifyNs] = useState('')
-  const [verifyTenant, setVerifyTenant] = useState('')
   const [verification, setVerification] = useState<HashChainVerification | null>(null)
 
   const handleVerify = () => {
-    if (!verifyNs || !verifyTenant) return
     setVerification(null)
     verifyMutation.mutate(
-      { namespace: verifyNs, tenant: verifyTenant },
+      undefined,
       { onSuccess: (result) => setVerification(result) },
     )
   }
@@ -143,22 +139,10 @@ export function ComplianceStatus() {
         <div className={styles.verifySection}>
           <h2 className={styles.sectionTitle}>Verify Hash Chain</h2>
           <p className={styles.sectionDescription}>
-            Check the integrity of the audit hash chain for a specific namespace and tenant.
+            Check the integrity of the audit hash chain in your authenticated context.
           </p>
 
           <div className={styles.verifyForm}>
-            <Input
-              label="Namespace"
-              placeholder="prod"
-              value={verifyNs}
-              onChange={(e) => setVerifyNs(e.target.value)}
-            />
-            <Input
-              label="Tenant"
-              placeholder="acme"
-              value={verifyTenant}
-              onChange={(e) => setVerifyTenant(e.target.value)}
-            />
             <div className={styles.verifyButtonWrap}>
               <Button
                 icon={verifyMutation.isPending
@@ -166,7 +150,7 @@ export function ComplianceStatus() {
                   : <Search className="h-3.5 w-3.5" />
                 }
                 onClick={handleVerify}
-                disabled={!verifyNs || !verifyTenant || verifyMutation.isPending}
+                disabled={verifyMutation.isPending}
                 loading={verifyMutation.isPending}
               >
                 Verify

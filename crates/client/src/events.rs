@@ -6,10 +6,6 @@ use crate::{ActeonClient, Error};
 /// Query parameters for listing events.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct EventQuery {
-    /// Filter by namespace (required).
-    pub namespace: String,
-    /// Filter by tenant (required).
-    pub tenant: String,
     /// Filter by state (e.g., "open", "closed").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -54,7 +50,7 @@ pub struct TransitionResponse {
 }
 
 impl ActeonClient {
-    /// List events filtered by namespace, tenant, and optionally status.
+    /// List events filtered by optional status within the credential context.
     ///
     /// # Example
     ///
@@ -64,8 +60,6 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let query = EventQuery {
-    ///     namespace: "notifications".to_string(),
-    ///     tenant: "tenant-1".to_string(),
     ///     status: Some("open".to_string()),
     ///     limit: Some(50),
     /// };
@@ -109,23 +103,17 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// if let Some(event) = client.get_event("fingerprint-123", "notifications", "tenant-1").await? {
+    /// if let Some(event) = client.get_event("fingerprint-123").await? {
     ///     println!("Event state: {}", event.state);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_event(
-        &self,
-        fingerprint: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<Option<EventState>, Error> {
+    pub async fn get_event(&self, fingerprint: &str) -> Result<Option<EventState>, Error> {
         let url = format!("{}/v1/events/{}", self.base_url, fingerprint);
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -158,8 +146,6 @@ impl ActeonClient {
     /// let result = client.transition_event(
     ///     "fingerprint-123",
     ///     "investigating",
-    ///     "notifications",
-    ///     "tenant-1"
     /// ).await?;
     /// println!("Transitioned from {} to {}", result.previous_state, result.new_state);
     /// # Ok(())
@@ -169,15 +155,12 @@ impl ActeonClient {
         &self,
         fingerprint: &str,
         to_state: &str,
-        namespace: &str,
-        tenant: &str,
     ) -> Result<TransitionResponse, Error> {
         let url = format!("{}/v1/events/{}/transition", self.base_url, fingerprint);
 
         let body = serde_json::json!({
             "to": to_state,
-            "namespace": namespace,
-            "tenant": tenant,
+
         });
 
         let response = self

@@ -20,8 +20,7 @@ from typing import Any
 @dataclass
 class CreateBusTopic:
     name: str
-    namespace: str
-    tenant: str
+
     partitions: int | None = None
     replication_factor: int | None = None
     retention_ms: int | None = None
@@ -29,11 +28,7 @@ class CreateBusTopic:
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "name": self.name,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        d: dict[str, Any] = {"name": self.name}
         if self.partitions is not None:
             d["partitions"] = self.partitions
         if self.replication_factor is not None:
@@ -85,8 +80,7 @@ class BusTopic:
 @dataclass
 class PublishBusMessage:
     topic: str | None = None
-    namespace: str | None = None
-    tenant: str | None = None
+
     name: str | None = None
     key: str | None = None
     payload: Any = None
@@ -96,10 +90,7 @@ class PublishBusMessage:
         d: dict[str, Any] = {"payload": self.payload}
         if self.topic is not None:
             d["topic"] = self.topic
-        if self.namespace is not None:
-            d["namespace"] = self.namespace
-        if self.tenant is not None:
-            d["tenant"] = self.tenant
+
         if self.name is not None:
             d["name"] = self.name
         if self.key is not None:
@@ -135,8 +126,7 @@ class PublishReceipt:
 class CreateBusSubscription:
     id: str
     topic: str
-    namespace: str
-    tenant: str
+
     starting_offset: str | None = None
     ack_mode: str | None = None
     dead_letter_topic: str | None = None
@@ -149,8 +139,6 @@ class CreateBusSubscription:
         d: dict[str, Any] = {
             "id": self.id,
             "topic": self.topic,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "receipt_required": self.receipt_required,
         }
         if self.starting_offset is not None:
@@ -247,18 +235,12 @@ class BusLag:
 @dataclass
 class RegisterBusSchema:
     subject: str
-    namespace: str
-    tenant: str
+
     body: Any
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "subject": self.subject,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-            "body": self.body,
-        }
+        d: dict[str, Any] = {"subject": self.subject, "body": self.body}
         if self.labels:
             d["labels"] = self.labels
         return d
@@ -295,8 +277,7 @@ class BusSchema:
 @dataclass
 class RegisterBusAgent:
     agent_id: str
-    namespace: str
-    tenant: str
+
     capabilities: list[str] = field(default_factory=list)
     inbox_suffix: str | None = None
     heartbeat_ttl_ms: int | None = None
@@ -304,11 +285,7 @@ class RegisterBusAgent:
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "agent_id": self.agent_id,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        d: dict[str, Any] = {"agent_id": self.agent_id}
         if self.capabilities:
             d["capabilities"] = self.capabilities
         if self.inbox_suffix is not None:
@@ -397,8 +374,7 @@ class SetBusAgentAdminState:
 @dataclass
 class CreateBusConversation:
     conversation_id: str
-    namespace: str
-    tenant: str
+
     participants: list[str] = field(default_factory=list)
     topic_subject: str | None = None
     events_topic: str | None = None
@@ -406,11 +382,7 @@ class CreateBusConversation:
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "conversation_id": self.conversation_id,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        d: dict[str, Any] = {"conversation_id": self.conversation_id}
         if self.participants:
             d["participants"] = self.participants
         if self.topic_subject is not None:

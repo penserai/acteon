@@ -64,15 +64,15 @@ curl --fail-with-body -sS "$ACTEON_URL/v1/dispatch" \
   -H "Authorization: Bearer $ACTEON_AGENT_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "550e8400-e29b-41d4-a716-446655440020",
-    "created_at": "2026-10-03T00:00:00Z",
-    "namespace": "agent-swarm",
-    "tenant": "researcher",
-    "provider": "research",
-    "action_type": "search",
-    "dedup_key": "research:ticket-42",
-    "payload": {"query": "Summarize the attached incident evidence"}
-  }'
+  "id": "550e8400-e29b-41d4-a716-446655440020",
+  "created_at": "2026-10-03T00:00:00Z",
+  "provider": "research",
+  "action_type": "search",
+  "dedup_key": "research:ticket-42",
+  "payload": {
+    "query": "Summarize the attached incident evidence"
+  }
+}'
 ```
 
 The first response contains `Executed`; repeating it returns the JSON string
@@ -166,6 +166,7 @@ caller's grants. Create separate keys and grants for separate principals.
 jwt_secret = "acteon-policy-demo-local-only-secret"
 
 [[api_keys]]
+scope = { namespace = "agent-swarm", tenant = "researcher" }
 name = "researcher"
 principal = { id = "researcher", kind = "agent" }
 key_hash = "e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"
@@ -175,6 +176,18 @@ role = "executor"
 tenants = ["researcher"]
 namespaces = ["agent-swarm"]
 providers = ["research", "notify", "deploy"]
+actions = ["*"]
+
+[[api_keys]]
+scope = { namespace = "agent-swarm", tenant = "researcher" }
+name = "reviewer"
+key_hash = "0fa3224d953b8c388813d848520791100f5b2f2c0d78f0ba798bf9c3ca1a0b42"
+role = "operator"
+
+[[api_keys.grants]]
+tenants = ["researcher"]
+namespaces = ["agent-swarm"]
+providers = ["*"]
 actions = ["*"]
 ```
 
@@ -268,16 +281,18 @@ The exact configuration is exercised by the verifier above.
 ## Approvals and execution boundaries
 
 A `deploy` request targets the `deploy` log provider and returns `PendingApproval`.
-Its signed `approve_url` and `reject_url` authorize those decisions until expiry.
-Treat these links as capabilities; present them to the intended reviewer. The
-local verifier uses the returned approval URL to exercise execution after consent.
+The `approve_url` and `reject_url` require an authenticated operator or admin
+credential in the same context; signatures alone do not authorize HTTP decisions.
+Present these links to the intended reviewer. The
+local verifier uses the returned approval URL with the separate local-demo
+reviewer key `acteon-policy-reviewer` to exercise execution after consent.
 In an agent integration, the human reviewer owns that decision.
 
 A `research_request` returns `ChainStarted` with a `chain_id`. Inspect it with:
 
 ```bash
 curl --fail-with-body -sS \
-  "$ACTEON_URL/v1/chains/$CHAIN_ID?namespace=agent-swarm&tenant=researcher" \
+  "$ACTEON_URL/v1/chains/$CHAIN_ID" \
   -H "Authorization: Bearer $ACTEON_AGENT_KEY"
 ```
 
@@ -293,14 +308,12 @@ flow instead.
 
 Use a scoped `executor` credential for each agent runtime and keep `operator`
 credentials for trusted administration. Expose the intended action-submission
-tool through a host adapter, fix its
-namespace and tenant in the adapter, and keep management endpoints inaccessible
-to that agent. Network access and credentials must enforce this boundary.
+tool through a host adapter using the agent’s provisioned credential, and keep
+management endpoints inaccessible to that agent. Network access and credentials must enforce this boundary.
 
-The host must also retain approval capability URLs and send them only to the
-human reviewer. Return the pending status and approval ID to the agent, not the
-signed approve/reject URLs. Giving an agent those capabilities lets it decide its
-own approval.
+The host returns the pending status and approval ID to the agent. The human
+reviewer decides using a separate operator credential. Keep that credential out
+of the agent environment; the agent’s executor key cannot approve its own work.
 
 Choose the integration that matches the work:
 

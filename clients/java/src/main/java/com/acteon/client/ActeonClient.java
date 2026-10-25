@@ -46,15 +46,15 @@ import javax.net.ssl.X509TrustManager;
 public class ActeonClient implements AutoCloseable {
     /** Complete finite HTTP API. Uses server wire names and never auto-retries. */
     /** Preserve changeId and revision when retrying CDC ingestion. */
-    public com.fasterxml.jackson.databind.JsonNode ingestTimelineChange(String namespace, String tenant, java.util.Map<String, Object> change) throws ActeonException {
-        return platformRequest(PlatformOperation.TIMELINE_INGEST, null, null, java.util.Map.of("scope", java.util.Map.of("namespace", namespace, "tenant", tenant), "change", change));
+    public com.fasterxml.jackson.databind.JsonNode ingestTimelineChange(java.util.Map<String, Object> change) throws ActeonException {
+        return platformRequest(PlatformOperation.TIMELINE_INGEST, null, null, java.util.Map.of("change", change));
     }
     /** Search current events; the query map may contain a CEL "filter" string. */
-    public com.fasterxml.jackson.databind.JsonNode queryTimeline(String namespace, String tenant, java.util.Map<String, Object> query) throws ActeonException {
-        return platformRequest(PlatformOperation.TIMELINE_QUERY, null, null, java.util.Map.of("scope", java.util.Map.of("namespace", namespace, "tenant", tenant), "query", query));
+    public com.fasterxml.jackson.databind.JsonNode queryTimeline(java.util.Map<String, Object> query) throws ActeonException {
+        return platformRequest(PlatformOperation.TIMELINE_QUERY, null, null, java.util.Map.of("query", query));
     }
-    public com.fasterxml.jackson.databind.JsonNode getTimelineEvent(String namespace, String tenant, String source, String eventId) throws ActeonException {
-        return platformRequest(PlatformOperation.TIMELINE_GET, java.util.Map.of("source", source, "eventId", eventId), java.util.Map.of("namespace", java.util.List.of(namespace), "tenant", java.util.List.of(tenant)), null);
+    public com.fasterxml.jackson.databind.JsonNode getTimelineEvent(String source, String eventId) throws ActeonException {
+        return platformRequest(PlatformOperation.TIMELINE_GET, java.util.Map.of("source", source, "eventId", eventId), null, null);
     }
     public com.fasterxml.jackson.databind.JsonNode platformRequest(
         PlatformOperation operation, Map<String, String> pathParameters,
@@ -91,12 +91,15 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /** Submit once and retain host provenance. Preserve message ID after response loss. */
-    public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
-        return agentServiceSendMessage(namespace, tenant, agent, message, null);
+    public AgentServiceReceipt agentServiceSendMessage(String agent, Map<String, Object> message) throws ActeonException {
+        return agentServiceSendMessage(agent, message, null);
     }
     /** Submit as a governed child of an existing execution context. */
-    public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/message:send", Map.of("message", message), null, parent);
+    public AgentServiceReceipt agentServiceSendMessage(String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(agent)+"/message:send", Map.of("message", message), null, parent);
         try {
             var task = AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), namespace, tenant, null);
             var source = AgentServiceReceipt.source(response.headers().firstValue(AgentServiceReceipt.SOURCE_CONTEXT_HEADER).orElse(null));
@@ -104,17 +107,17 @@ public class ActeonClient implements AutoCloseable {
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
     /** Invoke one exact governed agent through official A2A streaming. */
-    public AgentServiceA2aStream agentServiceSendStreamingMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
-        return agentServiceSendStreamingMessage(namespace, tenant, agent, message, null);
+    public AgentServiceA2aStream agentServiceSendStreamingMessage(String agent, Map<String, Object> message) throws ActeonException {
+        return agentServiceSendStreamingMessage(agent, message, null);
     }
     /** Invoke one exact governed child through official A2A streaming. */
-    public AgentServiceA2aStream agentServiceSendStreamingMessage(String namespace, String tenant, String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
+    public AgentServiceA2aStream agentServiceSendStreamingMessage(String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
         Object messageId = message.get("messageId");
         if (!(messageId instanceof String id) || id.isEmpty())
             throw new IllegalArgumentException("streaming message requires messageId");
         String requestId = "stream:" + id;
         return agentServiceA2aStreamRequest(
-            AgentServiceReceipt.rpcBase(namespace, tenant, agent), requestId,
+            AgentServiceReceipt.rpcBase(agent), requestId,
             Map.of("jsonrpc", "2.0", "id", requestId, "method", "SendStreamingMessage",
                 "params", Map.of("message", message)), null, parent, true);
     }
@@ -122,7 +125,7 @@ public class ActeonClient implements AutoCloseable {
     public AgentServiceA2aStream agentServiceSubscribeTask(AgentServiceReceipt receipt) throws ActeonException {
         String requestId = "subscribe:" + receipt.taskId();
         return agentServiceA2aStreamRequest(
-            AgentServiceReceipt.rpcBase(receipt.namespace(), receipt.tenant(), receipt.agent()),
+            AgentServiceReceipt.rpcBase(receipt.agent()),
             requestId, Map.of("jsonrpc", "2.0", "id", requestId, "method", "SubscribeToTask",
                 "params", Map.of("id", receipt.taskId())),
             AgentServiceReceipt.source(receipt.sourceContext()), null, false);
@@ -131,7 +134,7 @@ public class ActeonClient implements AutoCloseable {
     public com.fasterxml.jackson.databind.JsonNode agentServiceCancelTask(AgentServiceReceipt receipt) throws ActeonException {
         String requestId = "cancel:" + receipt.taskId();
         var response = agentServiceRequest(
-            "POST", AgentServiceReceipt.rpcBase(receipt.namespace(), receipt.tenant(), receipt.agent()),
+            "POST", AgentServiceReceipt.rpcBase(receipt.agent()),
             Map.of("jsonrpc", "2.0", "id", requestId, "method", "CancelTask",
                 "params", Map.of("id", receipt.taskId())),
             AgentServiceReceipt.source(receipt.sourceContext()), null);
@@ -148,9 +151,10 @@ public class ActeonClient implements AutoCloseable {
         } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
     }
     /** List only Tasks visible to the current source through one exact governed agent. */
-    public AgentServiceTaskPage agentServiceListTasks(
-        String namespace, String tenant, String agent, AgentServiceListOptions options
-    ) throws ActeonException {
+    public AgentServiceTaskPage agentServiceListTasks(String agent, AgentServiceListOptions options) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
         if (options == null) options = AgentServiceListOptions.defaults();
         if (options.pageSize() != null && (options.pageSize() < 1 || options.pageSize() > 100))
             throw new IllegalArgumentException("pageSize must be between 1 and 100");
@@ -180,7 +184,7 @@ public class ActeonClient implements AutoCloseable {
         envelope.put("jsonrpc", "2.0"); envelope.put("id", requestId);
         envelope.put("method", "ListTasks"); envelope.put("params", params);
         var response = agentServiceRequest(
-            "POST", AgentServiceReceipt.rpcBase(namespace, tenant, agent), envelope, source, null);
+            "POST", AgentServiceReceipt.rpcBase(agent), envelope, source, null);
         try {
             var rpc = objectMapper.readTree(response.body());
             if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
@@ -192,27 +196,16 @@ public class ActeonClient implements AutoCloseable {
         catch (IllegalArgumentException e) { throw new ActeonException(e.getMessage(), e); }
     }
     /** Create or update one official A2A push configuration under task authority. */
-    public AgentServicePushConfig agentServiceCreatePushConfig(
-        String namespace, String tenant, String agent, String taskId,
-        AgentServicePushConfigInput input, AgentServiceReceipt source
-    ) throws ActeonException {
+    public AgentServicePushConfig agentServiceCreatePushConfig(String agent, String taskId, AgentServicePushConfigInput input, AgentServiceReceipt source) throws ActeonException {
         var params = pushConfigInput(taskId, input);
-        return AgentServicePushConfig.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
-            "CreateTaskPushNotificationConfig", params, source), taskId, input.id());
+        return AgentServicePushConfig.parse(agentServicePushRpc(agent, taskId, "CreateTaskPushNotificationConfig", params, source), taskId, input.id());
     }
     /** Read one management-only push configuration, including secret material. */
-    public AgentServicePushConfig agentServiceGetPushConfig(
-        String namespace, String tenant, String agent, String taskId, String configId,
-        AgentServiceReceipt source
-    ) throws ActeonException {
-        return AgentServicePushConfig.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
-            "GetTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source), taskId, configId);
+    public AgentServicePushConfig agentServiceGetPushConfig(String agent, String taskId, String configId, AgentServiceReceipt source) throws ActeonException {
+        return AgentServicePushConfig.parse(agentServicePushRpc(agent, taskId, "GetTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source), taskId, configId);
     }
     /** List exact-agent push configurations under the original task authority. */
-    public AgentServicePushConfigPage agentServiceListPushConfigs(
-        String namespace, String tenant, String agent, String taskId,
-        Integer pageSize, String pageToken, AgentServiceReceipt source
-    ) throws ActeonException {
+    public AgentServicePushConfigPage agentServiceListPushConfigs(String agent, String taskId, Integer pageSize, String pageToken, AgentServiceReceipt source) throws ActeonException {
         if (pageSize != null && (pageSize < 1 || pageSize > 100))
             throw new IllegalArgumentException("pageSize must be between 1 and 100");
         if (pageToken != null && pageToken.length() > 8192)
@@ -220,16 +213,11 @@ public class ActeonClient implements AutoCloseable {
         var params = new HashMap<String, Object>(); params.put("taskId", taskId);
         if (pageSize != null) params.put("pageSize", pageSize);
         if (pageToken != null) params.put("pageToken", pageToken);
-        return AgentServicePushConfigPage.parse(agentServicePushRpc(namespace, tenant, agent, taskId,
-            "ListTaskPushNotificationConfigs", params, source), taskId);
+        return AgentServicePushConfigPage.parse(agentServicePushRpc(agent, taskId, "ListTaskPushNotificationConfigs", params, source), taskId);
     }
     /** Delete one exact-agent push configuration. Repeating deletion is safe. */
-    public void agentServiceDeletePushConfig(
-        String namespace, String tenant, String agent, String taskId, String configId,
-        AgentServiceReceipt source
-    ) throws ActeonException {
-        var result = agentServicePushRpc(namespace, tenant, agent, taskId,
-            "DeleteTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source);
+    public void agentServiceDeletePushConfig(String agent, String taskId, String configId, AgentServiceReceipt source) throws ActeonException {
+        var result = agentServicePushRpc(agent, taskId, "DeleteTaskPushNotificationConfig", Map.of("taskId", taskId, "id", configId), source);
         if (!result.isObject() || result.size() != 0)
             throw new ActeonException("agent service A2A delete result is invalid");
     }
@@ -248,10 +236,10 @@ public class ActeonClient implements AutoCloseable {
         if (input.tokenRef() != null) params.put("tokenRef", input.tokenRef());
         return params;
     }
-    private com.fasterxml.jackson.databind.JsonNode agentServicePushRpc(
-        String namespace, String tenant, String agent, String taskId, String method,
-        Map<String, Object> params, AgentServiceReceipt source
-    ) throws ActeonException {
+    private com.fasterxml.jackson.databind.JsonNode agentServicePushRpc(String agent, String taskId, String method, Map<String, Object> params, AgentServiceReceipt source) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
         String sourceContext = null;
         if (source != null) {
             if (!namespace.equals(source.namespace()) || !tenant.equals(source.tenant())
@@ -260,7 +248,7 @@ public class ActeonClient implements AutoCloseable {
             sourceContext = AgentServiceReceipt.source(source.sourceContext());
         }
         String requestId = "push:" + method + ":" + taskId;
-        var response = agentServiceRequest("POST", AgentServiceReceipt.rpcBase(namespace, tenant, agent),
+        var response = agentServiceRequest("POST", AgentServiceReceipt.rpcBase(agent),
             Map.of("jsonrpc", "2.0", "id", requestId, "method", method, "params", params), sourceContext, null);
         try {
             var rpc = objectMapper.readTree(response.body());
@@ -277,7 +265,7 @@ public class ActeonClient implements AutoCloseable {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");
         if (skill == null || skill.equals("*") || !skill.matches("[A-Za-z0-9._-]{1,120}"))
             throw new IllegalArgumentException("invalid exact peer skill");
-        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+        String path = AgentServiceReceipt.base(source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId()) + "/peers?skill="
             + URLEncoder.encode(skill, StandardCharsets.UTF_8);
         var response = agentServiceRequest("GET", path, null, null, null);
@@ -287,7 +275,7 @@ public class ActeonClient implements AutoCloseable {
     /** Submit from an accepted source-agent task without sending authority fields. */
     public AgentPeerSendReceipt agentServiceSendPeer(AgentServiceReceipt source, String target, String skill, Map<String, Object> message) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");
-        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+        String path = AgentServiceReceipt.base(source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
             + "/peers/" + AgentServiceReceipt.segment(target)
             + "/" + AgentServiceReceipt.segment(skill) + "/message:send";
@@ -301,7 +289,7 @@ public class ActeonClient implements AutoCloseable {
         if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
             throw new IllegalArgumentException("invalid agent peer submission identity");
         AgentServiceReceipt.verifyTask(peer.task(), source.namespace(), source.tenant(), null);
-        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+        String path = AgentServiceReceipt.base(source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
             + "/peers/" + AgentServiceReceipt.segment(target)
             + "/" + AgentServiceReceipt.segment(skill)
@@ -327,7 +315,7 @@ public class ActeonClient implements AutoCloseable {
             throw new IllegalArgumentException("agent peer cancellation requires an accepted peer receipt");
         if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
             throw new IllegalArgumentException("invalid agent peer submission identity");
-        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+        String path = AgentServiceReceipt.base(source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
             + "/peers/" + AgentServiceReceipt.segment(target)
             + "/" + AgentServiceReceipt.segment(skill)
@@ -347,7 +335,7 @@ public class ActeonClient implements AutoCloseable {
         if (!"user".equals(message.get("role")) || message.get("taskId") != null
                 || message.get("contextId") != null || challengeBound)
             throw new IllegalArgumentException("agent peer continuation requires an unbound user response");
-        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+        String path = AgentServiceReceipt.base(source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
             + "/peers/" + AgentServiceReceipt.segment(target)
             + "/" + AgentServiceReceipt.segment(skill)
@@ -365,7 +353,7 @@ public class ActeonClient implements AutoCloseable {
                 || challengeId.chars().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("agent peer authorization requires an accepted peer and challenge");
         AgentServiceReceipt.verifyTask(peer.task(), source.namespace(), source.tenant(), null);
-        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+        String path = AgentServiceReceipt.base(source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
             + "/peers/" + AgentServiceReceipt.segment(target)
             + "/" + AgentServiceReceipt.segment(skill)
@@ -376,7 +364,7 @@ public class ActeonClient implements AutoCloseable {
     }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
         try {
             var value = objectMapper.readTree(response.body());
             if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue()
@@ -392,26 +380,29 @@ public class ActeonClient implements AutoCloseable {
 
     /** Observe the retained job without provider execution or global header mutation. */
     public com.fasterxml.jackson.databind.JsonNode agentServiceGetTask(AgentServiceReceipt receipt) throws ActeonException {
-        var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()), null);
+        var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()), null);
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
     /** Continue the retained task with an exact challenge-bound response. */
     public com.fasterxml.jackson.databind.JsonNode agentServiceContinueTask(AgentServiceReceipt receipt, Map<String, Object> message) throws ActeonException {
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/message:send", Map.of("message", message), AgentServiceReceipt.source(receipt.sourceContext()), null);
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/message:send", Map.of("message", message), AgentServiceReceipt.source(receipt.sourceContext()), null);
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
     /** Open the recipient service's fixed authorization profile. */
-    public com.fasterxml.jackson.databind.JsonNode agentServiceRequestAuthorization(String namespace, String tenant, String agent, String taskId, String authorizationRequestId) throws ActeonException {
+    public com.fasterxml.jackson.databind.JsonNode agentServiceRequestAuthorization(String agent, String taskId, String authorizationRequestId) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
         var body = Map.of("authorizationRequestId", authorizationRequestId);
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/tasks/"+AgentServiceReceipt.segment(taskId)+"/authorization:request", body, null, null);
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(agent)+"/tasks/"+AgentServiceReceipt.segment(taskId)+"/authorization:request", body, null, null);
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), namespace, tenant, taskId); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
     /** Resolve one exact authorization challenge through the host verifier. */
     public com.fasterxml.jackson.databind.JsonNode agentServiceResolveAuthorization(AgentServiceReceipt receipt, String challengeId) throws ActeonException {
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/authorization:resolve", Map.of("challengeId", challengeId), AgentServiceReceipt.source(receipt.sourceContext()), null);
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/authorization:resolve", Map.of("challengeId", challengeId), AgentServiceReceipt.source(receipt.sourceContext()), null);
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
@@ -649,8 +640,8 @@ public class ActeonClient implements AutoCloseable {
     // Health
     // =========================================================================
 
-    public Workforce.ScopeView workforce(String namespace, String tenant) throws ActeonException {
-        var node = platformRequest(PlatformOperation.WORKFORCE_INSPECT, null, Map.of("namespace",List.of(namespace),"tenant",List.of(tenant)), null);
+    public Workforce.ScopeView workforce() throws ActeonException {
+        var node = platformRequest(PlatformOperation.WORKFORCE_INSPECT, null, Map.of(), null);
         try { return objectMapper.treeToValue(node, Workforce.ScopeView.class); }
         catch (IOException e) { throw new ConnectionException("Malformed workforce response",e); }
     }
@@ -660,34 +651,37 @@ public class ActeonClient implements AutoCloseable {
         catch (IOException e) { throw new ConnectionException("Malformed workforce response",e); }
     }
 
-    public Governance.ScopeView governance(String namespace, String tenant) throws ActeonException {
+    public Governance.ScopeView governance() throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_INSPECT, null,
-            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+            Map.of(), null);
         try { return objectMapper.treeToValue(node, Governance.ScopeView.class); }
         catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
     }
     /** Inspect retained evidence using independently authorized management credentials. */
-    public ProviderExecutionHistory providerExecutionHistory(String namespace, String tenant, String executionId) throws ActeonException {
+    public ProviderExecutionHistory providerExecutionHistory(String executionId) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_PROVIDER_HISTORY,
-            Map.of("execution_id", executionId), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+            Map.of("execution_id", executionId), Map.of(), null);
         try { return objectMapper.treeToValue(node, ProviderExecutionHistory.class); }
         catch (IOException e) { throw new ConnectionException("Malformed provider history response", e); }
     }
-    public ProviderReconciliation.Correlation providerReconciliationCorrelation(String namespace, String tenant, String executionId, long ordinal) throws ActeonException {
+    public ProviderReconciliation.Correlation providerReconciliationCorrelation(String executionId, long ordinal) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION,
-            Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+            Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of(), null);
         try { return objectMapper.treeToValue(node, ProviderReconciliation.Correlation.class); }
         catch (IOException e) { throw new ConnectionException("Malformed reconciliation correlation", e); }
     }
-    public ProviderExecutionHistory.Receipt acceptProviderReconciliation(String namespace, String tenant, String executionId, long ordinal, ProviderReconciliation.Request request) throws ActeonException {
+    public ProviderExecutionHistory.Receipt acceptProviderReconciliation(String executionId, long ordinal, ProviderReconciliation.Request request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION,
-            Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), request);
+            Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of(), request);
         try { return objectMapper.treeToValue(node, ProviderExecutionHistory.Receipt.class); }
         catch (IOException e) { throw new ConnectionException("Malformed reconciliation receipt", e); }
     }
-    public Governance.RegistryProjectionView registryProjection(String namespace, String tenant, String agentId, String projection) throws ActeonException {
+    public Governance.RegistryProjectionView registryProjection(String agentId, String projection) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
         var node = platformRequest(PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION, Map.of("agent_id", agentId),
-            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant), "projection", List.of(projection)), null);
+            Map.of("projection", List.of(projection)), null);
         try {
             var r = objectMapper.treeToValue(node, Governance.RegistryProjectionView.class);
             if (!namespace.equals(r.namespace()) || !tenant.equals(r.tenant()) || !agentId.equals(r.agentId()) || !projection.equals(r.projection())
@@ -704,10 +698,11 @@ public class ActeonClient implements AutoCloseable {
     }
     /** Send once; preserve the same request and change ID for explicit recovery. */
     public Governance.RegistryMutationReceipt mutateRegistry(Governance.RegistryMutationRequest request) throws ActeonException {
+        var scope = identity().scope();
         var node = platformRequest(PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, null, null, request);
         try {
             var r = objectMapper.treeToValue(node, Governance.RegistryMutationReceipt.class);
-            if (!request.namespace().equals(r.namespace()) || !request.tenant().equals(r.tenant()) || !request.agentId().equals(r.agentId())
+            if (!scope.namespace().equals(r.namespace()) || !scope.tenant().equals(r.tenant()) || !request.agentId().equals(r.agentId())
                 || !request.changeId().equals(r.changeId()) || !request.projection().equals(r.projection())
                 || !node.path("expected_registry_revision").isIntegralNumber() || !node.path("expected_registry_revision").canConvertToLong()
                 || r.expectedRegistryRevision() < 0 || r.expectedRegistryRevision() != request.expectedRegistryRevision()
@@ -733,11 +728,9 @@ public class ActeonClient implements AutoCloseable {
         catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
     }
     /** List sanitized outbound delivery evidence under reconciliation authority. */
-    public Governance.FederationDeliveryEvidencePage federationDeliveryEvidence(String namespace,
-        String tenant, String after, Integer limit) throws ActeonException {
+    public Governance.FederationDeliveryEvidencePage federationDeliveryEvidence(String after, Integer limit) throws ActeonException {
         Map<String, List<String>> query = new HashMap<>();
-        query.put("namespace", List.of(namespace));
-        query.put("tenant", List.of(tenant));
+
         if (after != null) query.put("after", List.of(after));
         if (limit != null) query.put("limit", List.of(limit.toString()));
         var node = platformRequest(PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
@@ -766,11 +759,10 @@ public class ActeonClient implements AutoCloseable {
         }
     }
     /** Return immutable correlation for the currently ambiguous peer stage. */
-    public Governance.FederationFinalityCorrelation federationFinalityCorrelation(String namespace,
-        String tenant, String deliveryId) throws ActeonException {
+    public Governance.FederationFinalityCorrelation federationFinalityCorrelation(String deliveryId) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
             Map.of("delivery_id", deliveryId),
-            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+            Map.of(), null);
         try {
             var correlation = objectMapper.treeToValue(node, Governance.FederationFinalityCorrelation.class);
             if (!deliveryId.equals(correlation.deliveryId())
@@ -798,10 +790,9 @@ public class ActeonClient implements AutoCloseable {
         }
     }
     /** Fetch the audience-bound signed capability card for one current peer agent. */
-    public Governance.SignedFederationCapabilityCard federationCapabilities(String namespace,
-        String tenant, String agent) throws ActeonException {
+    public Governance.SignedFederationCapabilityCard federationCapabilities(String agent) throws ActeonException {
         var node = platformRequest(PlatformOperation.FEDERATION_CAPABILITIES,
-            Map.of("namespace", namespace, "tenant", tenant, "agent", agent), null, null);
+            Map.of("agent", agent), null, null);
         try {
             var card = objectMapper.treeToValue(node, Governance.SignedFederationCapabilityCard.class);
             if (card.payload() == null || card.payload().isEmpty()
@@ -814,10 +805,12 @@ public class ActeonClient implements AutoCloseable {
         }
     }
     /** Authenticate as a configured peer and retain imported authority without executing it. */
-    public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
-        Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {
+    public Governance.FederationImportReceipt importFederationEnvelope(Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
         var node = platformRequest(PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
-            Map.of("namespace", namespace, "tenant", tenant), null, Map.of("envelope", envelope));
+            Map.of(), null, Map.of("envelope", envelope));
         try {
             var receipt = objectMapper.treeToValue(node, Governance.FederationImportReceipt.class);
             if (!namespace.equals(receipt.namespace()) || !tenant.equals(receipt.tenant()) || receipt.executionStarted()) {
@@ -827,11 +820,12 @@ public class ActeonClient implements AutoCloseable {
         } catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
     }
     /** Execute or replay one exact message under signed imported federation authority. */
-    public com.fasterxml.jackson.databind.JsonNode invokeFederatedAgent(String namespace, String tenant,
-        String agent, Governance.SignedFederationInvocationDeclaration invocation,
-        Map<String, Object> message) throws ActeonException {
+    public com.fasterxml.jackson.databind.JsonNode invokeFederatedAgent(String agent, Governance.SignedFederationInvocationDeclaration invocation, Map<String, Object> message) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
         var task = platformRequest(PlatformOperation.FEDERATION_INVOKE_AGENT,
-            Map.of("namespace", namespace, "tenant", tenant, "agent", agent), null,
+            Map.of("agent", agent), null,
             Map.of("invocation", invocation, "message", message));
         if (!namespace.equals(task.path("namespace").asText())
             || !tenant.equals(task.path("tenant").asText())
@@ -841,29 +835,20 @@ public class ActeonClient implements AutoCloseable {
         return task;
     }
     /** Submit one host-qualified export from an accepted local agent task. */
-    public Governance.FederationExportReceipt exportFederatedMessage(String namespace, String tenant,
-        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
-        return federationExportRequest(PlatformOperation.FEDERATION_EXPORT_MESSAGE,
-            namespace, tenant, agent, taskId, profile, message);
+    public Governance.FederationExportReceipt exportFederatedMessage(String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_EXPORT_MESSAGE, agent, taskId, profile, message);
     }
     /** Observe retained export evidence without issuing network traffic. */
-    public Governance.FederationExportReceipt observeFederatedExport(String namespace, String tenant,
-        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
-        return federationExportRequest(PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
-            namespace, tenant, agent, taskId, profile, message);
+    public Governance.FederationExportReceipt observeFederatedExport(String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE, agent, taskId, profile, message);
     }
     /** Explicitly replay the exact request through a qualified idempotent destination. */
-    public Governance.FederationExportReceipt replayFederatedExport(String namespace, String tenant,
-        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
-        return federationExportRequest(PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
-            namespace, tenant, agent, taskId, profile, message);
+    public Governance.FederationExportReceipt replayFederatedExport(String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE, agent, taskId, profile, message);
     }
-    private Governance.FederationExportReceipt federationExportRequest(PlatformOperation operation,
-        String namespace, String tenant, String agent, String taskId, String profile,
-        Map<String, Object> message) throws ActeonException {
+    private Governance.FederationExportReceipt federationExportRequest(PlatformOperation operation, String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
         var node = platformRequest(operation,
-            Map.of("namespace", namespace, "tenant", tenant, "agent", agent,
-                "task_id", taskId, "profile", profile), null, Map.of("message", message));
+            Map.of("agent", agent, "task_id", taskId, "profile", profile), null, Map.of("message", message));
         try {
             var receipt = objectMapper.treeToValue(node, Governance.FederationExportReceipt.class);
             var attempt = receipt.attemptStatus();
@@ -1216,12 +1201,7 @@ public class ActeonClient implements AutoCloseable {
             List<String> params = new ArrayList<>();
 
             if (query != null) {
-                if (query.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (query.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (query.getProvider() != null) {
                     params.add("provider=" + URLEncoder.encode(query.getProvider(), StandardCharsets.UTF_8));
                 }
@@ -1333,12 +1313,7 @@ public class ActeonClient implements AutoCloseable {
             List<String> params = new ArrayList<>();
 
             if (query != null) {
-                if (query.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (query.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (query.getProvider() != null) {
                     params.add("provider=" + URLEncoder.encode(query.getProvider(), StandardCharsets.UTF_8));
                 }
@@ -1381,13 +1356,12 @@ public class ActeonClient implements AutoCloseable {
     // =========================================================================
 
     /**
-     * Lists events filtered by namespace, tenant, and optionally status.
+     * Lists events filtered by optional status within the credential context.
      */
     public EventListResponse listEvents(EventQuery query) throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
-            params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+
             if (query.getStatus() != null) {
                 params.add("status=" + URLEncoder.encode(query.getStatus(), StandardCharsets.UTF_8));
             }
@@ -1418,11 +1392,10 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Gets the current state of an event by fingerprint.
      */
-    public Optional<EventState> getEvent(String fingerprint, String namespace, String tenant) throws ActeonException {
+    public Optional<EventState> getEvent(String fingerprint) throws ActeonException {
         try {
             String path = "/v1/events/" + URLEncoder.encode(fingerprint, StandardCharsets.UTF_8)
-                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                ;
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -1448,13 +1421,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Transitions an event to a new state.
      */
-    public TransitionResponse transitionEvent(String fingerprint, String toState, String namespace, String tenant) throws ActeonException {
+    public TransitionResponse transitionEvent(String fingerprint, String toState) throws ActeonException {
         try {
-            String body = objectMapper.writeValueAsString(Map.of(
-                "to", toState,
-                "namespace", namespace,
-                "tenant", tenant
-            ));
+            String body = objectMapper.writeValueAsString(Map.of("to", toState));
             HttpRequest request = requestBuilder("/v1/events/" + URLEncoder.encode(fingerprint, StandardCharsets.UTF_8) + "/transition")
                 .PUT(HttpRequest.BodyPublishers.ofString(body))
                 .build();
@@ -1482,30 +1451,19 @@ public class ActeonClient implements AutoCloseable {
     // =========================================================================
 
     /**
-     * Approves a pending action by namespace, tenant, ID, and HMAC signature.
-     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     * Approves a pending action by ID in the authenticated credential context.
+     * Requires an authenticated operator or admin credential.
      */
-    public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
-        return approve(namespace, tenant, id, sig, expiresAt, null);
-    }
 
     /**
-     * Approves a pending action by namespace, tenant, ID, HMAC signature, and optional key ID.
-     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     * Approves a pending action by ID in the authenticated credential context.
+     * Requires an authenticated operator or admin credential.
      *
-     * @param kid Optional key ID identifying which HMAC key was used. Pass null to omit.
      */
-    public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig, long expiresAt, String kid) throws ActeonException {
+    public ApprovalActionResponse approve(String id) throws ActeonException {
         try {
             String path = "/v1/approvals/"
-                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/approve"
-                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
-                + "&expires_at=" + expiresAt;
-            if (kid != null) {
-                path += "&kid=" + URLEncoder.encode(kid, StandardCharsets.UTF_8);
-            }
+                + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/approve";
 
             HttpRequest request = requestBuilder(path)
                 .POST(HttpRequest.BodyPublishers.noBody())
@@ -1531,30 +1489,19 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /**
-     * Rejects a pending action by namespace, tenant, ID, and HMAC signature.
-     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     * Rejects a pending action by ID in the authenticated credential context.
+     * Requires an authenticated operator or admin credential.
      */
-    public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
-        return reject(namespace, tenant, id, sig, expiresAt, null);
-    }
 
     /**
-     * Rejects a pending action by namespace, tenant, ID, HMAC signature, and optional key ID.
-     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     * Rejects a pending action by ID in the authenticated credential context.
+     * Requires an authenticated operator or admin credential.
      *
-     * @param kid Optional key ID identifying which HMAC key was used. Pass null to omit.
      */
-    public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig, long expiresAt, String kid) throws ActeonException {
+    public ApprovalActionResponse reject(String id) throws ActeonException {
         try {
             String path = "/v1/approvals/"
-                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/reject"
-                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
-                + "&expires_at=" + expiresAt;
-            if (kid != null) {
-                path += "&kid=" + URLEncoder.encode(kid, StandardCharsets.UTF_8);
-            }
+                + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/reject";
 
             HttpRequest request = requestBuilder(path)
                 .POST(HttpRequest.BodyPublishers.noBody())
@@ -1580,30 +1527,19 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /**
-     * Gets the status of an approval by namespace, tenant, ID, and HMAC signature.
+     * Gets the status of an approval by ID in the authenticated credential context.
      * Returns empty if not found or expired.
      */
-    public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
-        return getApproval(namespace, tenant, id, sig, expiresAt, null);
-    }
 
     /**
-     * Gets the status of an approval by namespace, tenant, ID, HMAC signature, and optional key ID.
+     * Gets the status of an approval by ID in the authenticated credential context.
      * Returns empty if not found or expired.
      *
-     * @param kid Optional key ID identifying which HMAC key was used. Pass null to omit.
      */
-    public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig, long expiresAt, String kid) throws ActeonException {
+    public Optional<ApprovalStatus> getApproval(String id) throws ActeonException {
         try {
             String path = "/v1/approvals/"
-                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(id, StandardCharsets.UTF_8)
-                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
-                + "&expires_at=" + expiresAt;
-            if (kid != null) {
-                path += "&kid=" + URLEncoder.encode(kid, StandardCharsets.UTF_8);
-            }
+                + URLEncoder.encode(id, StandardCharsets.UTF_8);
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -1627,14 +1563,13 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /**
-     * Lists pending approvals filtered by namespace and tenant.
+     * Lists pending approvals within the credential context.
      * Requires authentication.
      */
-    public ApprovalListResponse listApprovals(String namespace, String tenant) throws ActeonException {
+    public ApprovalListResponse listApprovals() throws ActeonException {
         try {
-            String path = "/v1/approvals?"
-                + "namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+            String path = "/v1/approvals"
+                ;
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -1775,12 +1710,7 @@ public class ActeonClient implements AutoCloseable {
             List<String> params = new ArrayList<>();
 
             if (filter != null) {
-                if (filter.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(filter.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (filter.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(filter.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (filter.getStatus() != null) {
                     params.add("status=" + URLEncoder.encode(filter.getStatus(), StandardCharsets.UTF_8));
                 }
@@ -1818,11 +1748,10 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Gets details of a specific recurring action.
      */
-    public Optional<RecurringDetail> getRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+    public Optional<RecurringDetail> getRecurring(String recurringId) throws ActeonException {
         try {
             String path = "/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8)
-                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                ;
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -1876,11 +1805,10 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Deletes a recurring action.
      */
-    public void deleteRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+    public void deleteRecurring(String recurringId) throws ActeonException {
         try {
             String path = "/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8)
-                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                ;
 
             HttpRequest request = requestBuilder(path)
                 .DELETE()
@@ -1906,9 +1834,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Pauses a recurring action.
      */
-    public RecurringDetail pauseRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+    public RecurringDetail pauseRecurring(String recurringId) throws ActeonException {
         try {
-            String body = objectMapper.writeValueAsString(Map.of("namespace", namespace, "tenant", tenant));
+            String body = objectMapper.writeValueAsString(Map.of());
             HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8) + "/pause")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
@@ -1935,9 +1863,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Resumes a paused recurring action.
      */
-    public RecurringDetail resumeRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+    public RecurringDetail resumeRecurring(String recurringId) throws ActeonException {
         try {
-            String body = objectMapper.writeValueAsString(Map.of("namespace", namespace, "tenant", tenant));
+            String body = objectMapper.writeValueAsString(Map.of());
             HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8) + "/resume")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
@@ -1973,12 +1901,7 @@ public class ActeonClient implements AutoCloseable {
             StringBuilder path = new StringBuilder("/v1/swarm/runs");
             List<String> params = new ArrayList<>();
             if (filter != null) {
-                if (filter.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(filter.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (filter.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(filter.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (filter.getStatus() != null) {
                     params.add("status=" + URLEncoder.encode(filter.getStatus(), StandardCharsets.UTF_8));
                 }
@@ -2092,15 +2015,10 @@ public class ActeonClient implements AutoCloseable {
      * name (e.g. "slack") to match only per-provider policies. The
      * principal filter matches policies scoped to a given caller.
      */
-    public ListQuotasResponse listQuotas(String namespace, String tenant, String provider, String principal) throws ActeonException {
+    public ListQuotasResponse listQuotas(String provider, String principal) throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            if (namespace != null) {
-                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            }
-            if (tenant != null) {
-                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
-            }
+
             if (provider != null) {
                 params.add("provider=" + URLEncoder.encode(provider, StandardCharsets.UTF_8));
             }
@@ -2191,11 +2109,10 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Deletes a quota policy.
      */
-    public void deleteQuota(String quotaId, String namespace, String tenant) throws ActeonException {
+    public void deleteQuota(String quotaId) throws ActeonException {
         try {
             String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8)
-                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                ;
 
             HttpRequest request = requestBuilder(path)
                 .DELETE()
@@ -2281,15 +2198,10 @@ public class ActeonClient implements AutoCloseable {
      * Lists silences, optionally filtered by namespace, tenant, or
      * whether to include expired silences.
      */
-    public ListSilencesResponse listSilences(String namespace, String tenant, boolean includeExpired) throws ActeonException {
+    public ListSilencesResponse listSilences(boolean includeExpired) throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            if (namespace != null) {
-                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            }
-            if (tenant != null) {
-                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
-            }
+
             if (includeExpired) {
                 params.add("include_expired=true");
             }
@@ -2437,15 +2349,10 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Lists time intervals filtered by namespace and/or tenant.
      */
-    public ListTimeIntervalsResponse listTimeIntervals(String namespace, String tenant) throws ActeonException {
+    public ListTimeIntervalsResponse listTimeIntervals() throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            if (namespace != null) {
-                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            }
-            if (tenant != null) {
-                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
-            }
+
             String path = "/v1/time-intervals";
             if (!params.isEmpty()) {
                 path += "?" + String.join("&", params);
@@ -2468,11 +2375,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Fetches a single time interval. Returns an empty Optional on 404.
      */
-    public Optional<TimeInterval> getTimeInterval(String namespace, String tenant, String name) throws ActeonException {
+    public Optional<TimeInterval> getTimeInterval(String name) throws ActeonException {
         try {
             String path = "/v1/time-intervals/"
-                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(name, StandardCharsets.UTF_8);
             HttpRequest request = requestBuilder(path).GET().build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -2494,11 +2399,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Updates a time interval's ranges, location, or description.
      */
-    public TimeInterval updateTimeInterval(String namespace, String tenant, String name, UpdateTimeIntervalRequest update) throws ActeonException {
+    public TimeInterval updateTimeInterval(String name, UpdateTimeIntervalRequest update) throws ActeonException {
         try {
             String path = "/v1/time-intervals/"
-                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(name, StandardCharsets.UTF_8);
             String body = objectMapper.writeValueAsString(update);
             HttpRequest request = requestBuilder(path)
@@ -2524,11 +2427,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Deletes a time interval.
      */
-    public void deleteTimeInterval(String namespace, String tenant, String name) throws ActeonException {
+    public void deleteTimeInterval(String name) throws ActeonException {
         try {
             String path = "/v1/time-intervals/"
-                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
-                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(name, StandardCharsets.UTF_8);
             HttpRequest request = requestBuilder(path).DELETE().build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -2580,15 +2481,10 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Lists retention policies with optional namespace, tenant, limit, and offset filters.
      */
-    public ListRetentionResponse listRetention(String namespace, String tenant, Integer limit, Integer offset) throws ActeonException {
+    public ListRetentionResponse listRetention(Integer limit, Integer offset) throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            if (namespace != null) {
-                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            }
-            if (tenant != null) {
-                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
-            }
+
             if (limit != null) {
                 params.add("limit=" + limit);
             }
@@ -2737,15 +2633,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Lists payload templates with optional namespace and tenant filters.
      */
-    public ListTemplatesResponse listTemplates(String namespace, String tenant) throws ActeonException {
+    public ListTemplatesResponse listTemplates() throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            if (namespace != null) {
-                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            }
-            if (tenant != null) {
-                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
-            }
 
             String path = "/v1/templates";
             if (!params.isEmpty()) {
@@ -2884,15 +2774,9 @@ public class ActeonClient implements AutoCloseable {
     /**
      * Lists template profiles with optional namespace and tenant filters.
      */
-    public ListProfilesResponse listProfiles(String namespace, String tenant) throws ActeonException {
+    public ListProfilesResponse listProfiles() throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            if (namespace != null) {
-                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            }
-            if (tenant != null) {
-                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
-            }
 
             String path = "/v1/templates/profiles";
             if (!params.isEmpty()) {
@@ -3255,18 +3139,15 @@ public class ActeonClient implements AutoCloseable {
     // =========================================================================
 
     /**
-     * Lists chain executions filtered by namespace, tenant, and optional status.
+     * Lists chain executions filtered by optional status within the credential context.
      *
-     * @param namespace namespace to filter by
-     * @param tenant    tenant to filter by
      * @param status    optional status filter ({@code "running"}, {@code "completed"},
      *                  {@code "failed"}, {@code "cancelled"}, {@code "timed_out"})
      */
-    public ListChainsResponse listChains(String namespace, String tenant, String status) throws ActeonException {
+    public ListChainsResponse listChains(String status) throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
-            params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
-            params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+
             if (status != null) {
                 params.add("status=" + URLEncoder.encode(status, StandardCharsets.UTF_8));
             }
@@ -3295,14 +3176,11 @@ public class ActeonClient implements AutoCloseable {
      * Gets full details of a chain execution including step results.
      *
      * @param chainId   chain execution ID
-     * @param namespace namespace the chain belongs to
-     * @param tenant    tenant the chain belongs to
      */
-    public Optional<ChainDetailResponse> getChain(String chainId, String namespace, String tenant) throws ActeonException {
+    public Optional<ChainDetailResponse> getChain(String chainId) throws ActeonException {
         try {
             String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
-                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                ;
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -3361,14 +3239,11 @@ public class ActeonClient implements AutoCloseable {
      * Gets the DAG representation for a running chain instance.
      *
      * @param chainId   chain execution ID
-     * @param namespace namespace the chain belongs to
-     * @param tenant    tenant the chain belongs to
      */
-    public DagResponse getChainDag(String chainId, String namespace, String tenant) throws ActeonException {
+    public DagResponse getChainDag(String chainId) throws ActeonException {
         try {
             String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
-                + "/dag?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                + "/dag";
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -3425,14 +3300,11 @@ public class ActeonClient implements AutoCloseable {
      * Gets the retry history for a chain execution.
      *
      * @param chainId   chain execution ID
-     * @param namespace namespace the chain belongs to
-     * @param tenant    tenant the chain belongs to
      */
-    public ChainHistoryResponse getChainHistory(String chainId, String namespace, String tenant) throws ActeonException {
+    public ChainHistoryResponse getChainHistory(String chainId) throws ActeonException {
         try {
             String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
-                + "/history?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
-                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+                + "/history";
 
             HttpRequest request = requestBuilder(path)
                 .GET()
@@ -3539,12 +3411,7 @@ public class ActeonClient implements AutoCloseable {
         try {
             List<String> params = new ArrayList<>();
             if (options != null) {
-                if (options.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(options.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (options.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(options.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (options.getIncludeHistory() != null) {
                     params.add("include_history=" + options.getIncludeHistory());
                 }
@@ -3605,12 +3472,7 @@ public class ActeonClient implements AutoCloseable {
                 if (query.getMetric() != null) {
                     params.add("metric=" + URLEncoder.encode(query.getMetric(), StandardCharsets.UTF_8));
                 }
-                if (query.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (query.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (query.getProvider() != null) {
                     params.add("provider=" + URLEncoder.encode(query.getProvider(), StandardCharsets.UTF_8));
                 }
@@ -3682,12 +3544,7 @@ public class ActeonClient implements AutoCloseable {
             List<String> params = new ArrayList<>();
 
             if (query != null) {
-                if (query.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
-                }
-                if (query.getTenant() != null) {
-                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
-                }
+
                 if (query.getFrom() != null) {
                     params.add("from=" + URLEncoder.encode(query.getFrom(), StandardCharsets.UTF_8));
                 }
@@ -3750,9 +3607,7 @@ public class ActeonClient implements AutoCloseable {
             String lastEventId = null;
 
             if (options != null) {
-                if (options.getNamespace() != null) {
-                    params.add("namespace=" + URLEncoder.encode(options.getNamespace(), StandardCharsets.UTF_8));
-                }
+
                 if (options.getActionType() != null) {
                     params.add("action_type=" + URLEncoder.encode(options.getActionType(), StandardCharsets.UTF_8));
                 }
@@ -3983,23 +3838,25 @@ public class ActeonClient implements AutoCloseable {
         return busSend("POST", "/v1/bus/topics", req, Bus.BusTopic.class);
     }
 
-    public List<Bus.BusTopic> listBusTopics(String namespace, String tenant) throws ActeonException {
+    public List<Bus.BusTopic> listBusTopics() throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        if (namespace != null) params.put("namespace", namespace);
-        if (tenant != null) params.put("tenant", tenant);
+
         Bus.ListBusTopicsResponse resp = busSend("GET", appendQuery("/v1/bus/topics", params),
             null, Bus.ListBusTopicsResponse.class);
         return resp.topics() == null ? List.of() : resp.topics();
     }
 
-    public Bus.BusTopic getBusTopic(String namespace, String tenant, String name) throws ActeonException {
-        return listBusTopics(namespace, tenant).stream()
+    public Bus.BusTopic getBusTopic(String name) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
+        return listBusTopics().stream()
             .filter(t -> namespace.equals(t.namespace()) && tenant.equals(t.tenant()) && name.equals(t.name()))
             .findFirst().orElseThrow(() -> new HttpException(404, "Bus topic not found"));
     }
 
-    public void deleteBusTopic(String namespace, String tenant, String name) throws ActeonException {
-        Bus.BusTopic topic = getBusTopic(namespace, tenant, name);
+    public void deleteBusTopic(String name) throws ActeonException {
+        Bus.BusTopic topic = getBusTopic(name);
         busSendVoid("DELETE", "/v1/bus/topics/" + busSeg(topic.kafkaName()), null);
     }
 
@@ -4013,30 +3870,32 @@ public class ActeonClient implements AutoCloseable {
         return busSend("POST", "/v1/bus/subscriptions", req, Bus.BusSubscription.class);
     }
 
-    public List<Bus.BusSubscription> listBusSubscriptions(String namespace, String tenant, String topic) throws ActeonException {
+    public List<Bus.BusSubscription> listBusSubscriptions(String topic) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        if (namespace != null) params.put("namespace", namespace);
-        if (tenant != null) params.put("tenant", tenant);
+
         if (topic != null) params.put("topic", topic);
         Bus.ListBusSubscriptionsResponse resp = busSend("GET", appendQuery("/v1/bus/subscriptions", params),
             null, Bus.ListBusSubscriptionsResponse.class);
         return resp.subscriptions() == null ? List.of() : resp.subscriptions();
     }
 
-    public Bus.BusSubscription getBusSubscription(String namespace, String tenant, String subId) throws ActeonException {
-        return listBusSubscriptions(namespace, tenant, null).stream()
+    public Bus.BusSubscription getBusSubscription(String subId) throws ActeonException {
+        var scope = identity().scope();
+        String namespace = scope.namespace();
+        String tenant = scope.tenant();
+        return listBusSubscriptions(null).stream()
             .filter(s -> namespace.equals(s.namespace()) && tenant.equals(s.tenant()) && subId.equals(s.id()))
             .findFirst().orElseThrow(() -> new HttpException(404, "Bus subscription not found"));
     }
 
-    public void deleteBusSubscription(String namespace, String tenant, String subId) throws ActeonException {
+    public void deleteBusSubscription(String subId) throws ActeonException {
         busSendVoid("DELETE",
-            "/v1/bus/subscriptions/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subId), null);
+            "/v1/bus/subscriptions/" + "" + busSeg(subId), null);
     }
 
-    public Bus.BusLag getBusSubscriptionLag(String namespace, String tenant, String subId) throws ActeonException {
+    public Bus.BusLag getBusSubscriptionLag(String subId) throws ActeonException {
         return busSend("GET",
-            "/v1/bus/subscriptions/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subId) + "/lag",
+            "/v1/bus/subscriptions/" + "" + busSeg(subId) + "/lag",
             null, Bus.BusLag.class);
     }
 
@@ -4046,10 +3905,9 @@ public class ActeonClient implements AutoCloseable {
         return busSend("POST", "/v1/bus/schemas", req, Bus.BusSchema.class);
     }
 
-    public List<Bus.BusSchema> listBusSchemas(String namespace, String tenant, String subject, boolean latestOnly) throws ActeonException {
+    public List<Bus.BusSchema> listBusSchemas(String subject, boolean latestOnly) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        if (namespace != null) params.put("namespace", namespace);
-        if (tenant != null) params.put("tenant", tenant);
+
         if (subject != null) params.put("subject", subject);
         if (latestOnly) params.put("latest_only", "true");
         Bus.ListBusSchemasResponse resp = busSend("GET", appendQuery("/v1/bus/schemas", params),
@@ -4057,15 +3915,15 @@ public class ActeonClient implements AutoCloseable {
         return resp.schemas() == null ? List.of() : resp.schemas();
     }
 
-    public Bus.BusSchema getBusSchema(String namespace, String tenant, String subject, int version) throws ActeonException {
+    public Bus.BusSchema getBusSchema(String subject, int version) throws ActeonException {
         return busSend("GET",
-            "/v1/bus/schemas/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subject) + "/" + version,
+            "/v1/bus/schemas/" + "" + busSeg(subject) + "/" + version,
             null, Bus.BusSchema.class);
     }
 
-    public void deleteBusSchema(String namespace, String tenant, String subject, int version) throws ActeonException {
+    public void deleteBusSchema(String subject, int version) throws ActeonException {
         busSendVoid("DELETE",
-            "/v1/bus/schemas/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subject) + "/" + version,
+            "/v1/bus/schemas/" + "" + busSeg(subject) + "/" + version,
             null);
     }
 
@@ -4075,30 +3933,29 @@ public class ActeonClient implements AutoCloseable {
         return busSend("POST", "/v1/bus/agents", req, Bus.BusAgent.class);
     }
 
-    public List<Bus.BusAgent> listBusAgents(String namespace, String tenant) throws ActeonException {
+    public List<Bus.BusAgent> listBusAgents() throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        if (namespace != null) params.put("namespace", namespace);
-        if (tenant != null) params.put("tenant", tenant);
+
         Bus.ListBusAgentsResponse resp = busSend("GET", appendQuery("/v1/bus/agents", params),
             null, Bus.ListBusAgentsResponse.class);
         return resp.agents() == null ? List.of() : resp.agents();
     }
 
-    public Bus.BusAgent getBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+    public Bus.BusAgent getBusAgent(String agentId) throws ActeonException {
         return busSend("GET",
-            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId),
+            "/v1/bus/agents/" + "" + busSeg(agentId),
             null, Bus.BusAgent.class);
     }
 
-    public void deleteBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+    public void deleteBusAgent(String agentId) throws ActeonException {
         busSendVoid("DELETE",
-            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId),
+            "/v1/bus/agents/" + "" + busSeg(agentId),
             null);
     }
 
-    public Bus.BusAgent heartbeatBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+    public Bus.BusAgent heartbeatBusAgent(String agentId) throws ActeonException {
         return busSend("PATCH",
-            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId) + "/heartbeat",
+            "/v1/bus/agents/" + "" + busSeg(agentId) + "/heartbeat",
             null, Bus.BusAgent.class);
     }
 
@@ -4109,11 +3966,9 @@ public class ActeonClient implements AutoCloseable {
      * {@code req.expiresAt()} is set on anything other than
      * {@code "suspended"}.
      */
-    public Bus.BusAgent setBusAgentAdminState(
-        String namespace, String tenant, String agentId, Bus.SetBusAgentAdminState req
-    ) throws ActeonException {
+    public Bus.BusAgent setBusAgentAdminState(String agentId, Bus.SetBusAgentAdminState req) throws ActeonException {
         return busSend("PUT",
-            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId) + "/admin-state",
+            "/v1/bus/agents/" + "" + busSeg(agentId) + "/admin-state",
             req, Bus.BusAgent.class);
     }
 
@@ -4123,10 +3978,9 @@ public class ActeonClient implements AutoCloseable {
         return busSend("POST", "/v1/bus/conversations", req, Bus.BusConversation.class);
     }
 
-    public List<Bus.BusConversation> listBusConversations(String namespace, String tenant, String state, String participant) throws ActeonException {
+    public List<Bus.BusConversation> listBusConversations(String state, String participant) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        if (namespace != null) params.put("namespace", namespace);
-        if (tenant != null) params.put("tenant", tenant);
+
         if (state != null) params.put("state", state);
         if (participant != null) params.put("participant", participant);
         Bus.ListBusConversationsResponse resp = busSend("GET", appendQuery("/v1/bus/conversations", params),
@@ -4134,43 +3988,37 @@ public class ActeonClient implements AutoCloseable {
         return resp.conversations() == null ? List.of() : resp.conversations();
     }
 
-    public Bus.BusConversation getBusConversation(String namespace, String tenant, String conversationId) throws ActeonException {
+    public Bus.BusConversation getBusConversation(String conversationId) throws ActeonException {
         return busSend("GET",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId),
+            "/v1/bus/conversations/" + "" + busSeg(conversationId),
             null, Bus.BusConversation.class);
     }
 
-    public void deleteBusConversation(String namespace, String tenant, String conversationId) throws ActeonException {
+    public void deleteBusConversation(String conversationId) throws ActeonException {
         busSendVoid("DELETE",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId),
+            "/v1/bus/conversations/" + "" + busSeg(conversationId),
             null);
     }
 
-    public Bus.BusConversation transitionBusConversation(String namespace, String tenant, String conversationId, String targetState) throws ActeonException {
+    public Bus.BusConversation transitionBusConversation(String conversationId, String targetState) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/transition",
+            "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/transition",
             new Bus.TransitionBusConversationRequest(targetState),
             Bus.BusConversation.class);
     }
 
-    public Map<String, Object> appendBusConversationMessage(
-        String namespace, String tenant, String conversationId,
-        Bus.AppendBusConversationMessage req
-    ) throws ActeonException {
+    public Map<String, Object> appendBusConversationMessage(String conversationId, Bus.AppendBusConversationMessage req) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
+            "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/messages",
             req, new TypeReference<Map<String, Object>>() {});
     }
 
-    public Bus.BusReplayResponse replayBusConversationMessages(
-        String namespace, String tenant, String conversationId,
-        Integer limit, String cursor
-    ) throws ActeonException {
+    public Bus.BusReplayResponse replayBusConversationMessages(String conversationId, Integer limit, String cursor) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
         if (limit != null) params.put("limit", limit.toString());
         if (cursor != null) params.put("cursor", cursor);
         String path = appendQuery(
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
+            "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/messages",
             params);
         return busSend("GET", path, null, Bus.BusReplayResponse.class);
     }
@@ -4187,14 +4035,11 @@ public class ActeonClient implements AutoCloseable {
      * {@code req.requireApproval()}). Pattern-match with
      * {@code switch} to handle both branches.
      */
-    public Bus.PostBusToolCallOutcome postBusToolCall(
-        String namespace, String tenant, String conversationId,
-        Bus.PostBusToolCall req
-    ) throws ActeonException {
+    public Bus.PostBusToolCallOutcome postBusToolCall(String conversationId, Bus.PostBusToolCall req) throws ActeonException {
         try {
             String body = objectMapper.writeValueAsString(req);
             HttpRequest request = requestBuilder(
-                "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/tool-calls"
+                "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/tool-calls"
             ).POST(HttpRequest.BodyPublishers.ofString(body)).build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -4214,46 +4059,34 @@ public class ActeonClient implements AutoCloseable {
         }
     }
 
-    public Bus.BusToolEnvelopeReceipt postBusToolResult(
-        String namespace, String tenant, String conversationId,
-        Bus.PostBusToolResult req
-    ) throws ActeonException {
+    public Bus.BusToolEnvelopeReceipt postBusToolResult(String conversationId, Bus.PostBusToolResult req) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/tool-results",
+            "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/tool-results",
             req, Bus.BusToolEnvelopeReceipt.class);
     }
 
-    public Bus.BusToolResultLookup lookupBusToolResult(
-        String namespace, String tenant, String callId,
-        Bus.BusToolResultLookupParams params
-    ) throws ActeonException {
+    public Bus.BusToolResultLookup lookupBusToolResult(String callId, Bus.BusToolResultLookupParams params) throws ActeonException {
         java.util.LinkedHashMap<String, String> q = new java.util.LinkedHashMap<>();
         q.put("conversation_id", params.conversationId());
         if (params.cursor() != null) q.put("cursor", params.cursor());
         if (params.timeoutMs() != null) q.put("timeout_ms", params.timeoutMs().toString());
         String path = appendQuery(
-            "/v1/bus/tool-calls/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(callId) + "/result",
+            "/v1/bus/tool-calls/" + "" + busSeg(callId) + "/result",
             q);
         return busSend("GET", path, null, Bus.BusToolResultLookup.class);
     }
 
     // --------------- Phase 6b: Stream envelopes ---------------
 
-    public Bus.BusStreamEnvelopeReceipt postBusStreamChunk(
-        String namespace, String tenant, String conversationId,
-        Bus.PostBusStreamChunk req
-    ) throws ActeonException {
+    public Bus.BusStreamEnvelopeReceipt postBusStreamChunk(String conversationId, Bus.PostBusStreamChunk req) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/stream-chunks",
+            "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/stream-chunks",
             req, Bus.BusStreamEnvelopeReceipt.class);
     }
 
-    public Bus.BusStreamEnvelopeReceipt postBusStreamEnd(
-        String namespace, String tenant, String conversationId,
-        Bus.PostBusStreamEnd req
-    ) throws ActeonException {
+    public Bus.BusStreamEnvelopeReceipt postBusStreamEnd(String conversationId, Bus.PostBusStreamEnd req) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/stream-end",
+            "/v1/bus/conversations/" + "" + busSeg(conversationId) + "/stream-end",
             req, Bus.BusStreamEnvelopeReceipt.class);
     }
 
@@ -4262,9 +4095,9 @@ public class ActeonClient implements AutoCloseable {
      * preferred SSE client. Path segments are encoded the same way
      * the Rust + Python + Node + Go SDKs encode them.
      */
-    public String busStreamConsumeUrl(String namespace, String tenant, String conversationId, String streamId) {
+    public String busStreamConsumeUrl(String conversationId, String streamId) {
         return baseUrl + "/v1/bus/streams/"
-            + busSeg(namespace) + "/" + busSeg(tenant) + "/"
+            + ""
             + busSeg(conversationId) + "/" + busSeg(streamId);
     }
 
@@ -4357,10 +4190,8 @@ public class ActeonClient implements AutoCloseable {
      * }
      * }</pre>
      */
-    public BusStreamSseIterator consumeBusStream(
-        String namespace, String tenant, String conversationId, String streamId
-    ) throws ActeonException {
-        String path = "/v1/bus/streams/" + busSeg(namespace) + "/" + busSeg(tenant) + "/"
+    public BusStreamSseIterator consumeBusStream(String conversationId, String streamId) throws ActeonException {
+        String path = "/v1/bus/streams/" + ""
             + busSeg(conversationId) + "/" + busSeg(streamId);
         InputStream body = openSseStream(path);
         return new BusStreamSseIterator(body);
@@ -4400,38 +4231,32 @@ public class ActeonClient implements AutoCloseable {
 
     // --------------- Phase 6c: HITL approvals ---------------
 
-    public List<Bus.BusApprovalView> listBusApprovals(
-        String namespace, String tenant, String status, String conversationId
-    ) throws ActeonException {
+    public List<Bus.BusApprovalView> listBusApprovals(String status, String conversationId) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
         if (status != null) params.put("status", status);
         if (conversationId != null) params.put("conversation_id", conversationId);
         String path = appendQuery(
-            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant),
+            "/v1/bus/approvals/" ,
             params);
         Bus.ListBusApprovalsResponse resp = busSend("GET", path, null, Bus.ListBusApprovalsResponse.class);
         return resp.approvals() == null ? List.of() : resp.approvals();
     }
 
-    public Bus.BusApprovalView getBusApproval(String namespace, String tenant, String approvalId) throws ActeonException {
+    public Bus.BusApprovalView getBusApproval(String approvalId) throws ActeonException {
         return busSend("GET",
-            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId),
+            "/v1/bus/approvals/" + "" + busSeg(approvalId),
             null, Bus.BusApprovalView.class);
     }
 
-    public Bus.BusApprovalDecisionResponse approveBusApproval(
-        String namespace, String tenant, String approvalId, Bus.BusApprovalDecision decision
-    ) throws ActeonException {
+    public Bus.BusApprovalDecisionResponse approveBusApproval(String approvalId, Bus.BusApprovalDecision decision) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/approve",
+            "/v1/bus/approvals/" + "" + busSeg(approvalId) + "/approve",
             decision, Bus.BusApprovalDecisionResponse.class);
     }
 
-    public Bus.BusApprovalDecisionResponse rejectBusApproval(
-        String namespace, String tenant, String approvalId, Bus.BusApprovalDecision decision
-    ) throws ActeonException {
+    public Bus.BusApprovalDecisionResponse rejectBusApproval(String approvalId, Bus.BusApprovalDecision decision) throws ActeonException {
         return busSend("POST",
-            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/reject",
+            "/v1/bus/approvals/" + "" + busSeg(approvalId) + "/reject",
             decision, Bus.BusApprovalDecisionResponse.class);
     }
 
@@ -4516,46 +4341,34 @@ public class ActeonClient implements AutoCloseable {
 
     /** {@code POST /a2a/{namespace}/{tenant}/v1/message:send} —
      *  start a new A2A Task or continue an existing one. */
-    public Map<String, Object> a2aSendMessage(
-        String namespace, String tenant, Map<String, Object> message
-    ) throws ActeonException {
+    public Map<String, Object> a2aSendMessage(Map<String, Object> message) throws ActeonException {
         Map<String, Object> body = new HashMap<>();
         body.put("message", message);
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/message:send";
+        String path = "/a2a/" + "v1/message:send";
         return a2aSendMap("POST", path, body, false);
     }
 
     /** {@code GET /a2a/{namespace}/{tenant}/v1/tasks/{id}} — read
      *  a Task by id. Throws {@code ApiException} with HTTP 404 when
      *  the task does not exist for the caller. */
-    public Map<String, Object> a2aGetTask(
-        String namespace, String tenant, String taskId
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId);
+    public Map<String, Object> a2aGetTask(String taskId) throws ActeonException {
+        String path = "/a2a/" + "v1/tasks/" + A2A.segment(taskId);
         return a2aSendMap("GET", path, null, false);
     }
 
     /** {@code POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel}.
      *  The {@code :cancel} verb is part of the URL (spec §11) —
      *  the server splits it off in-handler. */
-    public Map<String, Object> a2aCancelTask(
-        String namespace, String tenant, String taskId
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/tasks/"
+    public Map<String, Object> a2aCancelTask(String taskId) throws ActeonException {
+        String path = "/a2a/" + "v1/tasks/"
             + A2A.segment(taskId) + ":cancel";
         return a2aSendMap("POST", path, null, false);
     }
 
     /** {@code POST .../v1/tasks/{id}/pushNotificationConfigs} —
      *  register or upsert a push-notification webhook for a Task. */
-    public Map<String, Object> a2aSetPushConfig(
-        String namespace, String tenant, String taskId, Map<String, Object> config
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+    public Map<String, Object> a2aSetPushConfig(String taskId, Map<String, Object> config) throws ActeonException {
+        String path = "/a2a/" + "v1/tasks/" + A2A.segment(taskId)
             + "/pushNotificationConfigs";
         return a2aSendMap("POST", path, config, false);
     }
@@ -4563,11 +4376,8 @@ public class ActeonClient implements AutoCloseable {
     /** {@code GET .../v1/tasks/{id}/pushNotificationConfigs} —
      *  list every config registered for the task. */
     @SuppressWarnings("unchecked")
-    public List<Map<String, Object>> a2aListPushConfigs(
-        String namespace, String tenant, String taskId
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+    public List<Map<String, Object>> a2aListPushConfigs(String taskId) throws ActeonException {
+        String path = "/a2a/" + "v1/tasks/" + A2A.segment(taskId)
             + "/pushNotificationConfigs";
         return (List<Map<String, Object>>) a2aSend(
             "GET", path, null, List.class, false);
@@ -4575,11 +4385,8 @@ public class ActeonClient implements AutoCloseable {
 
     /** {@code GET …/pushNotificationConfigs/{cfgId}} — read one
      *  config. */
-    public Map<String, Object> a2aGetPushConfig(
-        String namespace, String tenant, String taskId, String configId
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+    public Map<String, Object> a2aGetPushConfig(String taskId, String configId) throws ActeonException {
+        String path = "/a2a/" + "v1/tasks/" + A2A.segment(taskId)
             + "/pushNotificationConfigs/" + A2A.segment(configId);
         return a2aSendMap("GET", path, null, false);
     }
@@ -4587,11 +4394,8 @@ public class ActeonClient implements AutoCloseable {
     /** {@code DELETE …/pushNotificationConfigs/{cfgId}}. Throws
      *  {@code ApiException} with HTTP 404 when the config doesn't
      *  exist — the server never silently no-ops. */
-    public void a2aDeletePushConfig(
-        String namespace, String tenant, String taskId, String configId
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+    public void a2aDeletePushConfig(String taskId, String configId) throws ActeonException {
+        String path = "/a2a/" + "v1/tasks/" + A2A.segment(taskId)
             + "/pushNotificationConfigs/" + A2A.segment(configId);
         a2aSend("DELETE", path, null, Void.class, false);
     }
@@ -4599,12 +4403,9 @@ public class ActeonClient implements AutoCloseable {
     /** {@code GET /a2a/{namespace}/{tenant}/.well-known/agent.json}.
      *  Unauthenticated discovery endpoint — issued *without* the
      *  Authorization header per the A2A spec. */
-    public Map<String, Object> a2aDiscoverAgent(
-        String namespace, String tenant
-    ) throws ActeonException {
-        String path = "/a2a/" + A2A.segment(namespace) + "/"
-            + A2A.segment(tenant) + "/.well-known/agent.json";
-        return a2aSendMap("GET", path, null, true);
+    public Map<String, Object> a2aDiscoverAgent() throws ActeonException {
+        String path = "/a2a/" + ".well-known/agent.json";
+        return a2aSendMap("GET", path, null, false);
     }
 
     /** JSON-RPC {@code agent/getAuthenticatedExtendedCard} —
@@ -4613,14 +4414,12 @@ public class ActeonClient implements AutoCloseable {
      *  spec defines no REST counterpart). The returned card has
      *  {@code capabilities.extendedAgentCard = true}. */
     @SuppressWarnings("unchecked")
-    public Map<String, Object> a2aGetAuthenticatedExtendedCard(
-        String namespace, String tenant
-    ) throws ActeonException {
+    public Map<String, Object> a2aGetAuthenticatedExtendedCard() throws ActeonException {
         Map<String, Object> envelope = new HashMap<>();
         envelope.put("jsonrpc", "2.0");
         envelope.put("id", 1);
         envelope.put("method", "agent/getAuthenticatedExtendedCard");
-        String path = "/a2a/" + A2A.segment(namespace) + "/" + A2A.segment(tenant);
+        String path = "/a2a";
         Map<String, Object> reply = a2aSendMap("POST", path, envelope, false);
         // Unwrap the JSON-RPC envelope: error wins; missing result is
         // an error too.
@@ -4780,10 +4579,9 @@ public class ActeonClient implements AutoCloseable {
      * Returns an empty Optional if the task does not exist (404),
      * matching the {@code getRecurring} convention.
      */
-    public Optional<Queues.WorkerTask> getTask(String taskId, String namespace, String tenant) throws ActeonException {
+    public Optional<Queues.WorkerTask> getTask(String taskId) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        params.put("namespace", namespace);
-        params.put("tenant", tenant);
+
         String path = appendQuery("/v1/queues/tasks/" + queueSeg(taskId), params);
 
         HttpResponse<String> response = queueExecute("GET", path, null);
@@ -4804,16 +4602,13 @@ public class ActeonClient implements AutoCloseable {
      * Lists a queue's tasks ({@code GET /v1/queues/{queue}/tasks}).
      *
      * @param queue queue name
-     * @param namespace namespace scoping the read
-     * @param tenant tenant scoping the read
      * @param status optional lifecycle status filter (see the
      *     {@code Queues.TASK_STATUS_*} constants); pass {@code null}
      *     for all statuses
      */
-    public List<Queues.WorkerTask> listTasks(String queue, String namespace, String tenant, String status) throws ActeonException {
+    public List<Queues.WorkerTask> listTasks(String queue, String status) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
-        params.put("namespace", namespace);
-        params.put("tenant", tenant);
+
         if (status != null && !status.isEmpty()) {
             params.put("status", status);
         }

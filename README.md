@@ -84,10 +84,10 @@ forged in Rust**, with controls that you define and outcomes you can inspect.
 - **Two Transports, One Engine** — JSON-RPC 2.0 (`message/send`, `tasks/get`, `tasks/cancel`, push-config CRUD, `agent/getAuthenticatedExtendedCard`) and the spec §11 REST binding share the same method implementations
 - **Pause-for-Human** — `InputRequired` and `AuthRequired` interrupts pair a Task transition with a `BusApproval` row in one atomic step
 - **Artifact Streaming Gatekeeper** — Enforces strict `chunk_index` order, no-updates-after-`lastChunk`, and `totalChunks` completeness across multi-chunk artifact deliveries
-- **SSE Events** — `GET /a2a/{ns}/{tenant}/v1/tasks/{id}/events` re-uses the gateway broadcast and the same per-tenant connection caps as `/v1/stream`
+- **SSE Events** — `GET /a2a/v1/tasks/{id}/events` re-uses the gateway broadcast and the same per-tenant connection caps as `/v1/stream`
 - **Push Notifications** — Per-task webhook configs (CRUD over JSON-RPC + REST) plus a background delivery worker with bounded concurrent dispatch, short-TTL config cache, and refined retry classification (`408`/`425`/`429` transient, other `4xx` terminal)
-- **Discovery** — Public unauthenticated `.well-known/agent.json` with single-card-verbatim vs. tenant-aggregated semantics, enriched with the gateway's intrinsic security schemes (`acteon.bearer`, `acteon.apiKey`)
-- **Multi-tenant** — Every A2A endpoint scoped by `/a2a/{namespace}/{tenant}/…` with full grant-level authorization
+- **Discovery** — Authenticated `.well-known/agent.json` with single-card-verbatim vs. tenant-aggregated semantics, enriched with the gateway's intrinsic security schemes (`acteon.bearer`, `acteon.apiKey`)
+- **Multi-tenant** — Every A2A endpoint derives its tenant context from the credential, with grant-level authorization
 
 ### Enterprise Ready
 
@@ -410,10 +410,10 @@ cargo run -p acteon-server -- -c acteon.toml
 | POST | `/v1/workflows/start` | Start code-based durable workflow execution |
 | GET | `/v1/executions` | List executions with state, timers, and signals |
 | **A2A Protocol & Swarm** |||
-| POST | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 protocol endpoint |
-| POST | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST task submission |
-| GET | `/a2a/{ns}/{tenant}/v1/tasks/{id}` | A2A task status and artifact inspect |
-| GET | `/a2a/{ns}/{tenant}/.well-known/agent.json` | Public A2A agent discovery card |
+| POST | `/a2a` | A2A JSON-RPC 2.0 protocol endpoint |
+| POST | `/a2a/v1/message:send` | A2A REST task submission |
+| GET | `/a2a/v1/tasks/{id}` | A2A task status and artifact inspect |
+| GET | `/a2a/.well-known/agent.json` | Authenticated A2A agent discovery card |
 | GET | `/v1/swarm/runs` | List autonomous agent swarm runs |
 | **Agentic Message Bus** |||
 | GET | `/v1/bus/topics` | List and create Kafka-backed bus topics |
@@ -601,35 +601,35 @@ Official client libraries are available for multiple languages:
 **Rust:**
 ```rust
 let client = ActeonClient::new("http://localhost:8080");
-let action = Action::new("ns", "tenant", "email", "send", json!({"to": "user@example.com"}));
+let action = ActionRequest::new( "email", "send", json!({"to": "user@example.com"}));
 let outcome = client.dispatch(&action).await?;
 ```
 
 **Python:**
 ```python
 client = ActeonClient("http://localhost:8080")
-action = Action("ns", "tenant", "email", "send", {"to": "user@example.com"})
+action = Action("email", "send", {"to": "user@example.com"})
 outcome = client.dispatch(action)
 ```
 
 **Node.js/TypeScript:**
 ```typescript
 const client = new ActeonClient("http://localhost:8080");
-const action = createAction("ns", "tenant", "email", "send", { to: "user@example.com" });
+const action = createAction("email", "send", { to: "user@example.com" });
 const outcome = await client.dispatch(action);
 ```
 
 **Go:**
 ```go
 client := acteon.NewClient("http://localhost:8080")
-action := acteon.NewAction("ns", "tenant", "email", "send", map[string]any{"to": "user@example.com"})
+action := acteon.NewAction("email", "send", map[string]any{"to": "user@example.com"})
 outcome, _ := client.Dispatch(ctx, action)
 ```
 
 **Java:**
 ```java
 ActeonClient client = new ActeonClient("http://localhost:8080");
-Action action = new Action("ns", "tenant", "email", "send", Map.of("to", "user@example.com"));
+Action action = new Action("email", "send", Map.of("to", "user@example.com"));
 ActionOutcome outcome = client.dispatch(action);
 ```
 

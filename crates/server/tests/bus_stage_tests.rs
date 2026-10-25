@@ -117,32 +117,23 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
     };
     TestServer(
         Router::new()
+            .route("/v1/bus/stages/{id}", get(bus_stages::status))
+            .route("/v1/bus/stages/{id}/quarantine", get(bus_stages::list))
             .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}",
-                get(bus_stages::status),
-            )
-            .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine",
-                get(bus_stages::list),
-            )
-            .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+                "/v1/bus/stages/{id}/quarantine/{entry}",
                 get(bus_stages::get).delete(bus_stages::discard),
             )
             .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay",
+                "/v1/bus/stages/{id}/quarantine/{entry}/replay",
                 post(bus_stages::replay),
             )
+            .route("/v1/bus/stages/{id}/control", post(bus_stages::control))
             .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}/control",
-                post(bus_stages::control),
-            )
-            .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}",
+                "/v1/bus/stages/{id}/controls/{request}",
                 get(bus_stages::control_audit),
             )
             .route(
-                "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
+                "/v1/bus/stages/{id}/replays/{request}",
                 get(bus_stages::replay_audit),
             )
             .layer(Extension(identity))
@@ -151,6 +142,7 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
 }
 fn identity(role: Role, actions: Vec<&str>) -> CallerIdentity {
     CallerIdentity {
+        scope: acteon_core::TenantContext::new("test", "tenant"),
         id: "operator".into(),
         principal: None,
         role,
@@ -167,7 +159,7 @@ fn identity(role: Role, actions: Vec<&str>) -> CallerIdentity {
 #[tokio::test]
 async fn scoped_reads_and_discard_are_independently_authorized_without_broker() {
     let viewer = server(identity(Role::Viewer, vec!["stage_read", "stage_manage"])).await;
-    let base = "/v1/bus/stages/test/tenant/stage";
+    let base = "/v1/bus/stages/stage";
     let status = viewer.get(base).await;
     status.assert_status_ok();
     let body: serde_json::Value = status.json();
@@ -194,16 +186,22 @@ async fn scoped_reads_and_discard_are_independently_authorized_without_broker() 
         .delete(&format!("{base}/quarantine/missing"))
         .await
         .assert_status_forbidden();
-    viewer
-        .get("/v1/bus/stages/test/other/stage")
+    let mut foreign_tenant = identity(Role::Viewer, vec!["stage_read"]);
+    foreign_tenant.scope.tenant = "other".into();
+    server(foreign_tenant)
+        .await
+        .get(base)
+        .await
+        .assert_status_forbidden();
+    let mut foreign_namespace = identity(Role::Viewer, vec!["stage_read"]);
+    foreign_namespace.scope.namespace = "other".into();
+    server(foreign_namespace)
+        .await
+        .get(base)
         .await
         .assert_status_forbidden();
     viewer
-        .get("/v1/bus/stages/other/tenant/stage")
-        .await
-        .assert_status_forbidden();
-    viewer
-        .get("/v1/bus/stages/test/tenant/missing")
+        .get("/v1/bus/stages/missing")
         .await
         .assert_status_not_found();
     let operator = server(identity(Role::Operator, vec!["stage_manage"])).await;
@@ -316,7 +314,7 @@ async fn quarantine_pages_omit_payload_and_discard_invalidates_deleted_cursor() 
         true,
     )
     .await;
-    let base = "/v1/bus/stages/test/tenant/stage";
+    let base = "/v1/bus/stages/stage";
     let first = server.get(&format!("{base}/quarantine?limit=1")).await;
     first.assert_status_ok();
     let page: serde_json::Value = first.json();
@@ -364,18 +362,18 @@ async fn quarantine_pages_omit_payload_and_discard_invalidates_deleted_cursor() 
 }
 
 #[tokio::test]
-async fn encoded_scope_delimiters_are_rejected_before_storage_lookup() {
+async fn invalid_resource_ids_are_rejected_before_storage_lookup() {
     let server = server(CallerIdentity::anonymous()).await;
     server
-        .get("/v1/bus/stages/test%3Atenant/other/stage")
+        .get("/v1/bus/stages/%00")
         .await
         .assert_status_bad_request();
     server
-        .get("/v1/bus/stages/test/tenant%3Aother/stage")
+        .get("/v1/bus/stages/%0A")
         .await
         .assert_status_bad_request();
     server
-        .get("/v1/bus/stages/test/tenant/%20")
+        .get("/v1/bus/stages/%20")
         .await
         .assert_status_bad_request();
 }
@@ -390,7 +388,7 @@ async fn replay_requires_distinct_grant_and_binds_authenticated_actor_and_body()
         true,
     )
     .await;
-    let base = "/v1/bus/stages/test/tenant/stage";
+    let base = "/v1/bus/stages/stage";
     let page = server
         .get(&format!("{base}/quarantine"))
         .await
@@ -441,8 +439,11 @@ async fn replay_requires_distinct_grant_and_binds_authenticated_actor_and_body()
         .json(&body)
         .await
         .assert_status_forbidden();
-    server
-        .post(&path.replace("/tenant/", "/other/"))
+    let mut foreign = identity(Role::Operator, vec!["stage_replay"]);
+    foreign.scope.tenant = "other".into();
+    seeded_server(foreign, true)
+        .await
+        .post(&path)
         .json(&body)
         .await
         .assert_status_forbidden();
@@ -450,7 +451,7 @@ async fn replay_requires_distinct_grant_and_binds_authenticated_actor_and_body()
 
 #[tokio::test]
 async fn control_requires_distinct_grant_revision_and_authenticated_audit() {
-    let base = "/v1/bus/stages/test/tenant/stage";
+    let base = "/v1/bus/stages/stage";
     let request = uuid::Uuid::new_v4();
     let body = serde_json::json!({"request_id":request,"command":"halt","expected_control_revision":0,"reason":"maintenance"});
     for (role, grants) in [
@@ -522,8 +523,11 @@ async fn control_requires_distinct_grant_revision_and_authenticated_audit() {
         server.get(base).await.json::<serde_json::Value>()["operator_halted"],
         false
     );
-    server
-        .post(&format!("{base}/control").replace("/tenant/", "/other/"))
+    let mut foreign = identity(Role::Operator, vec!["stage_manage"]);
+    foreign.scope.tenant = "other".into();
+    seeded_server(foreign, false)
+        .await
+        .post(&format!("{base}/control"))
         .json(&body)
         .await
         .assert_status_forbidden();

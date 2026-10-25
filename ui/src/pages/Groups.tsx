@@ -4,7 +4,6 @@ import { useGroups, useFlushGroup, useDeleteGroup } from '../api/hooks/useGroups
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
 import { Badge } from '../components/ui/Badge'
-import { Input } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import { Drawer } from '../components/ui/Drawer'
 import { Modal } from '../components/ui/Modal'
@@ -18,9 +17,7 @@ import styles from './Groups.module.css'
 const col = createDataTableColumnHelper<EventGroup>()
 
 export function Groups() {
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
-  const { data: groups, isLoading } = useGroups({ namespace: ns || undefined, tenant: tenant || undefined })
+  const { data: groups, isLoading } = useGroups()
   const flush = useFlushGroup()
   const deleteGroup = useDeleteGroup()
   const { toast } = useToast()
@@ -56,11 +53,6 @@ export function Groups() {
   return (
     <div>
       <PageHeader title="Event Groups" />
-
-      <div className={styles.filterContainer}>
-        <Input placeholder="Namespace" value={ns} onChange={(e) => setNs(e.target.value)} />
-        <Input placeholder="Tenant" value={tenant} onChange={(e) => setTenant(e.target.value)} />
-      </div>
 
       <DataTable
         data={groups ?? []}

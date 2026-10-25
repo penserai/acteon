@@ -3,8 +3,6 @@ import { apiGet, apiPost, apiPut, apiDelete } from '../client'
 import type { CreateSilenceRequest, Silence, UpdateSilenceRequest } from '../../types'
 
 export interface ListSilencesParams {
-  namespace?: string
-  tenant?: string
   includeExpired?: boolean
 }
 
@@ -13,8 +11,6 @@ export function useSilences(params: ListSilencesParams = {}) {
     queryKey: ['silences', params],
     queryFn: async () => {
       const res = await apiGet<{ silences: Silence[]; count: number }>('/v1/silences', {
-        namespace: params.namespace,
-        tenant: params.tenant,
         include_expired: params.includeExpired ? 'true' : undefined,
       })
       return res.silences

@@ -299,13 +299,6 @@ async function fillForm(
     payload: object
   },
 ) {
-  const nsInput = page.getByLabel('Namespace *')
-  await nsInput.clear()
-  await nsInput.fill(opts.ns)
-
-  const tenantInput = page.getByLabel('Tenant *')
-  await tenantInput.clear()
-  await tenantInput.fill(opts.tenant)
 
   const providerInput = page.getByLabel('Provider *')
   await providerInput.clear()

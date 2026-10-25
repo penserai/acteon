@@ -14,7 +14,7 @@ import httpx
 
 from .a2a import _A2A_HEADERS, A2A_PROTOCOL_VERSION, _seg
 from .errors import ActeonError, HttpError
-from .models import PermitReference
+from .models import CredentialIdentity, PermitReference
 
 AGENT_SOURCE_CONTEXT_HEADER = "x-acteon-agent-source-context"
 AGENT_EXECUTION_CONTEXT_HEADER = "x-acteon-execution-context"
@@ -610,12 +610,12 @@ def _receipt(
     )
 
 
-def _base(namespace: str, tenant: str, agent: str) -> str:
-    return f"/a2a/{_segment(namespace)}/{_segment(tenant)}/agents/{_segment(agent)}/v1"
+def _base(agent: str) -> str:
+    return f"/a2a/agents/{_segment(agent)}/v1"
 
 
-def _rpc_base(namespace: str, tenant: str, agent: str) -> str:
-    return f"/a2a/{_segment(namespace)}/{_segment(tenant)}/agents/{_segment(agent)}"
+def _rpc_base(agent: str) -> str:
+    return f"/a2a/agents/{_segment(agent)}"
 
 
 def _a2a_result(data: str, request_id: str, source: str | None) -> AgentServiceA2aFrame:
@@ -955,6 +955,10 @@ async def _async_sse_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
 
 class _AgentServicesMixin:
     if TYPE_CHECKING:
+
+        def identity(self) -> CredentialIdentity: ...
+
+    if TYPE_CHECKING:
         base_url: str
         _client: httpx.Client
 
@@ -971,31 +975,22 @@ class _AgentServicesMixin:
         ) -> httpx.Response: ...
 
     def agent_service_send_message(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        message: dict[str, Any],
-        *,
-        parent: AgentServiceParent | None = None,
+        self, agent: str, message: dict[str, Any], *, parent: AgentServiceParent | None = None
     ) -> AgentServiceReceipt:
         """Submit once; reuse the same message ID after response loss. No automatic retry."""
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         response = self._request(
             "POST",
-            _base(namespace, tenant, agent) + "/message:send",
+            _base(agent) + "/message:send",
             json={"message": message},
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
 
     def agent_service_send_streaming_message(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        message: dict[str, Any],
-        *,
-        parent: AgentServiceParent | None = None,
+        self, agent: str, message: dict[str, Any], *, parent: AgentServiceParent | None = None
     ) -> Iterator[AgentServiceA2aFrame]:
         """Invoke one exact governed agent using official A2A SSE."""
         message_id = message.get("messageId")
@@ -1012,7 +1007,7 @@ class _AgentServicesMixin:
         }
         with self._client.stream(
             "POST",
-            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            f"{self.base_url}{_rpc_base(agent)}",
             json=envelope,
             headers=headers,
             follow_redirects=False,
@@ -1050,7 +1045,7 @@ class _AgentServicesMixin:
         }
         with self._client.stream(
             "POST",
-            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            f"{self.base_url}{_rpc_base(receipt.agent)}",
             json=envelope,
             headers=headers,
             follow_redirects=False,
@@ -1071,7 +1066,7 @@ class _AgentServicesMixin:
         """Request official A2A cancellation and preserve pending finality metadata."""
         request_id = f"cancel:{receipt.task_id}"
         response = self._client.post(
-            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            f"{self.base_url}{_rpc_base(receipt.agent)}",
             json={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -1096,8 +1091,6 @@ class _AgentServicesMixin:
 
     def agent_service_list_tasks(
         self,
-        namespace: str,
-        tenant: str,
         agent: str,
         *,
         source: AgentServiceReceipt | None = None,
@@ -1110,6 +1103,9 @@ class _AgentServicesMixin:
         include_artifacts: bool = False,
     ) -> AgentServiceTaskPage:
         """List Tasks visible to the current source through the exact agent."""
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         request_id = f"list:{agent}"
         params = _list_params(
             context_id=context_id,
@@ -1121,7 +1117,7 @@ class _AgentServicesMixin:
             include_artifacts=include_artifacts,
         )
         response = self._client.post(
-            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            f"{self.base_url}{_rpc_base(agent)}",
             json={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -1152,7 +1148,7 @@ class _AgentServicesMixin:
     ) -> dict[str, Any]:
         request_id = f"push:{method}:{task_id}"
         response = self._client.post(
-            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            f"{self.base_url}{_rpc_base(agent)}",
             json={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -1173,8 +1169,6 @@ class _AgentServicesMixin:
 
     def agent_service_create_push_config(
         self,
-        namespace: str,
-        tenant: str,
         agent: str,
         task_id: str,
         config: AgentServicePushConfigInput,
@@ -1182,6 +1176,9 @@ class _AgentServicesMixin:
         source: AgentServiceReceipt | None = None,
     ) -> AgentServicePushConfig:
         """Create/update a config using an operations-management credential."""
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         result = self._agent_service_push_rpc(
             namespace,
             tenant,
@@ -1197,15 +1194,11 @@ class _AgentServicesMixin:
         return parsed
 
     def agent_service_get_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        config_id: str,
-        *,
-        source: AgentServiceReceipt | None = None,
+        self, agent: str, task_id: str, config_id: str, *, source: AgentServiceReceipt | None = None
     ) -> AgentServicePushConfig:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         result = self._agent_service_push_rpc(
             namespace,
             tenant,
@@ -1222,8 +1215,6 @@ class _AgentServicesMixin:
 
     def agent_service_list_push_configs(
         self,
-        namespace: str,
-        tenant: str,
         agent: str,
         task_id: str,
         *,
@@ -1231,6 +1222,9 @@ class _AgentServicesMixin:
         page_token: str | None = None,
         source: AgentServiceReceipt | None = None,
     ) -> AgentServicePushConfigPage:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         if page_size is not None and not 1 <= page_size <= 100:
             raise ValueError("page_size must be between 1 and 100")
         if page_token is not None and len(page_token) > 8192:
@@ -1254,15 +1248,11 @@ class _AgentServicesMixin:
         )
 
     def agent_service_delete_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        config_id: str,
-        *,
-        source: AgentServiceReceipt | None = None,
+        self, agent: str, task_id: str, config_id: str, *, source: AgentServiceReceipt | None = None
     ) -> None:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         result = self._agent_service_push_rpc(
             namespace,
             tenant,
@@ -1285,7 +1275,7 @@ class _AgentServicesMixin:
         """Submit once from an accepted source task; sends no authority fields."""
         response = self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1306,10 +1296,7 @@ class _AgentServicesMixin:
             raise ValueError("invalid exact peer skill")
         response = self._request(
             "GET",
-            _base(source.namespace, source.tenant, source.agent)
-            + "/tasks/"
-            + _segment(source.task_id)
-            + "/peers",
+            _base(source.agent) + "/tasks/" + _segment(source.task_id) + "/peers",
             params={"skill": skill},
             extra_headers=dict(_A2A_HEADERS),
         )
@@ -1326,7 +1313,7 @@ class _AgentServicesMixin:
         submission = _submission(peer.submission_id)
         response = self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1369,7 +1356,7 @@ class _AgentServicesMixin:
         _task_value(peer.task, source.namespace, source.tenant)
         response = self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1399,7 +1386,7 @@ class _AgentServicesMixin:
         _unbound_peer_response(message)
         response = self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1429,7 +1416,7 @@ class _AgentServicesMixin:
         _task_value(peer.task, source.namespace, source.tenant)
         response = self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1448,10 +1435,7 @@ class _AgentServicesMixin:
         """Stop future starts; repeat the same receipt explicitly after response loss."""
         response = self._request(
             "POST",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id)
-            + "/stop",
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id) + "/stop",
             extra_headers={
                 **_A2A_HEADERS,
                 AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
@@ -1463,9 +1447,7 @@ class _AgentServicesMixin:
         """Observe the retained job without starting work or changing client defaults."""
         response = self._request(
             "GET",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id),
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id),
             extra_headers={
                 **_A2A_HEADERS,
                 AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
@@ -1479,10 +1461,7 @@ class _AgentServicesMixin:
         """Continue the retained task with an exact challenge-bound response."""
         response = self._request(
             "POST",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id)
-            + "/message:send",
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id) + "/message:send",
             json={"message": message},
             extra_headers={
                 **_A2A_HEADERS,
@@ -1492,20 +1471,15 @@ class _AgentServicesMixin:
         return _task(response, receipt.namespace, receipt.tenant, receipt.task_id)
 
     def agent_service_request_authorization(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        authorization_request_id: str,
+        self, agent: str, task_id: str, authorization_request_id: str
     ) -> dict[str, Any]:
         """Open the service's fixed authorization profile with an opaque handle."""
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         response = self._request(
             "POST",
-            _base(namespace, tenant, agent)
-            + "/tasks/"
-            + _segment(task_id)
-            + "/authorization:request",
+            _base(agent) + "/tasks/" + _segment(task_id) + "/authorization:request",
             json={"authorizationRequestId": authorization_request_id},
             extra_headers=_A2A_HEADERS,
         )
@@ -1519,10 +1493,7 @@ class _AgentServicesMixin:
         """Resolve an exact challenge; verifier credentials never enter this call."""
         response = self._request(
             "POST",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id)
-            + "/authorization:resolve",
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id) + "/authorization:resolve",
             json={"challengeId": challenge_id},
             extra_headers={
                 **_A2A_HEADERS,
@@ -1533,6 +1504,10 @@ class _AgentServicesMixin:
 
 
 class _AsyncAgentServicesMixin:
+    if TYPE_CHECKING:
+
+        async def identity(self) -> CredentialIdentity: ...
+
     if TYPE_CHECKING:
         base_url: str
         _client: httpx.AsyncClient
@@ -1550,31 +1525,22 @@ class _AsyncAgentServicesMixin:
         ) -> httpx.Response: ...
 
     async def agent_service_send_message(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        message: dict[str, Any],
-        *,
-        parent: AgentServiceParent | None = None,
+        self, agent: str, message: dict[str, Any], *, parent: AgentServiceParent | None = None
     ) -> AgentServiceReceipt:
         """Submit once and retain the original message identity on response loss."""
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         response = await self._request(
             "POST",
-            _base(namespace, tenant, agent) + "/message:send",
+            _base(agent) + "/message:send",
             json={"message": message},
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
 
     async def agent_service_send_streaming_message(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        message: dict[str, Any],
-        *,
-        parent: AgentServiceParent | None = None,
+        self, agent: str, message: dict[str, Any], *, parent: AgentServiceParent | None = None
     ) -> AsyncIterator[AgentServiceA2aFrame]:
         """Invoke one exact governed agent using official A2A SSE."""
         message_id = message.get("messageId")
@@ -1591,7 +1557,7 @@ class _AsyncAgentServicesMixin:
         }
         async with self._client.stream(
             "POST",
-            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            f"{self.base_url}{_rpc_base(agent)}",
             json=envelope,
             headers=headers,
             follow_redirects=False,
@@ -1629,7 +1595,7 @@ class _AsyncAgentServicesMixin:
         }
         async with self._client.stream(
             "POST",
-            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            f"{self.base_url}{_rpc_base(receipt.agent)}",
             json=envelope,
             headers=headers,
             follow_redirects=False,
@@ -1650,7 +1616,7 @@ class _AsyncAgentServicesMixin:
         """Request official A2A cancellation and preserve pending finality metadata."""
         request_id = f"cancel:{receipt.task_id}"
         response = await self._client.post(
-            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            f"{self.base_url}{_rpc_base(receipt.agent)}",
             json={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -1675,8 +1641,6 @@ class _AsyncAgentServicesMixin:
 
     async def agent_service_list_tasks(
         self,
-        namespace: str,
-        tenant: str,
         agent: str,
         *,
         source: AgentServiceReceipt | None = None,
@@ -1689,6 +1653,9 @@ class _AsyncAgentServicesMixin:
         include_artifacts: bool = False,
     ) -> AgentServiceTaskPage:
         """List Tasks visible to the current source through the exact agent."""
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         request_id = f"list:{agent}"
         params = _list_params(
             context_id=context_id,
@@ -1700,7 +1667,7 @@ class _AsyncAgentServicesMixin:
             include_artifacts=include_artifacts,
         )
         response = await self._client.post(
-            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            f"{self.base_url}{_rpc_base(agent)}",
             json={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -1731,7 +1698,7 @@ class _AsyncAgentServicesMixin:
     ) -> dict[str, Any]:
         request_id = f"push:{method}:{task_id}"
         response = await self._client.post(
-            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            f"{self.base_url}{_rpc_base(agent)}",
             json={
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -1752,14 +1719,15 @@ class _AsyncAgentServicesMixin:
 
     async def agent_service_create_push_config(
         self,
-        namespace: str,
-        tenant: str,
         agent: str,
         task_id: str,
         config: AgentServicePushConfigInput,
         *,
         source: AgentServiceReceipt | None = None,
     ) -> AgentServicePushConfig:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         result = await self._agent_service_push_rpc(
             namespace,
             tenant,
@@ -1775,15 +1743,11 @@ class _AsyncAgentServicesMixin:
         return parsed
 
     async def agent_service_get_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        config_id: str,
-        *,
-        source: AgentServiceReceipt | None = None,
+        self, agent: str, task_id: str, config_id: str, *, source: AgentServiceReceipt | None = None
     ) -> AgentServicePushConfig:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         result = await self._agent_service_push_rpc(
             namespace,
             tenant,
@@ -1800,8 +1764,6 @@ class _AsyncAgentServicesMixin:
 
     async def agent_service_list_push_configs(
         self,
-        namespace: str,
-        tenant: str,
         agent: str,
         task_id: str,
         *,
@@ -1809,6 +1771,9 @@ class _AsyncAgentServicesMixin:
         page_token: str | None = None,
         source: AgentServiceReceipt | None = None,
     ) -> AgentServicePushConfigPage:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         if page_size is not None and not 1 <= page_size <= 100:
             raise ValueError("page_size must be between 1 and 100")
         if page_token is not None and len(page_token) > 8192:
@@ -1832,15 +1797,11 @@ class _AsyncAgentServicesMixin:
         )
 
     async def agent_service_delete_push_config(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        config_id: str,
-        *,
-        source: AgentServiceReceipt | None = None,
+        self, agent: str, task_id: str, config_id: str, *, source: AgentServiceReceipt | None = None
     ) -> None:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         result = await self._agent_service_push_rpc(
             namespace,
             tenant,
@@ -1862,7 +1823,7 @@ class _AsyncAgentServicesMixin:
     ) -> AgentPeerSendReceipt:
         response = await self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1882,10 +1843,7 @@ class _AsyncAgentServicesMixin:
             raise ValueError("invalid exact peer skill")
         response = await self._request(
             "GET",
-            _base(source.namespace, source.tenant, source.agent)
-            + "/tasks/"
-            + _segment(source.task_id)
-            + "/peers",
+            _base(source.agent) + "/tasks/" + _segment(source.task_id) + "/peers",
             params={"skill": skill},
             extra_headers=dict(_A2A_HEADERS),
         )
@@ -1901,7 +1859,7 @@ class _AsyncAgentServicesMixin:
         submission = _submission(peer.submission_id)
         response = await self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1943,7 +1901,7 @@ class _AsyncAgentServicesMixin:
         _task_value(peer.task, source.namespace, source.tenant)
         response = await self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -1972,7 +1930,7 @@ class _AsyncAgentServicesMixin:
         _unbound_peer_response(message)
         response = await self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -2001,7 +1959,7 @@ class _AsyncAgentServicesMixin:
         _task_value(peer.task, source.namespace, source.tenant)
         response = await self._request(
             "POST",
-            _base(source.namespace, source.tenant, source.agent)
+            _base(source.agent)
             + "/tasks/"
             + _segment(source.task_id)
             + "/peers/"
@@ -2022,10 +1980,7 @@ class _AsyncAgentServicesMixin:
         """Stop future starts; repeat the same receipt explicitly after response loss."""
         response = await self._request(
             "POST",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id)
-            + "/stop",
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id) + "/stop",
             extra_headers={
                 **_A2A_HEADERS,
                 AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
@@ -2036,9 +1991,7 @@ class _AsyncAgentServicesMixin:
     async def agent_service_get_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
         response = await self._request(
             "GET",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id),
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id),
             extra_headers={
                 **_A2A_HEADERS,
                 AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
@@ -2051,10 +2004,7 @@ class _AsyncAgentServicesMixin:
     ) -> dict[str, Any]:
         response = await self._request(
             "POST",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id)
-            + "/message:send",
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id) + "/message:send",
             json={"message": message},
             extra_headers={
                 **_A2A_HEADERS,
@@ -2064,19 +2014,14 @@ class _AsyncAgentServicesMixin:
         return _task(response, receipt.namespace, receipt.tenant, receipt.task_id)
 
     async def agent_service_request_authorization(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        authorization_request_id: str,
+        self, agent: str, task_id: str, authorization_request_id: str
     ) -> dict[str, Any]:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         response = await self._request(
             "POST",
-            _base(namespace, tenant, agent)
-            + "/tasks/"
-            + _segment(task_id)
-            + "/authorization:request",
+            _base(agent) + "/tasks/" + _segment(task_id) + "/authorization:request",
             json={"authorizationRequestId": authorization_request_id},
             extra_headers=_A2A_HEADERS,
         )
@@ -2089,10 +2034,7 @@ class _AsyncAgentServicesMixin:
     ) -> dict[str, Any]:
         response = await self._request(
             "POST",
-            _base(receipt.namespace, receipt.tenant, receipt.agent)
-            + "/tasks/"
-            + _segment(receipt.task_id)
-            + "/authorization:resolve",
+            _base(receipt.agent) + "/tasks/" + _segment(receipt.task_id) + "/authorization:resolve",
             json={"challengeId": challenge_id},
             extra_headers={
                 **_A2A_HEADERS,

@@ -45,7 +45,7 @@ func TestPermitDispatchHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 	client := NewClient(server.URL, WithAPIKey("test-key"))
-	action := &Action{Namespace: "prod", Tenant: "acme", Provider: "incident", ActionType: "execute", Payload: map[string]any{"incident": 42}}
+	action := &Action{Provider: "incident", ActionType: "execute", Payload: map[string]any{"incident": 42}}
 	if _, err := client.Dispatch(context.Background(), action); err != nil {
 		t.Fatal(err)
 	}

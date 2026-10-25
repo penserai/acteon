@@ -11,8 +11,8 @@ test.describe('Actions / Audit Trail', () => {
 
   test('filter controls are present', async ({ page }) => {
     await expect(page.getByPlaceholder('Search by ID...')).toBeVisible()
-    await expect(page.getByPlaceholder('Namespace')).toBeVisible()
-    await expect(page.getByPlaceholder('Tenant')).toBeVisible()
+    await expect(page.getByPlaceholder('Namespace')).toHaveCount(0)
+    await expect(page.getByPlaceholder('Tenant')).toHaveCount(0)
     // Outcome select
     await expect(page.locator('select').first()).toBeVisible()
   })
@@ -50,10 +50,10 @@ test.describe('Actions / Audit Trail', () => {
     await expect(page).toHaveURL(/outcome=executed/)
   })
 
-  test('namespace filter updates URL', async ({ page }) => {
+  test('namespace filter is not editable', async ({ page }) => {
     const nsInput = page.getByPlaceholder('Namespace')
-    await nsInput.fill('prod')
-    await expect(page).toHaveURL(/namespace=prod/)
+
+    await expect(nsInput).toHaveCount(0)
   })
 
   test('click on row opens detail drawer when data exists', async ({ page }) => {

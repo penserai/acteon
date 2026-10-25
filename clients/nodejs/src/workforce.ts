@@ -26,7 +26,7 @@ export type WorkforceChange =
   | { kind: "put_mandate"; mandate: WorkforceMandateDeclaration }
   | { kind: "revoke_mandate"; id: string; expected_revision: number }
   | { kind: "publish_represented_permit"; permit: GovernancePermitDeclaration; mandate: WorkforceReference };
-export interface WorkforceChangeRequest { namespace: string; tenant: string; change_id: string; change: WorkforceChange; reason: string; }
+export interface WorkforceChangeRequest { change_id: string; change: WorkforceChange; reason: string; }
 export interface WorkforceEntry<T> { value: T; revoked: boolean; }
 export interface WorkforceMandateView extends Omit<WorkforceMandateDeclaration, "routes"> { effects: GovernanceEffect[]; }
 export interface WorkforcePermitBindingView { permit_id: string; permit_revision: number; mandate: WorkforceReference; }

@@ -48,7 +48,7 @@ pub mod types;
 pub mod worker_task;
 pub mod workflow;
 
-pub use action::{Action, ActionMetadata};
+pub use action::{Action, ActionMetadata, ActionRequest};
 pub use analytics::{
     AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
     AnalyticsTopEntry,
@@ -124,7 +124,9 @@ pub use outcome::{
     ActionError, ActionOutcome, ProviderResponse, ProviderWorkPending, ProviderWorkState,
     ResponseStatus,
 };
-pub use principal::{CredentialIdentity, PrincipalIdentity, PrincipalIdentityError, PrincipalKind};
+pub use principal::{
+    CredentialIdentity, PrincipalIdentity, PrincipalIdentityError, PrincipalKind, TenantContext,
+};
 pub use provider_health::{ListProviderHealthResponse, ProviderHealthStatus};
 pub use quota::{
     MAX_POLICIES_PER_BUCKET, MAX_QUOTA_IDENTIFIER_LEN, MAX_WINDOW_SECONDS, OverageBehavior,

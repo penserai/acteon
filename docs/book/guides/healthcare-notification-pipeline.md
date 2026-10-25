@@ -213,7 +213,7 @@ record of all access to PHI -- including denied access attempts.
 ```bash
 curl -X POST "http://localhost:8080/v1/audit/verify" \
   -H "Content-Type: application/json" \
-  -d '{"namespace": "healthcare", "tenant": "metro-hospital"}'
+  -d '{}'
 ```
 
 Response:
@@ -610,13 +610,13 @@ Query the audit trail:
 
 ```bash
 # All dispatches
-curl -s "http://localhost:8080/v1/audit?namespace=healthcare&tenant=metro-hospital&limit=50" | jq .
+curl -s "http://localhost:8080/v1/audit?limit=50" | jq .
 
 # Only suppressed (PHI blocked)
-curl -s "http://localhost:8080/v1/audit?namespace=healthcare&tenant=metro-hospital&outcome=suppressed" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=suppressed" | jq .
 
 # Only approval-pending (external PHI)
-curl -s "http://localhost:8080/v1/audit?namespace=healthcare&tenant=metro-hospital&outcome=pending_approval" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=pending_approval" | jq .
 ```
 
 ---
@@ -630,14 +630,12 @@ from auto-deleting audit records, even after the 90-day TTL expires:
 curl -X POST "http://localhost:8080/v1/retention" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "healthcare",
-    "tenant": "metro-hospital",
-    "enabled": true,
-    "audit_ttl_seconds": 7776000,
-    "event_ttl_seconds": 604800,
-    "compliance_hold": true,
-    "description": "HIPAA: 90-day audit, 7-day events, no auto-deletion"
-  }'
+  "enabled": true,
+  "audit_ttl_seconds": 7776000,
+  "event_ttl_seconds": 604800,
+  "compliance_hold": true,
+  "description": "HIPAA: 90-day audit, 7-day events, no auto-deletion"
+}'
 ```
 
 | Field | Value | Purpose |

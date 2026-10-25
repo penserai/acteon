@@ -174,9 +174,9 @@ describe("a2a client URLs and headers", () => {
     try {
       const c = new ActeonClient("http://x", { apiKey: "k" });
       const msg = makeMessage("m-1", "user", [makePartText("hi")]);
-      await c.a2aSendMessage("ns", "tnt", msg);
+      await c.a2aSendMessage(msg);
       expect(calls).toHaveLength(1);
-      expect(calls[0].url).toEqual("http://x/a2a/ns/tnt/v1/message:send");
+      expect(calls[0].url).toEqual("http://x/a2a/v1/message:send");
       expect(calls[0].init?.method).toEqual("POST");
       expect(headerValue(calls[0].init, A2A_VERSION_HEADER)).toEqual(
         A2A_PROTOCOL_VERSION,
@@ -197,8 +197,8 @@ describe("a2a client URLs and headers", () => {
     });
     try {
       const c = new ActeonClient("http://x");
-      await c.a2aCancelTask("ns", "tnt", "task-1");
-      expect(calls[0].url).toEqual("http://x/a2a/ns/tnt/v1/tasks/task-1:cancel");
+      await c.a2aCancelTask("task-1");
+      expect(calls[0].url).toEqual("http://x/a2a/v1/tasks/task-1:cancel");
       expect(calls[0].init?.method).toEqual("POST");
     } finally {
       restore();
@@ -212,9 +212,9 @@ describe("a2a client URLs and headers", () => {
     const { calls, restore } = captureFetch(200, {});
     try {
       const c = new ActeonClient("http://x");
-      await c.a2aDeletePushConfig("ns", "tnt", "task-1", "cfg-a");
+      await c.a2aDeletePushConfig("task-1", "cfg-a");
       expect(calls[0].url).toEqual(
-        "http://x/a2a/ns/tnt/v1/tasks/task-1/pushNotificationConfigs/cfg-a",
+        "http://x/a2a/v1/tasks/task-1/pushNotificationConfigs/cfg-a",
       );
       expect(calls[0].init?.method).toEqual("DELETE");
     } finally {
@@ -222,15 +222,14 @@ describe("a2a client URLs and headers", () => {
     }
   });
 
-  it("a2aDiscoverAgent is unauthenticated (no Authorization header)", async () => {
+  it("a2aDiscoverAgent uses credential context", async () => {
     const { calls, restore } = captureFetch(200, { agent_id: "tenant" });
     try {
       const c = new ActeonClient("http://x", { apiKey: "k" });
-      await c.a2aDiscoverAgent("ns", "tnt");
-      expect(calls[0].url).toEqual("http://x/a2a/ns/tnt/.well-known/agent.json");
-      // Discovery is anonymous per A2A spec — even when an API key is
-      // configured on the client, this call must NOT carry it.
-      expect(headerValue(calls[0].init, "Authorization")).toBeNull();
+      await c.a2aDiscoverAgent();
+      expect(calls[0].url).toEqual("http://x/a2a/.well-known/agent.json");
+      // Discovery returns information from the authenticated tenant.
+      expect(headerValue(calls[0].init, "Authorization")).toBe("Bearer k");
     } finally {
       restore();
     }
@@ -244,8 +243,8 @@ describe("a2a client URLs and headers", () => {
     });
     try {
       const c = new ActeonClient("http://x", { apiKey: "k" });
-      const card = await c.a2aGetAuthenticatedExtendedCard("ns", "tnt");
-      expect(calls[0].url).toEqual("http://x/a2a/ns/tnt");
+      const card = await c.a2aGetAuthenticatedExtendedCard();
+      expect(calls[0].url).toEqual("http://x/a2a");
       const body = JSON.parse(String(calls[0].init?.body));
       expect(body.jsonrpc).toEqual("2.0");
       expect(body.method).toEqual("agent/getAuthenticatedExtendedCard");
@@ -262,8 +261,8 @@ describe("a2a client URLs and headers", () => {
       const c = new ActeonClient("http://x");
       // A tenant id with a slash MUST be percent-encoded so it
       // cannot leak into additional path components.
-      await c.a2aGetTask("ns/escape", "tnt", "t");
-      expect(calls[0].url).toContain("/a2a/ns%2Fescape/tnt/v1/tasks/t");
+      await c.a2aGetTask("task/escape");
+      expect(calls[0].url).toContain("/a2a/v1/tasks/task%2Fescape");
     } finally {
       restore();
     }
@@ -284,7 +283,7 @@ describe("a2a JSON-RPC error unwrap", () => {
     try {
       const c = new ActeonClient("http://x", { apiKey: "k" });
       await expect(
-        c.a2aGetAuthenticatedExtendedCard("ns", "tnt"),
+        c.a2aGetAuthenticatedExtendedCard(),
       ).rejects.toThrow(/task not found/);
     } finally {
       restore();

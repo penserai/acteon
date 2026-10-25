@@ -3,7 +3,6 @@ import { useApprovals, useApproveAction, useRejectAction } from '../api/hooks/us
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Skeleton } from '../components/ui/Skeleton'
 import { useToast } from '../components/ui/useToast'
@@ -14,20 +13,14 @@ import shared from '../styles/shared.module.css'
 import styles from './Approvals.module.css'
 
 export function Approvals() {
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
-  const { data: approvals, isLoading } = useApprovals({ namespace: ns || undefined, tenant: tenant || undefined })
+  const { data: approvals, isLoading } = useApprovals()
   const approve = useApproveAction()
   const reject = useRejectAction()
   const { toast } = useToast()
 
   const handleApprove = (a: ApprovalStatus) => {
-    if (!ns || !tenant) {
-      toast('error', 'Namespace and tenant are required to approve')
-      return
-    }
     approve.mutate(
-      { ns, tenant, id: a.token },
+      { id: a.token },
       {
         onSuccess: () => toast('success', 'Action approved'),
         onError: (e) => toast('error', 'Approve failed', (e as Error).message),
@@ -36,12 +29,8 @@ export function Approvals() {
   }
 
   const handleReject = (a: ApprovalStatus) => {
-    if (!ns || !tenant) {
-      toast('error', 'Namespace and tenant are required to reject')
-      return
-    }
     reject.mutate(
-      { ns, tenant, id: a.token },
+      { id: a.token },
       {
         onSuccess: () => toast('success', 'Action rejected'),
         onError: (e) => toast('error', 'Reject failed', (e as Error).message),
@@ -57,11 +46,6 @@ export function Approvals() {
         title="Approvals"
         subtitle={pending.length > 0 ? `${pending.length} pending` : undefined}
       />
-
-      <div className={styles.filterContainer}>
-        <Input placeholder="Namespace" value={ns} onChange={(e) => setNs(e.target.value)} />
-        <Input placeholder="Tenant" value={tenant} onChange={(e) => setTenant(e.target.value)} />
-      </div>
 
       {isLoading ? (
         <div className={styles.loadingContainer}>

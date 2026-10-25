@@ -1,5 +1,22 @@
 //! Real binary and middleware, independently authenticated caller and recipient.
 #![recursion_limit = "256"]
+fn http_input(value: impl serde::Serialize) -> serde_json::Value {
+    let mut value = serde_json::to_value(value).unwrap();
+    fn strip(value: &mut serde_json::Value) {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("namespace");
+            object.remove("tenant");
+            object.remove("scope");
+        } else if let Some(items) = value.as_array_mut() {
+            for item in items {
+                strip(item);
+            }
+        }
+    }
+    strip(&mut value);
+    value
+}
+
 use acteon_core::{AgentCard, AgentCardInterface, PauseKind, Skill, TaskState};
 #[cfg(any(feature = "redis", feature = "postgres"))]
 use acteon_gateway::{TaskEngine, TaskScope};
@@ -164,6 +181,7 @@ authority_revision = 1
 [settings]
 jwt_secret = "test-jwt-secret-at-least-32-bytes"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "alice"
 authority_id = "credential/alice"
 principal = {{id="alice",kind={source_kind:?}}}
@@ -175,6 +193,7 @@ tenants = ["acme"]
 providers = ["agent.notifier"]
 actions = ["invoke"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "alice-manager"
 authority_id = "credential/alice-manager"
 principal = {{id="alice",kind={source_kind:?}}}
@@ -186,6 +205,7 @@ tenants = ["acme"]
 providers = ["agent.notifier"]
 actions = ["invoke"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "notifier"
 authority_id = "credential/notifier"
 principal = {{id="agent/notifier",kind="agent"}}
@@ -211,6 +231,7 @@ actions = ["execute"]
             auth,
             r#"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "legacy-observer"
 authority_id = "credential/observer"
 principal = {{id="alice",kind={source_kind:?}}}
@@ -354,7 +375,7 @@ actions = ["rpc"]
         self.process = Self::launch(&self.directory, self.worker_secret.as_deref());
     }
     fn task_url(&self, id: &str) -> String {
-        format!("{}/a2a/prod/acme/agents/notifier/v1/tasks/{id}", self.url)
+        format!("{}/a2a/agents/notifier/v1/tasks/{id}", self.url)
     }
     async fn ready(&mut self, client: &reqwest::Client) {
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -391,10 +412,10 @@ actions = ["rpc"]
         .unwrap();
     }
     fn endpoint(&self) -> String {
-        format!("{}/a2a/prod/acme/agents/notifier/v1/message:send", self.url)
+        format!("{}/a2a/agents/notifier/v1/message:send", self.url)
     }
     fn rpc_endpoint(&self) -> String {
-        format!("{}/a2a/prod/acme/agents/notifier", self.url)
+        format!("{}/a2a/agents/notifier", self.url)
     }
 }
 
@@ -568,7 +589,9 @@ async fn hosted_authorization_uses_recipient_to_open_and_original_requester_to_r
         .post(format!("{base}/authorization:request"))
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({"authorizationRequestId":"opaque-flow-42"}))
+        .json(&http_input(
+            &json!({"authorizationRequestId":"opaque-flow-42"}),
+        ))
         .send()
         .await
         .unwrap();
@@ -577,7 +600,9 @@ async fn hosted_authorization_uses_recipient_to_open_and_original_requester_to_r
         .post(format!("{base}/authorization:request"))
         .bearer_auth("notifier-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({"authorizationRequestId":"opaque-flow-42"}))
+        .json(&http_input(
+            &json!({"authorizationRequestId":"opaque-flow-42"}),
+        ))
         .send()
         .await
         .unwrap();
@@ -590,7 +615,7 @@ async fn hosted_authorization_uses_recipient_to_open_and_original_requester_to_r
         .bearer_auth("notifier-secret")
         .header("a2a-version", "1.0")
         .header("x-acteon-agent-source-context", &source)
-        .json(&json!({"challengeId":challenge}))
+        .json(&http_input(&json!({"challengeId":challenge})))
         .send()
         .await
         .unwrap();
@@ -601,7 +626,7 @@ async fn hosted_authorization_uses_recipient_to_open_and_original_requester_to_r
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
         .header("x-acteon-agent-source-context", source)
-        .json(&json!({"challengeId":challenge}))
+        .json(&http_input(&json!({"challengeId":challenge})))
         .send()
         .await
         .unwrap();
@@ -658,7 +683,7 @@ async fn peer_submission_action_suffixes_reach_the_governed_handlers() {
     let task = "11111111-1111-4111-8111-111111111111";
     let submission = "22222222-2222-4222-8222-222222222222";
     let base = format!(
-        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{task}/peers/notifier/notify/submissions/{submission}",
+        "{}/a2a/agents/notifier/v1/tasks/{task}/peers/notifier/notify/submissions/{submission}",
         server.url
     );
 
@@ -713,7 +738,7 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
         client
             .post(server.endpoint())
             .bearer_auth("alice-secret")
-            .json(&request)
+            .json(&http_input(&request))
     };
     let response = send().send().await.unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
@@ -726,14 +751,14 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
     let response = client
         .post(server.endpoint())
         .bearer_auth("notifier-secret")
-        .json(&request)
+        .json(&http_input(&request))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 403);
     let response = client
         .post(server.endpoint())
-        .json(&request)
+        .json(&http_input(&request))
         .send()
         .await
         .unwrap();
@@ -745,13 +770,13 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
             "x-acteon-execution-permits",
             r#"[{"id":"worker-provider","accepted_revision":1}]"#,
         )
-        .json(&acteon_core::Action::new(
+        .json(&http_input(&acteon_core::Action::new(
             "prod",
             "acme",
             "incident",
             "execute",
             json!({}),
-        ))
+        )))
         .send()
         .await
         .unwrap();
@@ -766,7 +791,7 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&changed)
+        .json(&http_input(&changed))
         .send()
         .await
         .unwrap();
@@ -774,7 +799,7 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
     let response = send().header("a2a-version", "999").send().await.unwrap();
     assert_eq!(response.status(), 400);
     let task_id = accepted["id"].as_str().unwrap();
-    let legacy = format!("{}/a2a/prod/acme/v1/tasks/{task_id}", server.url);
+    let legacy = format!("{}/a2a/v1/tasks/{task_id}", server.url);
     for response in [
         client
             .get(&legacy)
@@ -797,7 +822,9 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
         client
             .post(format!("{legacy}/pushNotificationConfigs"))
             .bearer_auth("observer-secret")
-            .json(&json!({"url":"https://callbacks.example/task"}))
+            .json(&http_input(
+                &json!({"url":"https://callbacks.example/task"}),
+            ))
             .send()
             .await
             .unwrap(),
@@ -807,9 +834,9 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
     let mut continuation = message("legacy-continuation");
     continuation["message"]["taskId"] = json!(task_id);
     let response = client
-        .post(format!("{}/a2a/prod/acme/v1/message:send", server.url))
+        .post(format!("{}/a2a/v1/message:send", server.url))
         .bearer_auth("observer-secret")
-        .json(&continuation)
+        .json(&http_input(&continuation))
         .send()
         .await
         .unwrap();
@@ -819,7 +846,7 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&injected)
+        .json(&http_input(&injected))
         .send()
         .await
         .unwrap();
@@ -836,7 +863,7 @@ async fn send_task(server: &Server, client: &reqwest::Client, id: &str) -> (Valu
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&message(id))
+        .json(&http_input(&message(id)))
         .send()
         .await
         .unwrap();
@@ -877,7 +904,7 @@ async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&request)
+        .json(&http_input(&request))
         .send()
         .await
         .unwrap();
@@ -905,7 +932,7 @@ async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to
     let response = client
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
-        .json(&get)
+        .json(&http_input(&get))
         .send()
         .await
         .unwrap();
@@ -919,12 +946,12 @@ async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to
                 .post(server.rpc_endpoint())
                 .bearer_auth("alice-secret")
                 .header("x-acteon-agent-source-context", &source)
-                .json(&json!({
+                .json(&http_input(&json!({
                     "jsonrpc":"2.0",
                     "id":"get-1",
                     "method":"GetTask",
                     "params":{"id":task_id}
-                }))
+                })))
                 .send()
                 .await
                 .unwrap();
@@ -945,12 +972,12 @@ async fn official_rpc_enters_the_governed_runtime_and_binds_agent_observation_to
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("x-acteon-agent-source-context", &source)
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0",
             "id":"cancel-1",
             "method":"CancelTask",
             "params":{"id":task_id}
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -980,13 +1007,13 @@ async fn official_cancel_task_fences_future_starts_without_inventing_provider_fi
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"send-cancel", "method":"SendMessage",
             "params":{
                 "message":message("official-cancel")["message"],
                 "configuration":{"returnImmediately":true}
             }
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1008,10 +1035,10 @@ async fn official_cancel_task_fences_future_starts_without_inventing_provider_fi
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
         .header("x-acteon-agent-source-context", &source)
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"cancel-live", "method":"CancelTask",
             "params":{"id":task_id}
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1039,10 +1066,10 @@ async fn official_cancel_task_fences_future_starts_without_inventing_provider_fi
                 .bearer_auth("alice-secret")
                 .header("a2a-version", "1.0")
                 .header("x-acteon-agent-source-context", &source)
-                .json(&json!({
+                .json(&http_input(&json!({
                     "jsonrpc":"2.0", "id":"get-cancel", "method":"GetTask",
                     "params":{"id":task_id}
-                }))
+                })))
                 .send()
                 .await
                 .unwrap();
@@ -1080,13 +1107,13 @@ async fn official_cancel_task_confirms_a_fenced_local_non_start_and_replays_it()
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"send-before-start", "method":"SendMessage",
             "params":{
                 "message":message("cancel-before-start")["message"],
                 "configuration":{"returnImmediately":true}
             }
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1102,10 +1129,10 @@ async fn official_cancel_task_confirms_a_fenced_local_non_start_and_replays_it()
             .bearer_auth("alice-secret")
             .header("a2a-version", "1.0")
             .header("x-acteon-agent-source-context", &source)
-            .json(&json!({
+            .json(&http_input(&json!({
                 "jsonrpc":"2.0", "id":request_id, "method":"CancelTask",
                 "params":{"id":task_id}
-            }))
+            })))
             .send()
             .await
             .unwrap();
@@ -1144,13 +1171,13 @@ async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_so
             .post(server.rpc_endpoint())
             .bearer_auth("alice-secret")
             .header("a2a-version", "1.0")
-            .json(&json!({
+            .json(&http_input(&json!({
                 "jsonrpc":"2.0", "id":rpc_id, "method":"SendMessage",
                 "params":{
                     "message":message(message_id)["message"],
                     "configuration":{"returnImmediately":true}
                 }
-            }))
+            })))
             .send()
             .await
             .unwrap();
@@ -1164,10 +1191,10 @@ async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_so
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"list-first", "method":"ListTasks",
             "params":{"pageSize":1,"historyLength":0,"includeArtifacts":false}
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1193,13 +1220,13 @@ async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_so
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"list-second", "method":"ListTasks",
             "params":{
                 "pageSize":1,"pageToken":token,"historyLength":0,
                 "includeArtifacts":false
             }
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1214,13 +1241,13 @@ async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_so
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"list-mismatch", "method":"ListTasks",
             "params":{
                 "pageSize":1,"pageToken":token,"historyLength":1,
                 "includeArtifacts":false
             }
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1249,11 +1276,11 @@ async fn official_governed_push_configs_require_management_and_exact_source_auth
         .post(server.rpc_endpoint())
         .bearer_auth("alice-manager-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"push-task", "method":"SendMessage",
             "params":{"message":message("push-task")["message"],
                 "configuration":{"returnImmediately":true}}
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1271,7 +1298,7 @@ async fn official_governed_push_configs_require_management_and_exact_source_auth
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&create)
+        .json(&http_input(&create))
         .send()
         .await
         .unwrap();
@@ -1281,7 +1308,7 @@ async fn official_governed_push_configs_require_management_and_exact_source_auth
         .post(server.rpc_endpoint())
         .bearer_auth("alice-manager-secret")
         .header("a2a-version", "1.0")
-        .json(&create)
+        .json(&http_input(&create))
         .send()
         .await
         .unwrap()
@@ -1296,10 +1323,10 @@ async fn official_governed_push_configs_require_management_and_exact_source_auth
         .post(server.rpc_endpoint())
         .bearer_auth("alice-manager-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"push-list", "method":"ListTaskPushNotificationConfigs",
             "params":{"taskId":task_id,"pageSize":1}
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1313,10 +1340,10 @@ async fn official_governed_push_configs_require_management_and_exact_source_auth
         .post(server.rpc_endpoint())
         .bearer_auth("alice-manager-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"push-delete", "method":"DeleteTaskPushNotificationConfig",
             "params":{"taskId":task_id,"id":"ops-hook"}
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1354,7 +1381,7 @@ async fn official_governed_inline_push_is_deterministic_on_exact_send_replay() {
             .post(server.rpc_endpoint())
             .bearer_auth("alice-manager-secret")
             .header("a2a-version", "1.0")
-            .json(&send)
+            .json(&http_input(&send))
             .send()
             .await
             .unwrap()
@@ -1372,10 +1399,10 @@ async fn official_governed_inline_push_is_deterministic_on_exact_send_replay() {
         .post(server.rpc_endpoint())
         .bearer_auth("alice-manager-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"inline-list", "method":"ListTaskPushNotificationConfigs",
             "params":{"taskId":task_id}
-        }))
+        })))
         .send()
         .await
         .unwrap()
@@ -1404,13 +1431,13 @@ async fn official_list_tasks_requires_the_exact_job_receipt_for_agent_sources() 
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"send-agent-list", "method":"SendMessage",
             "params":{
                 "message":message("agent-list")["message"],
                 "configuration":{"returnImmediately":true}
             }
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1426,10 +1453,10 @@ async fn official_list_tasks_requires_the_exact_job_receipt_for_agent_sources() 
             .post(server.rpc_endpoint())
             .bearer_auth("alice-secret")
             .header("a2a-version", "1.0")
-            .json(&json!({
+            .json(&http_input(&json!({
                 "jsonrpc":"2.0", "id":"list-agent", "method":"ListTasks",
                 "params":{}
-            }));
+            })));
         if let Some(source_header) = source_header {
             request = request.header("x-acteon-agent-source-context", source_header);
         }
@@ -1460,12 +1487,12 @@ async fn official_streaming_rpc_enters_the_governed_runtime_and_closes_at_comple
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0",
             "id":"stream-1",
             "method":"SendStreamingMessage",
             "params":{"message":message("official-stream")["message"]}
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1523,13 +1550,13 @@ async fn official_task_subscription_starts_with_a_governed_durable_snapshot() {
     let accepted = client
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"send-for-subscription", "method":"SendMessage",
             "params":{
                 "message":message("official-subscribe")["message"],
                 "configuration":{"returnImmediately":true}
             }
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1548,10 +1575,10 @@ async fn official_task_subscription_starts_with_a_governed_durable_snapshot() {
         .post(server.rpc_endpoint())
         .bearer_auth("alice-secret")
         .header("x-acteon-agent-source-context", source)
-        .json(&json!({
+        .json(&http_input(&json!({
             "jsonrpc":"2.0", "id":"subscribe-1", "method":"SubscribeToTask",
             "params":{"id":task_id}
-        }))
+        })))
         .send()
         .await
         .unwrap();
@@ -1594,7 +1621,7 @@ async fn governed_parent_handoff_creates_a_verified_child_and_requires_paired_he
         .bearer_auth("alice-secret")
         .header("x-acteon-execution-context", &parent)
         .header("x-acteon-execution-permits", permits)
-        .json(&message("delegated-child"))
+        .json(&http_input(&message("delegated-child")))
         .send()
         .await
         .unwrap();
@@ -1611,7 +1638,7 @@ async fn governed_parent_handoff_creates_a_verified_child_and_requires_paired_he
             .header("x-acteon-execution-permits", permits),
     ] {
         let response = request
-            .json(&message("unpaired-parent"))
+            .json(&http_input(&message("unpaired-parent")))
             .send()
             .await
             .unwrap();
@@ -1826,11 +1853,10 @@ impl PeerMeshServer {
         fs::write(&cert_path, cert.pem()).unwrap();
         fs::write(&key_path, key.serialize_pem()).unwrap();
 
-        let notifier_endpoint = format!(
-            "https://127.0.0.1:{notifier_port}/a2a/prod/acme/agents/notifier/v1/message:send"
-        );
+        let notifier_endpoint =
+            format!("https://127.0.0.1:{notifier_port}/a2a/agents/notifier/v1/message:send");
         let resolver_endpoint = format!(
-            "https://127.0.0.1:{resolver_endpoint_port}/a2a/prod/acme/agents/resolver/v1/message:send"
+            "https://127.0.0.1:{resolver_endpoint_port}/a2a/agents/resolver/v1/message:send"
         );
         let mut notifier = AgentCard::new("notifier", "prod", "acme", "Notifier", "1");
         let card_time = chrono::DateTime::parse_from_rfc3339("2026-10-08T00:00:00Z")
@@ -1928,6 +1954,7 @@ impl PeerMeshServer {
 [settings]
 jwt_secret = "test-jwt-secret-at-least-32-bytes"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "alice"
 authority_id = "credential/alice"
 principal = {{id="alice",kind="human"}}
@@ -1939,6 +1966,7 @@ tenants = ["acme"]
 providers = ["agent.notifier"]
 actions = ["invoke"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "notifier"
 authority_id = "credential/notifier"
 principal = {{id="agent/notifier",kind="agent"}}
@@ -1955,6 +1983,7 @@ tenants = ["acme"]
 providers = ["agent.resolver"]
 actions = ["invoke"]
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "resolver"
 authority_id = "credential/resolver"
 principal = {{id="agent/resolver",kind="agent"}}
@@ -2531,11 +2560,11 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
 
     let root_response = client
         .post(format!(
-            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            "{}/a2a/agents/notifier/v1/message:send",
             notifier.url
         ))
         .bearer_auth("alice-secret")
-        .json(&message("authorize-root"))
+        .json(&http_input(&message("authorize-root")))
         .send()
         .await
         .unwrap();
@@ -2547,7 +2576,7 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
     );
     let root: Value = root_response.json().await.unwrap();
     let peer_base = format!(
-        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        "{}/a2a/agents/notifier/v1/tasks/{}/peers",
         notifier.url,
         root["id"].as_str().unwrap()
     );
@@ -2557,7 +2586,7 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
     let denied_send = client
         .post(format!("{peer_base}/resolver/resolve/message:send"))
         .bearer_auth("notifier-secret")
-        .json(&message("authorize-denied-child"))
+        .json(&http_input(&message("authorize-denied-child")))
         .send()
         .await
         .unwrap();
@@ -2570,12 +2599,14 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
         .unwrap();
     let denied_open = client
         .post(format!(
-            "{}/a2a/prod/acme/agents/resolver/v1/tasks/{denied_remote}/authorization:request",
+            "{}/a2a/agents/resolver/v1/tasks/{denied_remote}/authorization:request",
             resolver.url
         ))
         .bearer_auth("resolver-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({"authorizationRequestId":"revoked-peer-flow"}))
+        .json(&http_input(
+            &json!({"authorizationRequestId":"revoked-peer-flow"}),
+        ))
         .send()
         .await
         .unwrap();
@@ -2598,7 +2629,7 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
             "{peer_base}/resolver/resolve/submissions/{denied_submission}/authorization:resolve"
         ))
         .bearer_auth("notifier-secret")
-        .json(&json!({"challengeId":denied_challenge}))
+        .json(&http_input(&json!({"challengeId":denied_challenge})))
         .send()
         .await
         .unwrap();
@@ -2621,7 +2652,7 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
     let accepted_send = client
         .post(format!("{peer_base}/resolver/resolve/message:send"))
         .bearer_auth("notifier-secret")
-        .json(&message("authorize-success-child"))
+        .json(&http_input(&message("authorize-success-child")))
         .send()
         .await
         .unwrap();
@@ -2634,12 +2665,14 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
         .unwrap();
     let accepted_open = client
         .post(format!(
-            "{}/a2a/prod/acme/agents/resolver/v1/tasks/{accepted_remote}/authorization:request",
+            "{}/a2a/agents/resolver/v1/tasks/{accepted_remote}/authorization:request",
             resolver.url
         ))
         .bearer_auth("resolver-secret")
         .header("a2a-version", "1.0")
-        .json(&json!({"authorizationRequestId":"successful-peer-flow"}))
+        .json(&http_input(
+            &json!({"authorizationRequestId":"successful-peer-flow"}),
+        ))
         .send()
         .await
         .unwrap();
@@ -2666,7 +2699,7 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
     let first = client
         .post(&authorization_url)
         .bearer_auth("notifier-secret")
-        .json(&json!({"challengeId":accepted_challenge}))
+        .json(&http_input(&json!({"challengeId":accepted_challenge})))
         .send()
         .await
         .unwrap();
@@ -2694,7 +2727,7 @@ async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn Sta
     let recovered = client
         .post(&authorization_url)
         .bearer_auth("notifier-secret")
-        .json(&json!({"challengeId":accepted_challenge}))
+        .json(&http_input(&json!({"challengeId":accepted_challenge})))
         .send()
         .await
         .unwrap();
@@ -2749,11 +2782,11 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
 
     let response = client
         .post(format!(
-            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            "{}/a2a/agents/notifier/v1/message:send",
             notifier.url
         ))
         .bearer_auth("alice-secret")
-        .json(&message("continue-root"))
+        .json(&http_input(&message("continue-root")))
         .send()
         .await
         .unwrap();
@@ -2786,14 +2819,14 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
             .unwrap();
     publish_peer_cards(store.as_ref(), &config).await;
     let peer_base = format!(
-        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        "{}/a2a/agents/notifier/v1/tasks/{}/peers",
         notifier.url,
         root["id"].as_str().unwrap()
     );
     let response = client
         .post(format!("{peer_base}/resolver/resolve/message:send"))
         .bearer_auth("notifier-secret")
-        .json(&message("continue-child"))
+        .json(&http_input(&message("continue-child")))
         .send()
         .await
         .unwrap();
@@ -2871,10 +2904,10 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
     let response = client
         .post(&continuation_url)
         .bearer_auth("notifier-secret")
-        .json(&json!({"message": {
+        .json(&http_input(&json!({"message": {
             "role": "user", "messageId": "continue-answer",
             "parts": [{"kind": "text", "text": "02:00 UTC"}]
-        }}))
+        }})))
         .send()
         .await
         .unwrap();
@@ -2921,10 +2954,10 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
     let response = client
         .post(&continuation_url)
         .bearer_auth("notifier-secret")
-        .json(&json!({"message": {
+        .json(&http_input(&json!({"message": {
             "role": "user", "messageId": "continue-answer",
             "parts": [{"kind": "text", "text": "02:00 UTC"}]
-        }}))
+        }})))
         .send()
         .await
         .unwrap();
@@ -3000,11 +3033,11 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
 
     let response = client
         .post(format!(
-            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            "{}/a2a/agents/notifier/v1/message:send",
             notifier.url
         ))
         .bearer_auth("alice-secret")
-        .json(&message("mesh-root"))
+        .json(&http_input(&message("mesh-root")))
         .send()
         .await
         .unwrap();
@@ -3013,7 +3046,7 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
     let root_id = root["id"].as_str().unwrap();
 
     let peer_base = format!(
-        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{root_id}/peers",
+        "{}/a2a/agents/notifier/v1/tasks/{root_id}/peers",
         notifier.url
     );
     let response = client
@@ -3032,7 +3065,7 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
     let response = client
         .post(format!("{peer_base}/resolver/resolve/message:send"))
         .bearer_auth("notifier-secret")
-        .json(&message("mesh-child"))
+        .json(&http_input(&message("mesh-child")))
         .send()
         .await
         .unwrap();
@@ -3153,25 +3186,25 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
 
     let response = client
         .post(format!(
-            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            "{}/a2a/agents/notifier/v1/message:send",
             notifier.url
         ))
         .bearer_auth("alice-secret")
-        .json(&message("response-loss-root"))
+        .json(&http_input(&message("response-loss-root")))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let root: Value = response.json().await.unwrap();
     let peer_base = format!(
-        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        "{}/a2a/agents/notifier/v1/tasks/{}/peers",
         notifier.url,
         root["id"].as_str().unwrap()
     );
     let response = client
         .post(format!("{peer_base}/resolver/resolve/message:send"))
         .bearer_auth("notifier-secret")
-        .json(&message("response-loss-child"))
+        .json(&http_input(&message("response-loss-child")))
         .send()
         .await
         .unwrap();
@@ -3286,7 +3319,7 @@ async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_k
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&message("new-offboarded-job"))
+        .json(&http_input(&message("new-offboarded-job")))
         .send()
         .await
         .unwrap();
@@ -3371,7 +3404,7 @@ async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&altered)
+        .json(&http_input(&altered))
         .send()
         .await
         .unwrap();
@@ -3430,7 +3463,7 @@ async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&message("fresh-after-removal"))
+        .json(&http_input(&message("fresh-after-removal")))
         .send()
         .await
         .unwrap();
@@ -3469,7 +3502,7 @@ async fn invalid_messages_are_bad_requests_and_missing_work_is_not_found() {
         let response = client
             .post(server.endpoint())
             .bearer_auth("alice-secret")
-            .json(&request)
+            .json(&http_input(&request))
             .send()
             .await
             .unwrap();
@@ -3701,7 +3734,7 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
         "Notify incident owner",
     );
     let receipt = client
-        .agent_service_send_message("prod", "acme", "notifier", &message)
+        .agent_service_send_message("notifier", &message)
         .await
         .unwrap();
     let saved = serde_json::to_string(&receipt).unwrap();
@@ -3722,7 +3755,7 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
         .post(server.endpoint())
         .bearer_auth("alice-secret")
         .header("origin", "https://console.example")
-        .json(&serde_json::json!({"message":message}))
+        .json(&http_input(&serde_json::json!({"message":message})))
         .send()
         .await
         .unwrap();
@@ -3922,7 +3955,7 @@ async fn redis_registry_retirement_blocks_admission_and_republication_without_hi
     let response = client
         .post(server.endpoint())
         .bearer_auth("alice-secret")
-        .json(&message("new-after-retirement"))
+        .json(&http_input(&message("new-after-retirement")))
         .send()
         .await
         .unwrap();

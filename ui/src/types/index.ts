@@ -79,8 +79,6 @@ export interface Attachment {
 
 // ---- Dispatch ----
 export interface DispatchRequest {
-  namespace: string
-  tenant: string
   provider: string
   action_type: string
   payload: Record<string, unknown>
@@ -158,8 +156,6 @@ export interface AuditPage {
 }
 
 export interface AuditQuery {
-  namespace?: string
-  tenant?: string
   provider?: string
   action_type?: string
   outcome?: string
@@ -466,8 +462,6 @@ export interface Silence {
 }
 
 export interface CreateSilenceRequest {
-  namespace: string
-  tenant: string
   matchers: SilenceMatcher[]
   starts_at?: string
   ends_at?: string
@@ -514,8 +508,6 @@ export interface TimeInterval {
 
 export interface CreateTimeIntervalRequest {
   name: string
-  namespace: string
-  tenant: string
   time_ranges: TimeRange[]
   location?: string
   description?: string
@@ -595,8 +587,6 @@ export interface RecurringActionListResponse {
 }
 
 export interface CreateRecurringActionRequest {
-  namespace: string
-  tenant: string
   cron_expression: string
   timezone: string
   provider: string
@@ -618,8 +608,6 @@ export interface CreateRecurringActionResponse {
 }
 
 export interface UpdateRecurringActionRequest {
-  namespace: string
-  tenant: string
   name?: string | null
   cron_expression?: string
   timezone?: string
@@ -643,8 +631,6 @@ export interface PauseResumeResponse {
 // ---- Rule Playground ----
 
 export interface EvaluateRulesRequest {
-  namespace: string
-  tenant: string
   provider: string
   action_type: string
   payload: Record<string, unknown>
@@ -899,8 +885,6 @@ export interface QuotaListResponse {
 }
 
 export interface CreateQuotaRequest {
-  namespace: string
-  tenant: string
   provider?: string | null
   principal?: string | null
   per_principal?: boolean
@@ -951,8 +935,6 @@ export interface RetentionListResponse {
 }
 
 export interface CreateRetentionRequest {
-  namespace: string
-  tenant: string
   audit_ttl_seconds?: number | null
   state_ttl_seconds?: number | null
   event_ttl_seconds?: number | null
@@ -1026,8 +1008,6 @@ export interface TemplateProfileListResponse {
 
 export interface CreateTemplateRequest {
   name: string
-  namespace: string
-  tenant: string
   content: string
   description?: string | null
   labels?: Record<string, string>
@@ -1045,8 +1025,6 @@ export interface CreateTemplateResponse {
 
 export interface CreateProfileRequest {
   name: string
-  namespace: string
-  tenant: string
   fields: Record<string, TemplateProfileField>
   description?: string | null
   labels?: Record<string, string>
@@ -1064,18 +1042,11 @@ export interface CreateProfileResponse {
 
 export interface RenderPreviewRequest {
   profile: string
-  namespace: string
-  tenant: string
   payload: Record<string, unknown>
 }
 
 export interface RenderPreviewResponse {
   rendered: Record<string, string>
-}
-
-export interface TemplateQueryParams {
-  namespace?: string
-  tenant?: string
 }
 
 // ---- Compliance ----
@@ -1104,8 +1075,6 @@ export type AnalyticsInterval = 'hourly' | 'daily' | 'weekly' | 'monthly';
 
 export interface AnalyticsQuery {
   metric: AnalyticsMetric;
-  namespace?: string;
-  tenant?: string;
   provider?: string;
   action_type?: string;
   outcome?: string;
@@ -1205,6 +1174,7 @@ export interface PrincipalIdentity {
   kind: 'human' | 'agent' | 'service' | 'system'
 }
 export interface CredentialIdentity {
+  scope: { namespace: string; tenant: string }
   credential_id: string
   authority_id?: string | null
   auth_method: string

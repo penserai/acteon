@@ -39,39 +39,32 @@ def platform_response(response: httpx.Response, kind: str) -> Any:
 
 
 class _PlatformMixin:
-    def ingest_timeline_change(
-        self, namespace: str, tenant: str, change: dict[str, Any]
-    ) -> dict[str, Any]:
+    def ingest_timeline_change(self, change: dict[str, Any]) -> dict[str, Any]:
         """Persist one CDC change. Preserve changeId and revision when retrying."""
         return cast(
             dict[str, Any],
             self.platform_request(
                 PlatformOperation.TIMELINE_INGEST,
-                body={"scope": {"namespace": namespace, "tenant": tenant}, "change": change},
+                body={"change": change},
             ),
         )
 
-    def query_timeline(
-        self, namespace: str, tenant: str, query: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    def query_timeline(self, query: dict[str, Any] | None = None) -> dict[str, Any]:
         """Search current events; query["filter"] accepts the timeline CEL subset."""
         return cast(
             dict[str, Any],
             self.platform_request(
                 PlatformOperation.TIMELINE_QUERY,
-                body={"scope": {"namespace": namespace, "tenant": tenant}, "query": query or {}},
+                body={"query": query or {}},
             ),
         )
 
-    def get_timeline_event(
-        self, namespace: str, tenant: str, source: str, event_id: str
-    ) -> dict[str, Any]:
+    def get_timeline_event(self, source: str, event_id: str) -> dict[str, Any]:
         return cast(
             dict[str, Any],
             self.platform_request(
                 PlatformOperation.TIMELINE_GET,
                 path={"source": source, "eventId": event_id},
-                query={"namespace": namespace, "tenant": tenant},
             ),
         )
 
@@ -101,39 +94,32 @@ class _PlatformMixin:
 
 
 class _AsyncPlatformMixin:
-    async def ingest_timeline_change(
-        self, namespace: str, tenant: str, change: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def ingest_timeline_change(self, change: dict[str, Any]) -> dict[str, Any]:
         """Persist one CDC change. Preserve changeId and revision when retrying."""
         return cast(
             dict[str, Any],
             await self.platform_request(
                 PlatformOperation.TIMELINE_INGEST,
-                body={"scope": {"namespace": namespace, "tenant": tenant}, "change": change},
+                body={"change": change},
             ),
         )
 
-    async def query_timeline(
-        self, namespace: str, tenant: str, query: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    async def query_timeline(self, query: dict[str, Any] | None = None) -> dict[str, Any]:
         """Search current events; query["filter"] accepts the timeline CEL subset."""
         return cast(
             dict[str, Any],
             await self.platform_request(
                 PlatformOperation.TIMELINE_QUERY,
-                body={"scope": {"namespace": namespace, "tenant": tenant}, "query": query or {}},
+                body={"query": query or {}},
             ),
         )
 
-    async def get_timeline_event(
-        self, namespace: str, tenant: str, source: str, event_id: str
-    ) -> dict[str, Any]:
+    async def get_timeline_event(self, source: str, event_id: str) -> dict[str, Any]:
         return cast(
             dict[str, Any],
             await self.platform_request(
                 PlatformOperation.TIMELINE_GET,
                 path={"source": source, "eventId": event_id},
-                query={"namespace": namespace, "tenant": tenant},
             ),
         )
 

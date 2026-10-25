@@ -180,13 +180,13 @@ func TestA2ASendMessageURLAndA2AVersionHeader(t *testing.T) {
 	defer teardown()
 	c := NewClient(url, WithAPIKey("k"))
 	msg := MakeMessage("m-1", "user", []map[string]any{MakePartText("hi")}, MakeMessageOptions{})
-	if _, err := c.A2ASendMessage(context.Background(), "ns", "tnt", msg); err != nil {
+	if _, err := c.A2ASendMessage(context.Background(), msg); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if captured.method != "POST" {
 		t.Errorf("method: got %s", captured.method)
 	}
-	if captured.path != "/a2a/ns/tnt/v1/message:send" {
+	if captured.path != "/a2a/v1/message:send" {
 		t.Errorf("path: got %s", captured.path)
 	}
 	if got := captured.headers.Get(A2AVersionHeader); got != A2AProtocolVersion {
@@ -212,10 +212,10 @@ func TestA2ACancelTaskKeepsCancelVerbInSegment(t *testing.T) {
 	})
 	defer teardown()
 	c := NewClient(url)
-	if _, err := c.A2ACancelTask(context.Background(), "ns", "tnt", "task-1"); err != nil {
+	if _, err := c.A2ACancelTask(context.Background(), "task-1"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	if captured.path != "/a2a/ns/tnt/v1/tasks/task-1:cancel" {
+	if captured.path != "/a2a/v1/tasks/task-1:cancel" {
 		t.Errorf("path: got %s", captured.path)
 	}
 	if captured.method != "POST" {
@@ -227,10 +227,10 @@ func TestA2ADeletePushConfigURL(t *testing.T) {
 	url, captured, teardown := newCapturingServer(t, 200, map[string]any{})
 	defer teardown()
 	c := NewClient(url)
-	if err := c.A2ADeletePushConfig(context.Background(), "ns", "tnt", "task-1", "cfg-a"); err != nil {
+	if err := c.A2ADeletePushConfig(context.Background(), "task-1", "cfg-a"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	want := "/a2a/ns/tnt/v1/tasks/task-1/pushNotificationConfigs/cfg-a"
+	want := "/a2a/v1/tasks/task-1/pushNotificationConfigs/cfg-a"
 	if captured.path != want {
 		t.Errorf("path: got %s want %s", captured.path, want)
 	}
@@ -239,7 +239,7 @@ func TestA2ADeletePushConfigURL(t *testing.T) {
 	}
 }
 
-func TestA2ADiscoverAgentIsUnauthenticated(t *testing.T) {
+func TestA2ADiscoverAgentUsesCredentialContext(t *testing.T) {
 	url, captured, teardown := newCapturingServer(t, 200, map[string]any{
 		"agent_id": "tenant",
 	})
@@ -247,14 +247,14 @@ func TestA2ADiscoverAgentIsUnauthenticated(t *testing.T) {
 	// Configure an API key on the client — discovery must still go
 	// out anonymous (A2A spec).
 	c := NewClient(url, WithAPIKey("k"))
-	if _, err := c.A2ADiscoverAgent(context.Background(), "ns", "tnt"); err != nil {
+	if _, err := c.A2ADiscoverAgent(context.Background()); err != nil {
 		t.Fatalf("discover: %v", err)
 	}
-	if captured.path != "/a2a/ns/tnt/.well-known/agent.json" {
+	if captured.path != "/a2a/.well-known/agent.json" {
 		t.Errorf("path: got %s", captured.path)
 	}
-	if got := captured.headers.Get("Authorization"); got != "" {
-		t.Errorf("Authorization must be absent on discovery: got %q", got)
+	if got := captured.headers.Get("Authorization"); got != "Bearer k" {
+		t.Errorf("discovery must use configured credential: got %q", got)
 	}
 }
 
@@ -266,11 +266,11 @@ func TestA2AGetAuthenticatedExtendedCardUsesJSONRPCEnvelope(t *testing.T) {
 	})
 	defer teardown()
 	c := NewClient(url, WithAPIKey("k"))
-	card, err := c.A2AGetAuthenticatedExtendedCard(context.Background(), "ns", "tnt")
+	card, err := c.A2AGetAuthenticatedExtendedCard(context.Background())
 	if err != nil {
 		t.Fatalf("extended card: %v", err)
 	}
-	if captured.path != "/a2a/ns/tnt" {
+	if captured.path != "/a2a" {
 		t.Errorf("path: got %s", captured.path)
 	}
 	var body map[string]any
@@ -294,7 +294,7 @@ func TestA2AGetAuthenticatedExtendedCardJSONRPCErrorSurfacesAsAPIError(t *testin
 	})
 	defer teardown()
 	c := NewClient(url, WithAPIKey("k"))
-	_, err := c.A2AGetAuthenticatedExtendedCard(context.Background(), "ns", "tnt")
+	_, err := c.A2AGetAuthenticatedExtendedCard(context.Background())
 	if err == nil {
 		t.Fatalf("expected error on JSON-RPC error envelope")
 	}
@@ -311,12 +311,12 @@ func TestA2APathSegmentsArePercentEncoded(t *testing.T) {
 	url, captured, teardown := newCapturingServer(t, 200, map[string]any{})
 	defer teardown()
 	c := NewClient(url)
-	// A tenant id with a slash must be percent-encoded so it
+	// A task id with a slash must be percent-encoded so it
 	// cannot leak into additional path components.
-	if _, err := c.A2AGetTask(context.Background(), "ns/escape", "tnt", "t"); err != nil {
+	if _, err := c.A2AGetTask(context.Background(), "task/escape"); err != nil {
 		t.Fatalf("get_task: %v", err)
 	}
-	if !strings.Contains(captured.path, "/ns%2Fescape/") {
+	if !strings.Contains(captured.path, "/tasks/task%2Fescape") {
 		t.Errorf("path must percent-encode slash: got %s", captured.path)
 	}
 }

@@ -82,28 +82,34 @@ impl ServerHandler for ActeonMcpServer {
         std::future::ready(Ok(ListResourceTemplatesResult {
             resource_templates: vec![
                 RawResourceTemplate {
-                    uri_template: "acteon://audit/{tenant}".into(),
+                    uri_template: "acteon://audit".into(),
                     name: "Audit trail".into(),
                     title: None,
-                    description: Some("Recent audit records for a tenant".to_string()),
+                    description: Some(
+                        "Recent audit records in the authenticated context".to_string(),
+                    ),
                     mime_type: Some("application/json".into()),
                     icons: None,
                 }
                 .no_annotation(),
                 RawResourceTemplate {
-                    uri_template: "acteon://rules/{tenant}".into(),
+                    uri_template: "acteon://rules".into(),
                     name: "Active rules".into(),
                     title: None,
-                    description: Some("The active rule set for a tenant".to_string()),
+                    description: Some(
+                        "The active rule set in the authenticated context".to_string(),
+                    ),
                     mime_type: Some("application/json".into()),
                     icons: None,
                 }
                 .no_annotation(),
                 RawResourceTemplate {
-                    uri_template: "acteon://events/{tenant}".into(),
+                    uri_template: "acteon://events".into(),
                     name: "Stateful events".into(),
                     title: None,
-                    description: Some("Open stateful events for a tenant".to_string()),
+                    description: Some(
+                        "Open stateful events in the authenticated context".to_string(),
+                    ),
                     mime_type: Some("application/json".into()),
                     icons: None,
                 }

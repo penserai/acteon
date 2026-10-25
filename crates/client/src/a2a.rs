@@ -1,7 +1,7 @@
 //! A2A protocol client helpers.
 //!
 //! Wraps the REST surface of the A2A endpoints exposed under
-//! `/a2a/{namespace}/{tenant}/…`. The JSON-RPC transport is not
+//! `/a2a/…`. The JSON-RPC transport is not
 //! exposed here — the REST binding (A2A spec §11) is one-to-one with
 //! the JSON-RPC methods and is easier to call directly, so callers
 //! that don't need the JSON-RPC envelope can skip it entirely.
@@ -68,19 +68,14 @@ impl ActeonClient {
     // Task lifecycle
     // -------------------------------------------------------------
 
-    /// `POST /a2a/{namespace}/{tenant}/v1/message:send` — start a new
+    /// `POST /a2a/v1/message:send` — start a new
     /// A2A Task or continue an existing one.
     ///
     /// Set `message.task_id` to the id of an existing task to thread
     /// the message into its history; leave it `None` to mint a fresh
     /// Task.
-    pub async fn a2a_send_message(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        message: &TaskMessage,
-    ) -> Result<Task, Error> {
-        let url = format!("{}/a2a/{namespace}/{tenant}/v1/message:send", self.base_url);
+    pub async fn a2a_send_message(&self, message: &TaskMessage) -> Result<Task, Error> {
+        let url = format!("{}/a2a/v1/message:send", self.base_url);
         let body = MessageSendBody { message };
         let resp = self
             .add_auth(self.client.post(&url))
@@ -98,19 +93,11 @@ impl ActeonClient {
         }
     }
 
-    /// `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}` — read a Task
+    /// `GET /a2a/v1/tasks/{id}` — read a Task
     /// by id. Returns `Err(Error::Server { status: 404, .. })` when
     /// the task does not exist for the caller.
-    pub async fn a2a_get_task(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        task_id: &str,
-    ) -> Result<Task, Error> {
-        let url = format!(
-            "{}/a2a/{namespace}/{tenant}/v1/tasks/{task_id}",
-            self.base_url
-        );
+    pub async fn a2a_get_task(&self, task_id: &str) -> Result<Task, Error> {
+        let url = format!("{}/a2a/v1/tasks/{task_id}", self.base_url);
         let resp = self
             .add_auth(self.client.get(&url))
             .header(A2A_VERSION_HEADER, A2A_PROTOCOL_VERSION)
@@ -126,23 +113,15 @@ impl ActeonClient {
         }
     }
 
-    /// `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel` —
+    /// `POST /a2a/v1/tasks/{id}:cancel` —
     /// cancel a non-terminal Task.
     ///
     /// The `:cancel` verb suffix is part of the URL (spec §11) — the
     /// server splits it off in-handler. Returns the updated Task on
     /// success; surfaces `TaskNotCancelable` (HTTP 409) when the task
     /// is already terminal.
-    pub async fn a2a_cancel_task(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        task_id: &str,
-    ) -> Result<Task, Error> {
-        let url = format!(
-            "{}/a2a/{namespace}/{tenant}/v1/tasks/{task_id}:cancel",
-            self.base_url
-        );
+    pub async fn a2a_cancel_task(&self, task_id: &str) -> Result<Task, Error> {
+        let url = format!("{}/a2a/v1/tasks/{task_id}:cancel", self.base_url);
         let resp = self
             .add_auth(self.client.post(&url))
             .header(A2A_VERSION_HEADER, A2A_PROTOCOL_VERSION)
@@ -162,19 +141,17 @@ impl ActeonClient {
     // Push-notification configs
     // -------------------------------------------------------------
 
-    /// `POST /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs`
+    /// `POST /a2a/v1/tasks/{id}/pushNotificationConfigs`
     /// — register (or upsert, if `id` is set) a push-notification
     /// webhook for a Task. Returns the saved row with timestamps
     /// stamped.
     pub async fn a2a_set_push_config(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
         body: &PushConfigInput,
     ) -> Result<TaskPushNotificationConfig, Error> {
         let url = format!(
-            "{}/a2a/{namespace}/{tenant}/v1/tasks/{task_id}/pushNotificationConfigs",
+            "{}/a2a/v1/tasks/{task_id}/pushNotificationConfigs",
             self.base_url
         );
         let resp = self
@@ -193,17 +170,15 @@ impl ActeonClient {
         }
     }
 
-    /// `GET /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs`
+    /// `GET /a2a/v1/tasks/{id}/pushNotificationConfigs`
     /// — list every config registered for the task. Empty Vec on
     /// existing-but-unconfigured tasks.
     pub async fn a2a_list_push_configs(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
     ) -> Result<Vec<TaskPushNotificationConfig>, Error> {
         let url = format!(
-            "{}/a2a/{namespace}/{tenant}/v1/tasks/{task_id}/pushNotificationConfigs",
+            "{}/a2a/v1/tasks/{task_id}/pushNotificationConfigs",
             self.base_url
         );
         let resp = self
@@ -224,13 +199,11 @@ impl ActeonClient {
     /// `GET …/pushNotificationConfigs/{cfgId}` — read one config.
     pub async fn a2a_get_push_config(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
         config_id: &str,
     ) -> Result<TaskPushNotificationConfig, Error> {
         let url = format!(
-            "{}/a2a/{namespace}/{tenant}/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}",
+            "{}/a2a/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}",
             self.base_url
         );
         let resp = self
@@ -253,13 +226,11 @@ impl ActeonClient {
     /// config doesn't exist (the server never silently no-ops).
     pub async fn a2a_delete_push_config(
         &self,
-        namespace: &str,
-        tenant: &str,
         task_id: &str,
         config_id: &str,
     ) -> Result<(), Error> {
         let url = format!(
-            "{}/a2a/{namespace}/{tenant}/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}",
+            "{}/a2a/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}",
             self.base_url
         );
         let resp = self
@@ -279,25 +250,17 @@ impl ActeonClient {
     // Discovery
     // -------------------------------------------------------------
 
-    /// `GET /a2a/{namespace}/{tenant}/.well-known/agent.json` —
-    /// unauthenticated discovery endpoint. Returns the tenant's
+    /// `GET /a2a/.well-known/agent.json` —
+    /// authenticated discovery endpoint. Returns the tenant's
     /// `AgentCard` (single-card verbatim or aggregated across agents).
     ///
     /// Per A2A spec this endpoint is unauthenticated, so the request
     /// is sent **without** Acteon's API-key header. A 404 surfaces
     /// as `Err(Error::Server { status: 404, .. })`.
-    pub async fn a2a_discover_agent(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<AgentCard, Error> {
-        let url = format!(
-            "{}/a2a/{namespace}/{tenant}/.well-known/agent.json",
-            self.base_url
-        );
+    pub async fn a2a_discover_agent(&self) -> Result<AgentCard, Error> {
+        let url = format!("{}/a2a/.well-known/agent.json", self.base_url);
         let resp = self
-            .client
-            .get(&url)
+            .add_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -312,16 +275,12 @@ impl ActeonClient {
 
     /// JSON-RPC `agent/getAuthenticatedExtendedCard` — authenticated
     /// extended discovery card. Issued through the JSON-RPC envelope
-    /// against `POST /a2a/{ns}/{tenant}` rather than a dedicated
+    /// against `POST /a2a` rather than a dedicated
     /// REST route (A2A spec defines no REST counterpart for this
     /// method). The returned card has
     /// `capabilities.extendedAgentCard = true`.
-    pub async fn a2a_get_authenticated_extended_card(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<AgentCard, Error> {
-        let url = format!("{}/a2a/{namespace}/{tenant}", self.base_url);
+    pub async fn a2a_get_authenticated_extended_card(&self) -> Result<AgentCard, Error> {
+        let url = format!("{}/a2a", self.base_url);
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,

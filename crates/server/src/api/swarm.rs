@@ -5,8 +5,9 @@
 //! feature; the routes are still registered unconditionally but return
 //! `503 Service Unavailable` when no registry is bound.
 
+use crate::auth::context::ScopedQuery;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
@@ -21,9 +22,11 @@ use crate::auth::identity::CallerIdentity;
 pub struct ListSwarmRunsParams {
     /// Optional namespace filter.
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Optional tenant filter.
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Optional status filter: `accepted`, `running`, `completed`, etc.
     #[serde(default)]
@@ -116,7 +119,7 @@ const MAX_API_PAGE: usize = 500;
 pub async fn list_swarm_runs(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListSwarmRunsParams>,
+    ScopedQuery(params): ScopedQuery<ListSwarmRunsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "swarm")]
     {

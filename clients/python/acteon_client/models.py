@@ -53,8 +53,6 @@ class Action:
     """An action to be dispatched through Acteon.
 
     Attributes:
-        namespace: Logical grouping for the action.
-        tenant: Tenant identifier for multi-tenancy.
         provider: Target provider name (e.g., "email", "sms").
         action_type: Type of action (e.g., "send_notification").
         payload: Action-specific data.
@@ -65,8 +63,6 @@ class Action:
         attachments: Optional list of attachments.
     """
 
-    namespace: str
-    tenant: str
     provider: str
     action_type: str
     payload: dict[str, Any]
@@ -87,8 +83,6 @@ class Action:
             timestamp = timestamp.replace(tzinfo=UTC)
         result: dict[str, Any] = {
             "id": self.id,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "provider": self.provider,
             "action_type": self.action_type,
             "payload": self.payload,
@@ -476,8 +470,6 @@ class EvaluateRulesRequest:
     """Request to evaluate rules against a test action without dispatching.
 
     Attributes:
-        namespace: Logical grouping for the action.
-        tenant: Tenant identifier for multi-tenancy.
         provider: Target provider name.
         action_type: Type of action.
         payload: Action-specific data.
@@ -488,8 +480,6 @@ class EvaluateRulesRequest:
         mock_state: Optional mock state entries for evaluation.
     """
 
-    namespace: str
-    tenant: str
     provider: str
     action_type: str
     payload: dict[str, Any]
@@ -665,8 +655,6 @@ class AuditQuery:
     O(limit) time. Treat the cursor as opaque.
     """
 
-    namespace: str | None = None
-    tenant: str | None = None
     provider: str | None = None
     action_type: str | None = None
     outcome: str | None = None
@@ -677,10 +665,7 @@ class AuditQuery:
     def to_params(self) -> dict[str, Any]:
         """Convert to query parameters."""
         params: dict[str, Any] = {}
-        if self.namespace:
-            params["namespace"] = self.namespace
-        if self.tenant:
-            params["tenant"] = self.tenant
+
         if self.provider:
             params["provider"] = self.provider
         if self.action_type:
@@ -771,17 +756,12 @@ class AuditPage:
 class EventQuery:
     """Query parameters for listing events."""
 
-    namespace: str
-    tenant: str
     status: str | None = None
     limit: int | None = None
 
     def to_params(self) -> dict[str, Any]:
         """Convert to query parameters."""
-        params: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        params: dict[str, Any] = {}
         if self.status:
             params["status"] = self.status
         if self.limit is not None:
@@ -1017,8 +997,6 @@ class WebhookPayload:
 
 
 def create_webhook_action(
-    namespace: str,
-    tenant: str,
     url: str,
     body: dict[str, Any],
     *,
@@ -1035,8 +1013,6 @@ def create_webhook_action(
     the payload.
 
     Args:
-        namespace: Logical grouping for the action.
-        tenant: Tenant identifier for multi-tenancy.
         url: Target URL for the webhook request.
         body: The JSON body to send to the webhook endpoint.
         action_type: Action type (default: "webhook").
@@ -1051,8 +1027,6 @@ def create_webhook_action(
     Example::
 
         action = create_webhook_action(
-            namespace="notifications",
-            tenant="tenant-1",
             url="https://hooks.example.com/alert",
             body={"message": "Server is down", "severity": "critical"},
             headers={"X-Custom-Header": "value"},
@@ -1060,8 +1034,6 @@ def create_webhook_action(
     """
     webhook = WebhookPayload(url=url, body=body, method=method, headers=headers)
     return Action(
-        namespace=namespace,
-        tenant=tenant,
         provider="webhook",
         action_type=action_type,
         payload=webhook.to_dict(),
@@ -1112,8 +1084,6 @@ class ReplaySummary:
 class ReplayQuery:
     """Query parameters for bulk audit replay."""
 
-    namespace: str | None = None
-    tenant: str | None = None
     provider: str | None = None
     action_type: str | None = None
     outcome: str | None = None
@@ -1125,10 +1095,7 @@ class ReplayQuery:
 
     def to_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {}
-        if self.namespace is not None:
-            params["namespace"] = self.namespace
-        if self.tenant is not None:
-            params["tenant"] = self.tenant
+
         if self.provider is not None:
             params["provider"] = self.provider
         if self.action_type is not None:
@@ -1157,8 +1124,6 @@ class ReplayQuery:
 class CreateRecurringAction:
     """Request to create a recurring action."""
 
-    namespace: str
-    tenant: str
     provider: str
     action_type: str
     payload: dict[str, Any]
@@ -1175,8 +1140,6 @@ class CreateRecurringAction:
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "provider": self.provider,
             "action_type": self.action_type,
             "payload": self.payload,
@@ -1224,18 +1187,13 @@ class CreateRecurringResponse:
 class RecurringFilter:
     """Query parameters for listing recurring actions."""
 
-    namespace: str | None = None
-    tenant: str | None = None
     status: str | None = None
     limit: int | None = None
     offset: int | None = None
 
     def to_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {}
-        if self.namespace is not None:
-            params["namespace"] = self.namespace
-        if self.tenant is not None:
-            params["tenant"] = self.tenant
+
         if self.status is not None:
             params["status"] = self.status
         if self.limit is not None:
@@ -1348,8 +1306,6 @@ class RecurringDetail:
 class UpdateRecurringAction:
     """Request to update a recurring action."""
 
-    namespace: str
-    tenant: str
     name: str | None = None
     payload: dict[str, Any] | None = None
     metadata: dict[str, str] | None = None
@@ -1363,10 +1319,7 @@ class UpdateRecurringAction:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        result: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        result: dict[str, Any] = {}
         if self.name is not None:
             result["name"] = self.name
         if self.payload is not None:
@@ -1407,8 +1360,6 @@ class CreateQuotaRequest:
     time (strictest outcome wins).
     """
 
-    namespace: str
-    tenant: str
     max_actions: int
     window: str
     overage_behavior: str
@@ -1421,8 +1372,6 @@ class CreateQuotaRequest:
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "max_actions": self.max_actions,
             "window": self.window,
             "overage_behavior": self.overage_behavior,
@@ -1444,8 +1393,6 @@ class CreateQuotaRequest:
 class UpdateQuotaRequest:
     """Request to update a quota policy."""
 
-    namespace: str
-    tenant: str
     max_actions: int | None = None
     window: str | None = None
     overage_behavior: str | None = None
@@ -1454,10 +1401,7 @@ class UpdateQuotaRequest:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        result: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        result: dict[str, Any] = {}
         if self.max_actions is not None:
             result["max_actions"] = self.max_actions
         if self.window is not None:
@@ -1596,8 +1540,6 @@ class CreateSilenceRequest:
     ``starts_at`` defaults to the server's current time when omitted.
     """
 
-    namespace: str
-    tenant: str
     matchers: list[SilenceMatcher]
     comment: str
     starts_at: str | None = None
@@ -1606,8 +1548,6 @@ class CreateSilenceRequest:
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "matchers": [m.to_dict() for m in self.matchers],
             "comment": self.comment,
         }
@@ -1778,8 +1718,7 @@ class CreateTimeIntervalRequest:
     """Request body for creating a time interval."""
 
     name: str
-    namespace: str
-    tenant: str
+
     time_ranges: list[TimeRange] = field(default_factory=list)
     location: str | None = None
     description: str | None = None
@@ -1787,8 +1726,6 @@ class CreateTimeIntervalRequest:
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "name": self.name,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "time_ranges": [r.to_dict() for r in self.time_ranges],
         }
         if self.location is not None:
@@ -1870,8 +1807,6 @@ class ListTimeIntervalsResponse:
 class CreateRetentionRequest:
     """Request to create a retention policy."""
 
-    namespace: str
-    tenant: str
     audit_ttl_seconds: int
     state_ttl_seconds: int
     event_ttl_seconds: int
@@ -1885,8 +1820,6 @@ class CreateRetentionRequest:
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "audit_ttl_seconds": self.audit_ttl_seconds,
             "state_ttl_seconds": self.state_ttl_seconds,
             "event_ttl_seconds": self.event_ttl_seconds,
@@ -2619,8 +2552,7 @@ class AnalyticsQuery:
     """
 
     metric: str
-    namespace: str | None = None
-    tenant: str | None = None
+
     provider: str | None = None
     action_type: str | None = None
     outcome: str | None = None
@@ -2633,10 +2565,7 @@ class AnalyticsQuery:
     def to_params(self) -> dict[str, str]:
         """Convert to query parameter dictionary."""
         params: dict[str, str] = {"metric": self.metric}
-        if self.namespace is not None:
-            params["namespace"] = self.namespace
-        if self.tenant is not None:
-            params["tenant"] = self.tenant
+
         if self.provider is not None:
             params["provider"] = self.provider
         if self.action_type is not None:
@@ -3065,16 +2994,11 @@ class VerifyHashChainRequest:
         to_time: Optional end of the time range (ISO 8601).
     """
 
-    namespace: str
-    tenant: str
     from_time: str | None = None
     to_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-        }
+        body: dict[str, Any] = {}
         if self.from_time is not None:
             body["from"] = self.from_time
         if self.to_time is not None:
@@ -3121,19 +3045,13 @@ class CreateTemplateRequest:
     """Request to create a payload template."""
 
     name: str
-    namespace: str
-    tenant: str
+
     content: str
     description: str | None = None
     labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "name": self.name,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-            "content": self.content,
-        }
+        result: dict[str, Any] = {"name": self.name, "content": self.content}
         if self.description is not None:
             result["description"] = self.description
         if self.labels is not None:
@@ -3235,8 +3153,7 @@ class CreateProfileRequest:
     """Request to create a template profile."""
 
     name: str
-    namespace: str
-    tenant: str
+
     fields: dict[str, TemplateProfileField]
     description: str | None = None
     labels: dict[str, str] | None = None
@@ -3244,8 +3161,6 @@ class CreateProfileRequest:
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "name": self.name,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
             "fields": {k: v.to_dict() for k, v in self.fields.items()},
         }
         if self.description is not None:
@@ -3294,17 +3209,11 @@ class RenderPreviewRequest:
     """Request to render a template profile with payload data."""
 
     profile: str
-    namespace: str
-    tenant: str
+
     payload: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "profile": self.profile,
-            "namespace": self.namespace,
-            "tenant": self.tenant,
-            "payload": self.payload,
-        }
+        return {"profile": self.profile, "payload": self.payload}
 
 
 @dataclass
@@ -4194,8 +4103,6 @@ class CoverageEntry:
 class CoverageQuery:
     """Options for a rule coverage analysis."""
 
-    namespace: str | None = None
-    tenant: str | None = None
     from_time: str | None = None  # RFC 3339 timestamp
     to_time: str | None = None  # RFC 3339 timestamp
 
@@ -4316,18 +4223,13 @@ class SwarmRunSnapshot:
 class SwarmRunFilter:
     """Query parameters for listing swarm runs."""
 
-    namespace: str | None = None
-    tenant: str | None = None
     status: str | None = None
     limit: int | None = None
     offset: int | None = None
 
     def to_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {}
-        if self.namespace is not None:
-            params["namespace"] = self.namespace
-        if self.tenant is not None:
-            params["tenant"] = self.tenant
+
         if self.status is not None:
             params["status"] = self.status
         if self.limit is not None:
@@ -4360,6 +4262,26 @@ class PrincipalIdentity:
     kind: str
 
 
+@dataclass(frozen=True)
+class TenantContext:
+    """Exact namespace and tenant provisioned for this credential."""
+
+    namespace: str
+    tenant: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TenantContext":
+        namespace, tenant = data["namespace"], data["tenant"]
+        if (
+            not isinstance(namespace, str)
+            or not namespace
+            or not isinstance(tenant, str)
+            or not tenant
+        ):
+            raise ValueError("invalid authenticated tenant context")
+        return cls(namespace, tenant)
+
+
 @dataclass
 class CredentialIdentity:
     """Current credential and its optional operator-configured actor binding."""
@@ -4367,6 +4289,7 @@ class CredentialIdentity:
     credential_id: str
     auth_method: str
     role: str
+    scope: TenantContext
     principal: PrincipalIdentity | None = None
     authority_id: str | None = None
 
@@ -4377,6 +4300,7 @@ class CredentialIdentity:
             data["credential_id"],
             data["auth_method"],
             data["role"],
+            TenantContext.from_dict(data["scope"]),
             None if actor is None else PrincipalIdentity(actor["id"], actor["kind"]),
             data.get("authority_id"),
         )

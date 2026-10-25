@@ -43,7 +43,7 @@ The backend supports all `AuditQuery` filter parameters:
 
 ```bash
 # Filter by tenant and outcome
-curl "http://localhost:8080/v1/audit?tenant=tenant-1&outcome=executed"
+curl "http://localhost:8080/v1/audit?outcome=executed"
 
 # Date range query
 curl "http://localhost:8080/v1/audit?from=2026-01-01T00:00:00Z&to=2026-01-31T23:59:59Z"

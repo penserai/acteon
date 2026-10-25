@@ -2,14 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiGet, apiDelete } from '../client'
 import type { EventGroup } from '../../types'
 
-export function useGroups(params: { namespace?: string; tenant?: string }) {
+export function useGroups() {
   return useQuery({
-    queryKey: ['groups', params],
+    queryKey: ['groups'],
     queryFn: async () => {
-      const res = await apiGet<{ groups: EventGroup[]; total: number }>('/v1/groups', params)
+      const res = await apiGet<{ groups: EventGroup[]; total: number }>('/v1/groups')
       return res.groups
     },
-    enabled: !!params.namespace && !!params.tenant,
   })
 }
 

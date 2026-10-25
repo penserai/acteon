@@ -28,32 +28,30 @@ Include attachments in the `attachments` array of a dispatch request:
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {
-      "to": "user@example.com",
-      "subject": "Monthly Report",
-      "body": "Please find the report attached."
+  "provider": "email",
+  "action_type": "send_email",
+  "payload": {
+    "to": "user@example.com",
+    "subject": "Monthly Report",
+    "body": "Please find the report attached."
+  },
+  "attachments": [
+    {
+      "id": "monthly-report",
+      "name": "Monthly Report",
+      "filename": "report-2026-02.pdf",
+      "content_type": "application/pdf",
+      "data_base64": "JVBERi0xLjQK..."
     },
-    "attachments": [
-      {
-        "id": "monthly-report",
-        "name": "Monthly Report",
-        "filename": "report-2026-02.pdf",
-        "content_type": "application/pdf",
-        "data_base64": "JVBERi0xLjQK..."
-      },
-      {
-        "id": "summary-csv",
-        "name": "Summary Data",
-        "filename": "summary.csv",
-        "content_type": "text/csv",
-        "data_base64": "bmFtZSxhbW91bnQK..."
-      }
-    ]
-  }'
+    {
+      "id": "summary-csv",
+      "name": "Summary Data",
+      "filename": "summary.csv",
+      "content_type": "text/csv",
+      "data_base64": "bmFtZSxhbW91bnQK..."
+    }
+  ]
+}'
 ```
 
 ## Provider Behavior

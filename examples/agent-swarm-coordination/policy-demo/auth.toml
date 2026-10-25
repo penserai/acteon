@@ -3,6 +3,7 @@
 jwt_secret = "acteon-policy-demo-local-only-secret"
 
 [[api_keys]]
+scope = { namespace = "agent-swarm", tenant = "researcher" }
 name = "researcher"
 principal = { id = "researcher", kind = "agent" }
 key_hash = "e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"
@@ -12,4 +13,16 @@ role = "executor"
 tenants = ["researcher"]
 namespaces = ["agent-swarm"]
 providers = ["research", "notify", "deploy"]
+actions = ["*"]
+
+[[api_keys]]
+scope = { namespace = "agent-swarm", tenant = "researcher" }
+name = "reviewer"
+key_hash = "0fa3224d953b8c388813d848520791100f5b2f2c0d78f0ba798bf9c3ca1a0b42"
+role = "operator"
+
+[[api_keys.grants]]
+tenants = ["researcher"]
+namespaces = ["agent-swarm"]
+providers = ["*"]
 actions = ["*"]

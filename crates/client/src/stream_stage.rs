@@ -113,15 +113,12 @@ impl HttpStreamStageSource {
             for _ in 0..3 {
                 match self
                     .client
-                    .open_bus_session(&d.namespace, &d.tenant, &d.id, &self.open_request_ids[i])
+                    .open_bus_session(&d.id, &self.open_request_ids[i])
                     .await
                 {
                     Ok(s) => {
                         if s.consumer_group != d.consumer_group {
-                            let _ = self
-                                .client
-                                .close_bus_session(&d.namespace, &d.tenant, &d.id, &s.session_id)
-                                .await;
+                            let _ = self.client.close_bus_session(&d.id, &s.session_id).await;
                             return Err(StreamStageSourceError::Permanent(
                                 "consumer group changed".into(),
                             ));
@@ -161,10 +158,7 @@ impl HttpStreamStageSource {
         while let Some(s) = self.sessions.last().cloned() {
             let i = self.sessions.len() - 1;
             let d = &self.definitions[i];
-            let _ = self
-                .client
-                .close_bus_session(&d.namespace, &d.tenant, &d.id, &s)
-                .await;
+            let _ = self.client.close_bus_session(&d.id, &s).await;
             self.sessions.pop();
             self.open_request_ids[i] = uuid::Uuid::new_v4().to_string();
         }
@@ -229,8 +223,6 @@ impl StreamStageSource for HttpStreamStageSource {
             async move {
                 let response = client
                     .receive_bus_session(
-                        &d.namespace,
-                        &d.tenant,
                         &d.id,
                         session,
                         &ReceiveRequest {
@@ -293,7 +285,7 @@ impl StreamStageSource for HttpStreamStageSource {
             let d = &self.definitions[i];
             let response = self
                 .client
-                .validate_bus_receipts(&d.namespace, &d.tenant, &d.id, &self.sessions[i], &ids)
+                .validate_bus_receipts(&d.id, &self.sessions[i], &ids)
                 .await
                 .map_err(|e| map_error(&e))?;
             if response.consumer_group != d.consumer_group {
@@ -321,7 +313,7 @@ impl StreamStageSource for HttpStreamStageSource {
         for (i, ids) in self.grouped(records)? {
             let d = &self.definitions[i];
             self.client
-                .acknowledge_bus_receipts(&d.namespace, &d.tenant, &d.id, &self.sessions[i], &ids)
+                .acknowledge_bus_receipts(&d.id, &self.sessions[i], &ids)
                 .await
                 .map_err(|e| map_error(&e))?;
         }

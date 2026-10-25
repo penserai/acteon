@@ -1,4 +1,4 @@
-// /agents/{namespace}/{tenant}/{agentId}
+// /agents/{agentId}
 //
 // Agent control plane detail view. Three tabs:
 //
@@ -68,15 +68,11 @@ function statusVariant(s: string): 'success' | 'warning' | 'error' | 'neutral' {
 }
 
 export function AgentDetail() {
-  const { namespace, tenant, agentId } = useParams<{
-    namespace: string
-    tenant: string
-    agentId: string
-  }>()
+  const { agentId } = useParams<{ agentId: string }>()
   const navigate = useNavigate()
   const { toast } = useToast()
 
-  const { data: agent, isLoading } = useBusAgent(namespace, tenant, agentId)
+  const { data: agent, isLoading } = useBusAgent(agentId)
   const setAdmin = useSetBusAgentAdminState()
   const del = useDeleteBusAgent()
 
@@ -85,9 +81,9 @@ export function AgentDetail() {
   const [activeTab, setActiveTab] = useState<'overview' | 'card' | 'activity' | 'tasks'>('overview')
 
   function reinstate() {
-    if (!namespace || !tenant || !agentId) return
+    if (!agentId) return
     setAdmin.mutate(
-      { namespace, tenant, agentId, body: { admin_state: 'active' } },
+      { agentId, body: { admin_state: 'active' } },
       {
         onSuccess: () => toast('success', `Reinstated ${agentId}`),
         onError: (e) => toast('error', 'Reinstate failed', (e as Error).message),
@@ -96,9 +92,9 @@ export function AgentDetail() {
   }
 
   function doDelete() {
-    if (!namespace || !tenant || !agentId) return
+    if (!agentId) return
     del.mutate(
-      { namespace, tenant, agentId },
+      { agentId },
       {
         onSuccess: () => {
           toast('success', `Deleted ${agentId}`)
@@ -112,7 +108,7 @@ export function AgentDetail() {
   if (isLoading) {
     return (
       <div>
-        <PageHeader title="Agent" subtitle={`${namespace} / ${tenant}`} />
+        <PageHeader title="Agent" />
         <Skeleton className="h-40 w-full" />
       </div>
     )
@@ -121,7 +117,7 @@ export function AgentDetail() {
   if (!agent) {
     return (
       <div>
-        <PageHeader title="Agent" subtitle={`${namespace} / ${tenant}`} />
+        <PageHeader title="Agent" />
         <EmptyState title="Agent not found" description="The agent record may have been deleted, or you may not have access to it." />
       </div>
     )
@@ -212,9 +208,9 @@ export function AgentDetail() {
         mode={adminModal}
         onClose={() => setAdminModal(null)}
         onSubmit={(body) => {
-          if (!namespace || !tenant || !agentId) return
+          if (!agentId) return
           setAdmin.mutate(
-            { namespace, tenant, agentId, body },
+            { agentId, body },
             {
               onSuccess: () => {
                 toast('success', `${body.admin_state} ${agentId}`)
@@ -342,7 +338,7 @@ function CardPanel({
   agentId: string
   agentName: string
 }) {
-  const { data: card, isLoading } = useBusAgentCard(namespace, tenant, agentId)
+  const { data: card, isLoading } = useBusAgentCard(agentId)
   const upsert = useUpsertBusAgentCard()
   const del = useDeleteBusAgentCard()
   const { toast } = useToast()
@@ -436,7 +432,7 @@ function CardPanel({
         loading={upsert.isPending}
         onSubmit={(next) => {
           upsert.mutate(
-            { namespace, tenant, agentId, card: next },
+            { agentId, card: next },
             {
               onSuccess: () => {
                 toast('success', card ? 'Card updated' : 'Card created')
@@ -457,7 +453,7 @@ function CardPanel({
         warning="Removes this agent from A2A discovery. The agent record itself stays — only the card is deleted."
         onConfirm={() =>
           del.mutate(
-            { namespace, tenant, agentId },
+            { agentId },
             {
               onSuccess: () => {
                 toast('success', 'Card deleted')
@@ -556,7 +552,7 @@ function CardEditorModal({
       }
     >
       <p className={styles.muted}>
-        Identity (`agentId` / `namespace` / `tenant`) is enforced from the URL;
+        Identity is bound to the authenticated context and agent;
         edits to those fields are ignored. Server validates the full A2A schema on save.
       </p>
       <textarea

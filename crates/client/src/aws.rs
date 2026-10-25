@@ -9,18 +9,18 @@
 //! use acteon_client::aws;
 //!
 //! // Publish to SNS
-//! let action = aws::sns::publish("notifications", "tenant-1")
+//! let action = aws::sns::publish()
 //!     .message("Server alert: CPU high")
 //!     .subject("Alert")
 //!     .build();
 //!
 //! // Invoke Lambda
-//! let action = aws::lambda::invoke("compute", "tenant-1")
+//! let action = aws::lambda::invoke()
 //!     .payload(serde_json::json!({"key": "value"}))
 //!     .build();
 //!
 //! // Put to S3
-//! let action = aws::s3::put_object("storage", "tenant-1")
+//! let action = aws::s3::put_object()
 //!     .bucket("my-bucket")
 //!     .key("path/to/object.json")
 //!     .body(r#"{"hello":"world"}"#)
@@ -34,13 +34,11 @@
 
 /// Helpers for creating SNS actions.
 pub mod sns {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
 
     /// Create a builder for an SNS publish action.
-    pub fn publish(namespace: impl Into<String>, tenant: impl Into<String>) -> SnsPublishBuilder {
+    pub fn publish() -> SnsPublishBuilder {
         SnsPublishBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             message: String::new(),
             subject: None,
             topic_arn: None,
@@ -53,8 +51,6 @@ pub mod sns {
     /// Builder for an SNS publish action.
     #[derive(Debug)]
     pub struct SnsPublishBuilder {
-        namespace: String,
-        tenant: String,
         message: String,
         subject: Option<String>,
         topic_arn: Option<String>,
@@ -99,19 +95,19 @@ pub mod sns {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the SNS publish Action.
+        /// Build the SNS publish `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `message` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(!self.message.is_empty(), "SNS message must be set");
 
             let mut payload = serde_json::Map::new();
@@ -133,13 +129,8 @@ pub mod sns {
                 payload.insert("message_dedup_id".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
-                "aws-sns",
-                "publish",
-                serde_json::Value::Object(payload),
-            );
+            let mut action =
+                ActionRequest::new("aws-sns", "publish", serde_json::Value::Object(payload));
 
             if let Some(key) = self.dedup_key {
                 action.dedup_key = Some(key);
@@ -156,13 +147,11 @@ pub mod sns {
 
 /// Helpers for creating Lambda actions.
 pub mod lambda {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
 
     /// Create a builder for a Lambda invoke action.
-    pub fn invoke(namespace: impl Into<String>, tenant: impl Into<String>) -> LambdaInvokeBuilder {
+    pub fn invoke() -> LambdaInvokeBuilder {
         LambdaInvokeBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             function_name: None,
             payload: serde_json::Value::Object(serde_json::Map::new()),
             invocation_type: None,
@@ -173,8 +162,6 @@ pub mod lambda {
     /// Builder for a Lambda invoke action.
     #[derive(Debug)]
     pub struct LambdaInvokeBuilder {
-        namespace: String,
-        tenant: String,
         function_name: Option<String>,
         payload: serde_json::Value,
         invocation_type: Option<String>,
@@ -203,15 +190,15 @@ pub mod lambda {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Lambda invoke Action.
-        pub fn build(self) -> Action {
+        /// Build the Lambda invoke `ActionRequest`.
+        pub fn build(self) -> ActionRequest {
             let mut payload = serde_json::Map::new();
             payload.insert("payload".to_string(), self.payload);
 
@@ -222,13 +209,8 @@ pub mod lambda {
                 payload.insert("invocation_type".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
-                "aws-lambda",
-                "invoke",
-                serde_json::Value::Object(payload),
-            );
+            let mut action =
+                ActionRequest::new("aws-lambda", "invoke", serde_json::Value::Object(payload));
 
             if let Some(key) = self.dedup_key {
                 action.dedup_key = Some(key);
@@ -245,16 +227,11 @@ pub mod lambda {
 
 /// Helpers for creating `EventBridge` actions.
 pub mod eventbridge {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
 
     /// Create a builder for an `EventBridge` put-event action.
-    pub fn put_event(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> EventBridgePutBuilder {
+    pub fn put_event() -> EventBridgePutBuilder {
         EventBridgePutBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             source: String::new(),
             detail_type: String::new(),
             detail: serde_json::Value::Object(serde_json::Map::new()),
@@ -267,8 +244,6 @@ pub mod eventbridge {
     /// Builder for an `EventBridge` put-event action.
     #[derive(Debug)]
     pub struct EventBridgePutBuilder {
-        namespace: String,
-        tenant: String,
         source: String,
         detail_type: String,
         detail: serde_json::Value,
@@ -313,19 +288,19 @@ pub mod eventbridge {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the `EventBridge` put-event Action.
+        /// Build the `EventBridge` put-event `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `source` or `detail_type` have not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(!self.source.is_empty(), "EventBridge source must be set");
             assert!(
                 !self.detail_type.is_empty(),
@@ -350,9 +325,7 @@ pub mod eventbridge {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-eventbridge",
                 "put_event",
                 serde_json::Value::Object(payload),
@@ -373,14 +346,12 @@ pub mod eventbridge {
 
 /// Helpers for creating SQS actions.
 pub mod sqs {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for an SQS send-message action.
-    pub fn send_message(namespace: impl Into<String>, tenant: impl Into<String>) -> SqsSendBuilder {
+    pub fn send_message() -> SqsSendBuilder {
         SqsSendBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             message_body: String::new(),
             queue_url: None,
             delay_seconds: None,
@@ -394,8 +365,6 @@ pub mod sqs {
     /// Builder for an SQS send-message action.
     #[derive(Debug)]
     pub struct SqsSendBuilder {
-        namespace: String,
-        tenant: String,
         message_body: String,
         queue_url: Option<String>,
         delay_seconds: Option<u32>,
@@ -448,19 +417,19 @@ pub mod sqs {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the SQS send-message Action.
+        /// Build the SQS send-message `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `message_body` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.message_body.is_empty(),
                 "SQS message_body must be set"
@@ -495,9 +464,7 @@ pub mod sqs {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-sqs",
                 "send_message",
                 serde_json::Value::Object(payload),
@@ -518,17 +485,12 @@ pub mod sqs {
 
 /// Helpers for creating S3 actions.
 pub mod s3 {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for an S3 put-object action.
-    pub fn put_object(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> S3PutObjectBuilder {
+    pub fn put_object() -> S3PutObjectBuilder {
         S3PutObjectBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             bucket: None,
             key: String::new(),
             body: None,
@@ -540,13 +502,8 @@ pub mod s3 {
     }
 
     /// Create a builder for an S3 get-object action.
-    pub fn get_object(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> S3GetObjectBuilder {
+    pub fn get_object() -> S3GetObjectBuilder {
         S3GetObjectBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             bucket: None,
             key: String::new(),
             dedup_key: None,
@@ -554,13 +511,8 @@ pub mod s3 {
     }
 
     /// Create a builder for an S3 delete-object action.
-    pub fn delete_object(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> S3DeleteObjectBuilder {
+    pub fn delete_object() -> S3DeleteObjectBuilder {
         S3DeleteObjectBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             bucket: None,
             key: String::new(),
             dedup_key: None,
@@ -570,8 +522,6 @@ pub mod s3 {
     /// Builder for an S3 put-object action.
     #[derive(Debug)]
     pub struct S3PutObjectBuilder {
-        namespace: String,
-        tenant: String,
         bucket: Option<String>,
         key: String,
         body: Option<String>,
@@ -624,19 +574,19 @@ pub mod s3 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the S3 put-object Action.
+        /// Build the S3 put-object `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `key` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(!self.key.is_empty(), "S3 object key must be set");
 
             let mut payload = serde_json::Map::new();
@@ -662,13 +612,8 @@ pub mod s3 {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
-                "aws-s3",
-                "put_object",
-                serde_json::Value::Object(payload),
-            );
+            let mut action =
+                ActionRequest::new("aws-s3", "put_object", serde_json::Value::Object(payload));
 
             if let Some(key) = self.dedup_key {
                 action.dedup_key = Some(key);
@@ -681,8 +626,6 @@ pub mod s3 {
     /// Builder for an S3 get-object action.
     #[derive(Debug)]
     pub struct S3GetObjectBuilder {
-        namespace: String,
-        tenant: String,
         bucket: Option<String>,
         key: String,
         dedup_key: Option<String>,
@@ -703,19 +646,19 @@ pub mod s3 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the S3 get-object Action.
+        /// Build the S3 get-object `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `key` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(!self.key.is_empty(), "S3 object key must be set");
 
             let mut payload = serde_json::Map::new();
@@ -725,13 +668,8 @@ pub mod s3 {
                 payload.insert("bucket".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
-                "aws-s3",
-                "get_object",
-                serde_json::Value::Object(payload),
-            );
+            let mut action =
+                ActionRequest::new("aws-s3", "get_object", serde_json::Value::Object(payload));
 
             if let Some(key) = self.dedup_key {
                 action.dedup_key = Some(key);
@@ -744,8 +682,6 @@ pub mod s3 {
     /// Builder for an S3 delete-object action.
     #[derive(Debug)]
     pub struct S3DeleteObjectBuilder {
-        namespace: String,
-        tenant: String,
         bucket: Option<String>,
         key: String,
         dedup_key: Option<String>,
@@ -766,19 +702,19 @@ pub mod s3 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the S3 delete-object Action.
+        /// Build the S3 delete-object `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `key` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(!self.key.is_empty(), "S3 object key must be set");
 
             let mut payload = serde_json::Map::new();
@@ -788,9 +724,7 @@ pub mod s3 {
                 payload.insert("bucket".to_string(), serde_json::Value::String(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-s3",
                 "delete_object",
                 serde_json::Value::Object(payload),
@@ -811,17 +745,12 @@ pub mod s3 {
 
 /// Helpers for creating EC2 instance lifecycle actions.
 pub mod ec2 {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
     use std::collections::HashMap;
 
     /// Create a builder for an EC2 `start_instances` action.
-    pub fn start_instances(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2StartBuilder {
+    pub fn start_instances() -> Ec2StartBuilder {
         Ec2StartBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             instance_ids: Vec::new(),
             dedup_key: None,
         }
@@ -830,8 +759,6 @@ pub mod ec2 {
     /// Builder for an EC2 `start_instances` action.
     #[derive(Debug)]
     pub struct Ec2StartBuilder {
-        namespace: String,
-        tenant: String,
         instance_ids: Vec<String>,
         dedup_key: Option<String>,
     }
@@ -844,19 +771,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `start_instances` Action.
+        /// Build the EC2 `start_instances` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `instance_ids` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.instance_ids.is_empty(),
                 "EC2 instance_ids must not be empty"
@@ -869,9 +796,7 @@ pub mod ec2 {
                     .expect("Vec<String> serialization cannot fail"),
             );
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "start_instances",
                 serde_json::Value::Object(payload),
@@ -886,13 +811,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `stop_instances` action.
-    pub fn stop_instances(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2StopBuilder {
+    pub fn stop_instances() -> Ec2StopBuilder {
         Ec2StopBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             instance_ids: Vec::new(),
             hibernate: None,
             force: None,
@@ -903,8 +823,6 @@ pub mod ec2 {
     /// Builder for an EC2 `stop_instances` action.
     #[derive(Debug)]
     pub struct Ec2StopBuilder {
-        namespace: String,
-        tenant: String,
         instance_ids: Vec<String>,
         hibernate: Option<bool>,
         force: Option<bool>,
@@ -933,19 +851,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `stop_instances` Action.
+        /// Build the EC2 `stop_instances` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `instance_ids` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.instance_ids.is_empty(),
                 "EC2 instance_ids must not be empty"
@@ -965,9 +883,7 @@ pub mod ec2 {
                 payload.insert("force".to_string(), serde_json::Value::Bool(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "stop_instances",
                 serde_json::Value::Object(payload),
@@ -982,13 +898,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `reboot_instances` action.
-    pub fn reboot_instances(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2RebootBuilder {
+    pub fn reboot_instances() -> Ec2RebootBuilder {
         Ec2RebootBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             instance_ids: Vec::new(),
             dedup_key: None,
         }
@@ -997,8 +908,6 @@ pub mod ec2 {
     /// Builder for an EC2 `reboot_instances` action.
     #[derive(Debug)]
     pub struct Ec2RebootBuilder {
-        namespace: String,
-        tenant: String,
         instance_ids: Vec<String>,
         dedup_key: Option<String>,
     }
@@ -1011,19 +920,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `reboot_instances` Action.
+        /// Build the EC2 `reboot_instances` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `instance_ids` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.instance_ids.is_empty(),
                 "EC2 instance_ids must not be empty"
@@ -1036,9 +945,7 @@ pub mod ec2 {
                     .expect("Vec<String> serialization cannot fail"),
             );
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "reboot_instances",
                 serde_json::Value::Object(payload),
@@ -1053,13 +960,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `terminate_instances` action.
-    pub fn terminate_instances(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2TerminateBuilder {
+    pub fn terminate_instances() -> Ec2TerminateBuilder {
         Ec2TerminateBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             instance_ids: Vec::new(),
             dedup_key: None,
         }
@@ -1068,8 +970,6 @@ pub mod ec2 {
     /// Builder for an EC2 `terminate_instances` action.
     #[derive(Debug)]
     pub struct Ec2TerminateBuilder {
-        namespace: String,
-        tenant: String,
         instance_ids: Vec<String>,
         dedup_key: Option<String>,
     }
@@ -1082,19 +982,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `terminate_instances` Action.
+        /// Build the EC2 `terminate_instances` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `instance_ids` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.instance_ids.is_empty(),
                 "EC2 instance_ids must not be empty"
@@ -1107,9 +1007,7 @@ pub mod ec2 {
                     .expect("Vec<String> serialization cannot fail"),
             );
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "terminate_instances",
                 serde_json::Value::Object(payload),
@@ -1124,13 +1022,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `hibernate_instances` action.
-    pub fn hibernate_instances(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2HibernateBuilder {
+    pub fn hibernate_instances() -> Ec2HibernateBuilder {
         Ec2HibernateBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             instance_ids: Vec::new(),
             dedup_key: None,
         }
@@ -1139,8 +1032,6 @@ pub mod ec2 {
     /// Builder for an EC2 `hibernate_instances` action.
     #[derive(Debug)]
     pub struct Ec2HibernateBuilder {
-        namespace: String,
-        tenant: String,
         instance_ids: Vec<String>,
         dedup_key: Option<String>,
     }
@@ -1153,19 +1044,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `hibernate_instances` Action.
+        /// Build the EC2 `hibernate_instances` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `instance_ids` is empty.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.instance_ids.is_empty(),
                 "EC2 instance_ids must not be empty"
@@ -1178,9 +1069,7 @@ pub mod ec2 {
                     .expect("Vec<String> serialization cannot fail"),
             );
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "hibernate_instances",
                 serde_json::Value::Object(payload),
@@ -1195,10 +1084,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `run_instances` action.
-    pub fn run_instances(namespace: impl Into<String>, tenant: impl Into<String>) -> Ec2RunBuilder {
+    pub fn run_instances() -> Ec2RunBuilder {
         Ec2RunBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             image_id: String::new(),
             instance_type: String::new(),
             min_count: None,
@@ -1216,8 +1103,6 @@ pub mod ec2 {
     /// Builder for an EC2 `run_instances` action.
     #[derive(Debug)]
     pub struct Ec2RunBuilder {
-        namespace: String,
-        tenant: String,
         image_id: String,
         instance_type: String,
         min_count: Option<i32>,
@@ -1302,19 +1187,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `run_instances` Action.
+        /// Build the EC2 `run_instances` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `image_id` or `instance_type` have not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.image_id.is_empty(),
                 "EC2 image_id must be set for run_instances"
@@ -1369,9 +1254,7 @@ pub mod ec2 {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "run_instances",
                 serde_json::Value::Object(payload),
@@ -1386,13 +1269,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `attach_volume` action.
-    pub fn attach_volume(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2AttachVolumeBuilder {
+    pub fn attach_volume() -> Ec2AttachVolumeBuilder {
         Ec2AttachVolumeBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             volume_id: String::new(),
             instance_id: String::new(),
             device: String::new(),
@@ -1403,8 +1281,6 @@ pub mod ec2 {
     /// Builder for an EC2 `attach_volume` action.
     #[derive(Debug)]
     pub struct Ec2AttachVolumeBuilder {
-        namespace: String,
-        tenant: String,
         volume_id: String,
         instance_id: String,
         device: String,
@@ -1433,19 +1309,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `attach_volume` Action.
+        /// Build the EC2 `attach_volume` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `volume_id`, `instance_id`, or `device` have not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.volume_id.is_empty(),
                 "EC2 volume_id must be set for attach_volume"
@@ -1470,9 +1346,7 @@ pub mod ec2 {
             );
             payload.insert("device".to_string(), serde_json::Value::String(self.device));
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "attach_volume",
                 serde_json::Value::Object(payload),
@@ -1487,13 +1361,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `detach_volume` action.
-    pub fn detach_volume(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2DetachVolumeBuilder {
+    pub fn detach_volume() -> Ec2DetachVolumeBuilder {
         Ec2DetachVolumeBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             volume_id: String::new(),
             instance_id: None,
             device: None,
@@ -1505,8 +1374,6 @@ pub mod ec2 {
     /// Builder for an EC2 `detach_volume` action.
     #[derive(Debug)]
     pub struct Ec2DetachVolumeBuilder {
-        namespace: String,
-        tenant: String,
         volume_id: String,
         instance_id: Option<String>,
         device: Option<String>,
@@ -1543,19 +1410,19 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `detach_volume` Action.
+        /// Build the EC2 `detach_volume` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `volume_id` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.volume_id.is_empty(),
                 "EC2 volume_id must be set for detach_volume"
@@ -1577,9 +1444,7 @@ pub mod ec2 {
                 payload.insert("force".to_string(), serde_json::Value::Bool(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "detach_volume",
                 serde_json::Value::Object(payload),
@@ -1594,13 +1459,8 @@ pub mod ec2 {
     }
 
     /// Create a builder for an EC2 `describe_instances` action.
-    pub fn describe_instances(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> Ec2DescribeBuilder {
+    pub fn describe_instances() -> Ec2DescribeBuilder {
         Ec2DescribeBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             instance_ids: None,
             dedup_key: None,
         }
@@ -1609,8 +1469,6 @@ pub mod ec2 {
     /// Builder for an EC2 `describe_instances` action.
     #[derive(Debug)]
     pub struct Ec2DescribeBuilder {
-        namespace: String,
-        tenant: String,
         instance_ids: Option<Vec<String>>,
         dedup_key: Option<String>,
     }
@@ -1623,15 +1481,15 @@ pub mod ec2 {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the EC2 `describe_instances` Action.
-        pub fn build(self) -> Action {
+        /// Build the EC2 `describe_instances` `ActionRequest`.
+        pub fn build(self) -> ActionRequest {
             let mut payload = serde_json::Map::new();
 
             if let Some(ids) = self.instance_ids {
@@ -1641,9 +1499,7 @@ pub mod ec2 {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-ec2",
                 "describe_instances",
                 serde_json::Value::Object(payload),
@@ -1664,16 +1520,11 @@ pub mod ec2 {
 
 /// Helpers for creating Auto Scaling Group actions.
 pub mod autoscaling {
-    use acteon_core::Action;
+    use acteon_core::ActionRequest;
 
     /// Create a builder for an Auto Scaling `describe_auto_scaling_groups` action.
-    pub fn describe_groups(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> AsgDescribeBuilder {
+    pub fn describe_groups() -> AsgDescribeBuilder {
         AsgDescribeBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             group_names: None,
             dedup_key: None,
         }
@@ -1682,8 +1533,6 @@ pub mod autoscaling {
     /// Builder for an Auto Scaling `describe_auto_scaling_groups` action.
     #[derive(Debug)]
     pub struct AsgDescribeBuilder {
-        namespace: String,
-        tenant: String,
         group_names: Option<Vec<String>>,
         dedup_key: Option<String>,
     }
@@ -1696,15 +1545,15 @@ pub mod autoscaling {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Auto Scaling `describe_auto_scaling_groups` Action.
-        pub fn build(self) -> Action {
+        /// Build the Auto Scaling `describe_auto_scaling_groups` `ActionRequest`.
+        pub fn build(self) -> ActionRequest {
             let mut payload = serde_json::Map::new();
 
             if let Some(names) = self.group_names {
@@ -1714,9 +1563,7 @@ pub mod autoscaling {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-autoscaling",
                 "describe_auto_scaling_groups",
                 serde_json::Value::Object(payload),
@@ -1731,13 +1578,8 @@ pub mod autoscaling {
     }
 
     /// Create a builder for an Auto Scaling `set_desired_capacity` action.
-    pub fn set_desired_capacity(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> AsgSetCapacityBuilder {
+    pub fn set_desired_capacity() -> AsgSetCapacityBuilder {
         AsgSetCapacityBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             group_name: String::new(),
             desired_capacity: 0,
             honor_cooldown: None,
@@ -1748,8 +1590,6 @@ pub mod autoscaling {
     /// Builder for an Auto Scaling `set_desired_capacity` action.
     #[derive(Debug)]
     pub struct AsgSetCapacityBuilder {
-        namespace: String,
-        tenant: String,
         group_name: String,
         desired_capacity: i32,
         honor_cooldown: Option<bool>,
@@ -1778,19 +1618,19 @@ pub mod autoscaling {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Auto Scaling `set_desired_capacity` Action.
+        /// Build the Auto Scaling `set_desired_capacity` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `group_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.group_name.is_empty(),
                 "Auto Scaling group_name must be set"
@@ -1810,9 +1650,7 @@ pub mod autoscaling {
                 payload.insert("honor_cooldown".to_string(), serde_json::Value::Bool(v));
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-autoscaling",
                 "set_desired_capacity",
                 serde_json::Value::Object(payload),
@@ -1827,13 +1665,8 @@ pub mod autoscaling {
     }
 
     /// Create a builder for an Auto Scaling `update_auto_scaling_group` action.
-    pub fn update_group(
-        namespace: impl Into<String>,
-        tenant: impl Into<String>,
-    ) -> AsgUpdateBuilder {
+    pub fn update_group() -> AsgUpdateBuilder {
         AsgUpdateBuilder {
-            namespace: namespace.into(),
-            tenant: tenant.into(),
             group_name: String::new(),
             min_size: None,
             max_size: None,
@@ -1848,8 +1681,6 @@ pub mod autoscaling {
     /// Builder for an Auto Scaling `update_auto_scaling_group` action.
     #[derive(Debug)]
     pub struct AsgUpdateBuilder {
-        namespace: String,
-        tenant: String,
         group_name: String,
         min_size: Option<i32>,
         max_size: Option<i32>,
@@ -1910,19 +1741,19 @@ pub mod autoscaling {
             self
         }
 
-        /// Set a deduplication key on the Action.
+        /// Set a deduplication key on the `ActionRequest`.
         #[must_use]
         pub fn dedup_key(mut self, key: impl Into<String>) -> Self {
             self.dedup_key = Some(key.into());
             self
         }
 
-        /// Build the Auto Scaling `update_auto_scaling_group` Action.
+        /// Build the Auto Scaling `update_auto_scaling_group` `ActionRequest`.
         ///
         /// # Panics
         ///
         /// Panics if `group_name` has not been set.
-        pub fn build(self) -> Action {
+        pub fn build(self) -> ActionRequest {
             assert!(
                 !self.group_name.is_empty(),
                 "Auto Scaling group_name must be set"
@@ -1965,9 +1796,7 @@ pub mod autoscaling {
                 );
             }
 
-            let mut action = Action::new(
-                self.namespace,
-                self.tenant,
+            let mut action = ActionRequest::new(
                 "aws-autoscaling",
                 "update_auto_scaling_group",
                 serde_json::Value::Object(payload),
@@ -1989,7 +1818,7 @@ mod tests {
 
     #[test]
     fn sns_publish_basic() {
-        let a = sns::publish("ns", "t1").message("hello world").build();
+        let a = sns::publish().message("hello world").build();
 
         assert_eq!(a.provider.as_str(), "aws-sns");
         assert_eq!(a.action_type, "publish");
@@ -1998,7 +1827,7 @@ mod tests {
 
     #[test]
     fn sns_publish_with_options() {
-        let a = sns::publish("ns", "t1")
+        let a = sns::publish()
             .message("alert")
             .subject("Important")
             .topic_arn("arn:aws:sns:us-east-1:123456789012:my-topic")
@@ -2020,12 +1849,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "SNS message must be set")]
     fn sns_panics_without_message() {
-        sns::publish("ns", "t1").build();
+        sns::publish().build();
     }
 
     #[test]
     fn lambda_invoke_basic() {
-        let a = lambda::invoke("ns", "t1")
+        let a = lambda::invoke()
             .payload(serde_json::json!({"key": "value"}))
             .build();
 
@@ -2036,7 +1865,7 @@ mod tests {
 
     #[test]
     fn lambda_invoke_with_options() {
-        let a = lambda::invoke("ns", "t1")
+        let a = lambda::invoke()
             .function_name("my-function")
             .payload(serde_json::json!({}))
             .invocation_type("Event")
@@ -2048,7 +1877,7 @@ mod tests {
 
     #[test]
     fn eventbridge_put_event() {
-        let a = eventbridge::put_event("ns", "t1")
+        let a = eventbridge::put_event()
             .source("com.myapp")
             .detail_type("OrderCreated")
             .detail(serde_json::json!({"order_id": "123"}))
@@ -2066,18 +1895,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "EventBridge source must be set")]
     fn eventbridge_panics_without_source() {
-        eventbridge::put_event("ns", "t1").detail_type("X").build();
+        eventbridge::put_event().detail_type("X").build();
     }
 
     #[test]
     #[should_panic(expected = "EventBridge detail_type must be set")]
     fn eventbridge_panics_without_detail_type() {
-        eventbridge::put_event("ns", "t1").source("src").build();
+        eventbridge::put_event().source("src").build();
     }
 
     #[test]
     fn sqs_send_message_basic() {
-        let a = sqs::send_message("ns", "t1")
+        let a = sqs::send_message()
             .message_body(r#"{"event":"test"}"#)
             .build();
 
@@ -2088,7 +1917,7 @@ mod tests {
 
     #[test]
     fn sqs_send_message_with_options() {
-        let a = sqs::send_message("ns", "t1")
+        let a = sqs::send_message()
             .message_body("hello")
             .queue_url("https://sqs.us-east-1.amazonaws.com/123456789012/my-queue")
             .delay_seconds(10)
@@ -2108,12 +1937,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "SQS message_body must be set")]
     fn sqs_panics_without_body() {
-        sqs::send_message("ns", "t1").build();
+        sqs::send_message().build();
     }
 
     #[test]
     fn s3_put_object_basic() {
-        let a = s3::put_object("ns", "t1")
+        let a = s3::put_object()
             .key("path/to/file.txt")
             .body("file contents")
             .build();
@@ -2129,7 +1958,7 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("author".to_string(), "test".to_string());
 
-        let a = s3::put_object("ns", "t1")
+        let a = s3::put_object()
             .bucket("my-bucket")
             .key("data.json")
             .body(r#"{"key":"value"}"#)
@@ -2144,7 +1973,7 @@ mod tests {
 
     #[test]
     fn s3_get_object() {
-        let a = s3::get_object("ns", "t1")
+        let a = s3::get_object()
             .bucket("my-bucket")
             .key("path/file.txt")
             .build();
@@ -2156,7 +1985,7 @@ mod tests {
 
     #[test]
     fn s3_delete_object() {
-        let a = s3::delete_object("ns", "t1").key("path/file.txt").build();
+        let a = s3::delete_object().key("path/file.txt").build();
 
         assert_eq!(a.action_type, "delete_object");
         assert_eq!(a.payload["key"], "path/file.txt");
@@ -2165,7 +1994,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "S3 object key must be set")]
     fn s3_panics_without_key() {
-        s3::put_object("ns", "t1").build();
+        s3::put_object().build();
     }
 
     // =========================================================================
@@ -2174,7 +2003,7 @@ mod tests {
 
     #[test]
     fn ec2_start_instances_basic() {
-        let a = ec2::start_instances("ns", "t1")
+        let a = ec2::start_instances()
             .instance_ids(vec!["i-abc123".to_string(), "i-def456".to_string()])
             .build();
 
@@ -2186,7 +2015,7 @@ mod tests {
 
     #[test]
     fn ec2_stop_instances_with_options() {
-        let a = ec2::stop_instances("ns", "t1")
+        let a = ec2::stop_instances()
             .instance_ids(vec!["i-abc123".to_string()])
             .hibernate(true)
             .force(true)
@@ -2201,7 +2030,7 @@ mod tests {
 
     #[test]
     fn ec2_run_instances_basic() {
-        let a = ec2::run_instances("ns", "t1")
+        let a = ec2::run_instances()
             .image_id("ami-12345678")
             .instance_type("t3.micro")
             .build();
@@ -2217,7 +2046,7 @@ mod tests {
         let mut tags = HashMap::new();
         tags.insert("env".to_string(), "staging".to_string());
 
-        let a = ec2::run_instances("ns", "t1")
+        let a = ec2::run_instances()
             .image_id("ami-12345678")
             .instance_type("t3.micro")
             .min_count(2)
@@ -2248,7 +2077,7 @@ mod tests {
 
     #[test]
     fn ec2_attach_volume() {
-        let a = ec2::attach_volume("ns", "t1")
+        let a = ec2::attach_volume()
             .volume_id("vol-abc123")
             .instance_id("i-def456")
             .device("/dev/sdf")
@@ -2263,7 +2092,7 @@ mod tests {
 
     #[test]
     fn ec2_detach_volume() {
-        let a = ec2::detach_volume("ns", "t1")
+        let a = ec2::detach_volume()
             .volume_id("vol-abc123")
             .instance_id("i-def456")
             .device("/dev/sdf")
@@ -2280,7 +2109,7 @@ mod tests {
 
     #[test]
     fn ec2_describe_instances() {
-        let a = ec2::describe_instances("ns", "t1")
+        let a = ec2::describe_instances()
             .instance_ids(vec!["i-abc123".to_string()])
             .build();
 
@@ -2291,7 +2120,7 @@ mod tests {
 
     #[test]
     fn ec2_hibernate_instances() {
-        let a = ec2::hibernate_instances("ns", "t1")
+        let a = ec2::hibernate_instances()
             .instance_ids(vec!["i-abc123".to_string()])
             .build();
 
@@ -2302,7 +2131,7 @@ mod tests {
 
     #[test]
     fn ec2_reboot_instances() {
-        let a = ec2::reboot_instances("ns", "t1")
+        let a = ec2::reboot_instances()
             .instance_ids(vec!["i-abc123".to_string()])
             .build();
 
@@ -2313,7 +2142,7 @@ mod tests {
 
     #[test]
     fn ec2_terminate_instances() {
-        let a = ec2::terminate_instances("ns", "t1")
+        let a = ec2::terminate_instances()
             .instance_ids(vec!["i-abc123".to_string()])
             .build();
 
@@ -2325,15 +2154,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "EC2 instance_ids must not be empty")]
     fn ec2_panics_without_instance_ids() {
-        ec2::start_instances("ns", "t1").build();
+        ec2::start_instances().build();
     }
 
     #[test]
     #[should_panic(expected = "EC2 image_id must be set")]
     fn ec2_run_panics_without_image_id() {
-        ec2::run_instances("ns", "t1")
-            .instance_type("t3.micro")
-            .build();
+        ec2::run_instances().instance_type("t3.micro").build();
     }
 
     // =========================================================================
@@ -2342,7 +2169,7 @@ mod tests {
 
     #[test]
     fn asg_describe_groups() {
-        let a = autoscaling::describe_groups("ns", "t1")
+        let a = autoscaling::describe_groups()
             .group_names(vec!["my-asg".to_string()])
             .build();
 
@@ -2353,7 +2180,7 @@ mod tests {
 
     #[test]
     fn asg_set_desired_capacity() {
-        let a = autoscaling::set_desired_capacity("ns", "t1")
+        let a = autoscaling::set_desired_capacity()
             .group_name("my-asg")
             .desired_capacity(5)
             .honor_cooldown(true)
@@ -2368,7 +2195,7 @@ mod tests {
 
     #[test]
     fn asg_update_group() {
-        let a = autoscaling::update_group("ns", "t1")
+        let a = autoscaling::update_group()
             .group_name("my-asg")
             .min_size(2)
             .max_size(10)
@@ -2392,7 +2219,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Auto Scaling group_name must be set")]
     fn asg_panics_without_group_name() {
-        autoscaling::set_desired_capacity("ns", "t1")
+        autoscaling::set_desired_capacity()
             .desired_capacity(5)
             .build();
     }

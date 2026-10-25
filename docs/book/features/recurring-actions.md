@@ -113,19 +113,17 @@ Create your first recurring action with curl:
 curl -X POST http://localhost:8080/v1/recurring \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "notifications",
-    "tenant": "acme",
-    "cron_expr": "0 9 * * MON-FRI",
-    "timezone": "US/Eastern",
-    "provider": "email",
-    "action_type": "send_digest",
-    "payload": {
-      "to": "team@example.com",
-      "subject": "Daily Digest",
-      "template": "morning-digest"
-    },
-    "description": "Weekday morning digest"
-  }'
+  "cron_expr": "0 9 * * MON-FRI",
+  "timezone": "US/Eastern",
+  "provider": "email",
+  "action_type": "send_digest",
+  "payload": {
+    "to": "team@example.com",
+    "subject": "Daily Digest",
+    "template": "morning-digest"
+  },
+  "description": "Weekday morning digest"
+}'
 ```
 
 Response:
@@ -154,17 +152,22 @@ Create a new recurring action definition.
 
 ```json
 {
-  "namespace": "notifications",
-  "tenant": "tenant-1",
   "cron_expr": "0 9 * * MON-FRI",
   "timezone": "US/Eastern",
   "provider": "email",
   "action_type": "send_digest",
-  "payload": {"to": "team@example.com", "subject": "Daily Digest"},
-  "metadata": {"source": "scheduler"},
+  "payload": {
+    "to": "team@example.com",
+    "subject": "Daily Digest"
+  },
+  "metadata": {
+    "source": "scheduler"
+  },
   "dedup_key": "digest-{{recurring_id}}-{{execution_time}}",
   "description": "Weekday morning digest",
-  "labels": {"team": "engineering"},
+  "labels": {
+    "team": "engineering"
+  },
   "ends_at": "2026-12-31T23:59:59Z",
   "enabled": true
 }
@@ -172,8 +175,6 @@ Create a new recurring action definition.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | string | Yes | Namespace for the recurring action |
-| `tenant` | string | Yes | Tenant that owns this recurring action |
 | `cron_expr` | string | Yes | Standard 5-field cron expression |
 | `timezone` | string | No | IANA timezone (default: `"UTC"`) |
 | `provider` | string | Yes | Target provider (e.g., `"email"`, `"webhook"`) |
@@ -216,8 +217,6 @@ List all recurring actions for a namespace and tenant.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `namespace` | string | Yes | Filter by namespace |
-| `tenant` | string | Yes | Filter by tenant |
 | `enabled` | bool | No | Filter by enabled status |
 
 **Response (200):**
@@ -702,12 +701,10 @@ occurrence inside a past window — for example after an outage:
 curl -X POST "$ACTEON/v1/recurring/$ID/backfill" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{
-    "namespace": "reports",
-    "tenant": "tenant-1",
-    "start": "2026-06-01T00:00:00Z",
-    "end": "2026-06-03T00:00:00Z",
-    "limit": 100
-  }'
+  "start": "2026-06-01T00:00:00Z",
+  "end": "2026-06-03T00:00:00Z",
+  "limit": 100
+}'
 ```
 
 The response lists each occurrence with its dispatch outcome. Occurrences

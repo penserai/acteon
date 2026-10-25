@@ -149,7 +149,7 @@ The DAG API provides a hierarchical view of chain execution:
 ### Instance DAG (running/completed chain)
 
 ```
-GET /v1/chains/{chain_id}/dag?namespace=...&tenant=...
+GET /v1/chains/{chain_id}/dag
 ```
 
 ### Definition DAG (config-only, no running instance)

@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use acteon_client::ActeonClientBuilder;
-use acteon_core::{Action, ActionOutcome};
+use acteon_core::{ActionOutcome, ActionRequest};
 use acteon_gateway::GatewayBuilder;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use rcgen::{CertificateParams, KeyPair};
@@ -127,9 +127,11 @@ async fn run_tls_server(
     // Dispatch handler
     async fn dispatch(
         axum::extract::State(gw): axum::extract::State<Arc<RwLock<acteon_gateway::Gateway>>>,
-        axum::Json(action): axum::Json<Action>,
+        axum::Json(action): axum::Json<ActionRequest>,
     ) -> axum::response::Result<axum::Json<ActionOutcome>, axum::http::StatusCode> {
         let gateway = gw.read().await;
+        // This single-context TLS demo assigns ownership at its trusted boundary.
+        let action = action.into_action(&acteon_core::TenantContext::new("default", "default"));
         match gateway.dispatch(action, None).await {
             Ok(outcome) => Ok(axum::Json(outcome)),
             Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
@@ -361,9 +363,7 @@ rules:
     info!("");
 
     // Dispatch an action over mTLS
-    let action = Action::new(
-        "notifications",
-        "tenant-mtls",
+    let action = ActionRequest::new(
         "webhook",
         "send_alert",
         serde_json::json!({
@@ -374,7 +374,7 @@ rules:
 
     info!("  Dispatching action over mTLS...");
     info!("    Provider:    webhook");
-    info!("    Action type: send_alert");
+    info!("    ActionRequest type: send_alert");
 
     match client.dispatch(&action).await {
         Ok(outcome) => {
@@ -395,9 +395,7 @@ rules:
     info!("  DEMO 2: RULE ENFORCEMENT OVER mTLS");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let spam_action = Action::new(
-        "notifications",
-        "tenant-mtls",
+    let spam_action = ActionRequest::new(
         "webhook",
         "spam",
         serde_json::json!({"subject": "Buy now!!!"}),
@@ -430,13 +428,8 @@ rules:
     let count = 50;
 
     for i in 0..count {
-        let action = Action::new(
-            "benchmark",
-            "tenant-mtls",
-            "webhook",
-            "throughput_test",
-            serde_json::json!({"seq": i}),
-        );
+        let action =
+            ActionRequest::new("webhook", "throughput_test", serde_json::json!({"seq": i}));
         match client.dispatch(&action).await {
             Ok(_) => success += 1,
             Err(_) => errors += 1,

@@ -15,12 +15,6 @@ pub struct EventsArgs {
 pub enum EventsCommand {
     /// List stateful events.
     List {
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
         /// Filter by state.
         #[arg(long)]
         status: Option<String>,
@@ -32,25 +26,13 @@ pub enum EventsCommand {
         /// Target state (e.g. "acknowledged", "resolved").
         #[arg(long)]
         to: String,
-        /// Namespace.
-        #[arg(long, default_value = "default")]
-        namespace: String,
-        /// Tenant.
-        #[arg(long)]
-        tenant: String,
     },
 }
 
 pub async fn run(ops: &OpsClient, args: &EventsArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
-        EventsCommand::List {
-            namespace,
-            tenant,
-            status,
-        } => {
+        EventsCommand::List { status } => {
             let query = EventQuery {
-                namespace: namespace.clone(),
-                tenant: tenant.clone(),
                 status: status.clone(),
                 limit: Some(50),
             };
@@ -73,16 +55,8 @@ pub async fn run(ops: &OpsClient, args: &EventsArgs, format: &OutputFormat) -> a
                 }
             }
         }
-        EventsCommand::Transition {
-            fingerprint,
-            to,
-            namespace,
-            tenant,
-        } => {
-            let resp = ops
-                .client()
-                .transition_event(fingerprint, to, namespace, tenant)
-                .await?;
+        EventsCommand::Transition { fingerprint, to } => {
+            let resp = ops.client().transition_event(fingerprint, to).await?;
             match format {
                 OutputFormat::Json => {
                     info!("{}", serde_json::to_string_pretty(&resp)?);

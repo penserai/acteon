@@ -14,7 +14,9 @@ pub mod plan;
 pub mod retry;
 
 pub use config::ExecutorConfig;
-pub use dlq::{DeadLetterEntry, DeadLetterError, DeadLetterQueue, DeadLetterSink};
+pub use dlq::{
+    DeadLetterEntry, DeadLetterError, DeadLetterQueue, DeadLetterSelection, DeadLetterSink,
+};
 pub use executor::ActionExecutor;
 pub use gate::{
     AttemptGateError, AttemptSettlement, ProviderAttempt, ProviderAttemptGate,

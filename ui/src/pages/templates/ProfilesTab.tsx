@@ -30,18 +30,12 @@ const profileCol = createDataTableColumnHelper<TemplateProfile>()
 export function ProfilesTab() {
   const { toast } = useToast()
 
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
-
   const [showCreate, setShowCreate] = useState(false)
   const [editTarget, setEditTarget] = useState<TemplateProfile | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<TemplateProfile | null>(null)
 
-  const { data, isLoading } = useTemplateProfiles({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
-  })
+  const { data, isLoading } = useTemplateProfiles()
 
   const { data: selectedProfile } = useTemplateProfile(selectedId ?? undefined)
 
@@ -131,16 +125,6 @@ export function ProfilesTab() {
   return (
     <div>
       <div className={shared.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
         <Button
           icon={<Plus className="h-3.5 w-3.5" />}
           onClick={() => setShowCreate(true)}
@@ -252,8 +236,6 @@ function ProfileFormModal({
   const isEdit = !!initial
 
   const [name, setName] = useState(initial?.name ?? '')
-  const [ns, setNs] = useState(initial?.namespace ?? '')
-  const [tenant, setTenant] = useState(initial?.tenant ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [labelsText, setLabelsText] = useState(
     initial?.labels ? labelsToText(initial.labels) : '',
@@ -276,8 +258,6 @@ function ProfileFormModal({
     const labels = parseLabels(labelsText)
     onSubmit({
       name,
-      namespace: ns,
-      tenant,
       fields: entriesToFields(fieldEntries),
       description: description || undefined,
       labels: Object.keys(labels).length > 0 ? labels : undefined,
@@ -286,8 +266,6 @@ function ProfileFormModal({
 
   const isValid =
     name &&
-    ns &&
-    tenant &&
     fieldEntries.some((e) => e.key.trim())
 
   return (
@@ -330,20 +308,6 @@ function ProfileFormModal({
         </div>
 
         <div className={shared.formGrid}>
-          <Input
-            label="Namespace *"
-            value={ns}
-            onChange={(e) => setNs(e.target.value)}
-            placeholder="prod"
-            disabled={isEdit}
-          />
-          <Input
-            label="Tenant *"
-            value={tenant}
-            onChange={(e) => setTenant(e.target.value)}
-            placeholder="acme"
-            disabled={isEdit}
-          />
         </div>
 
         {/* Dynamic field builder */}

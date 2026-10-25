@@ -54,7 +54,6 @@ from acteon_client.workforce import (
     WorkforceTeam,
 )
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -140,6 +139,7 @@ def main():
                 provider_grants = json.dumps([provider] if provider else [])
                 action_grants = json.dumps([action] if action else [])
                 auth += f'''\n[[api_keys]]
+scope={{namespace="prod",tenant="acme"}}
 name="{name}"
 authority_id="credential/{name}"
 principal={{id="{principal}",kind="{kind}"}}
@@ -196,15 +196,7 @@ actions={action_grants}
                         results = []
 
                         def change(identity, mutation):
-                            return operator.change_workforce(
-                                WorkforceChangeRequest(
-                                    "prod",
-                                    "acme",
-                                    identity,
-                                    mutation,
-                                    identity.replace("-", " "),
-                                )
-                            )
+                            return operator.change_workforce(WorkforceChangeRequest(identity, mutation, identity.replace('-', ' ')))
 
                         def record(step, outcome, expected):
                             assert len(deliveries) == expected, (step, deliveries)
@@ -318,7 +310,7 @@ actions={action_grants}
                                 ),
                             )
                         try:
-                            clients["personal"].workforce("prod", "acme")
+                            clients['personal'].workforce()
                             raise AssertionError(
                                 "executor reached workforce management"
                             )
@@ -329,20 +321,7 @@ actions={action_grants}
                         actions = {}
 
                         def execute(name, ticket, expected, allowed=True):
-                            action = actions.setdefault(
-                                (name, ticket),
-                                Action(
-                                    "prod",
-                                    "acme",
-                                    "incident",
-                                    "execute",
-                                    {
-                                        "ticket": ticket,
-                                        "participant": name,
-                                        "represented": "forged-release",
-                                    },
-                                ),
-                            )
+                            action = actions.setdefault((name, ticket), Action('incident', 'execute', {'ticket': ticket, 'participant': name, 'represented': 'forged-release'}))
                             result = clients[name].dispatch(
                                 action,
                                 permits=[PermitReference("permit-" + name, 1)],
@@ -366,7 +345,7 @@ actions={action_grants}
                         )
                         execute("personal", "offboarded-personal-agent", 4, False)
                         execute("maya", "offboarded-human", 4, False)
-                        view = operator.workforce("prod", "acme")
+                        view = operator.workforce()
                         assert any(
                             m.value.id == "maya-release" and not m.revoked
                             for m in view.memberships
@@ -382,25 +361,9 @@ actions={action_grants}
                             6,
                         )
                         resource = view.routes[0].effect.resources[0]
-                        operator.intervene_governance(
-                            GovernanceInterventionRequest(
-                                "prod",
-                                "acme",
-                                "close-road",
-                                GovernanceResourceChange("close_resource", resource),
-                                "maintenance",
-                            )
-                        )
+                        operator.intervene_governance(GovernanceInterventionRequest('close-road', GovernanceResourceChange('close_resource', resource), 'maintenance'))
                         execute("team", "closed-road", 6, False)
-                        operator.intervene_governance(
-                            GovernanceInterventionRequest(
-                                "prod",
-                                "acme",
-                                "reopen-road",
-                                GovernanceResourceChange("reopen_resource", resource),
-                                "maintenance complete",
-                            )
-                        )
+                        operator.intervene_governance(GovernanceInterventionRequest('reopen-road', GovernanceResourceChange('reopen_resource', resource), 'maintenance complete'))
                         execute("team", "reopened-road", 7)
                         change(
                             "withdraw-team-mandate",
@@ -419,7 +382,7 @@ actions={action_grants}
                             "actual_webhook_calls": len(deliveries),
                             "unauthorized_webhook_calls": 0,
                             "deliveries": deliveries,
-                            "final_scope": asdict(operator.workforce("prod", "acme")),
+                            "final_scope": asdict(operator.workforce()),
                         }
                         args.output.parent.mkdir(parents=True, exist_ok=True)
                         args.output.write_text(json.dumps(report, indent=2) + "\n")
@@ -444,7 +407,6 @@ actions={action_grants}
         receiver.shutdown()
         receiver.server_close()
         thread.join(timeout=10)
-
 
 if __name__ == "__main__":
     main()

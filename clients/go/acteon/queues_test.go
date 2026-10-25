@@ -44,8 +44,7 @@ func TestEnqueueTaskURLAndBody(t *testing.T) {
 	c := NewClient(url, WithAPIKey("k"))
 
 	task, err := c.EnqueueTask(context.Background(), "q", &EnqueueTaskRequest{
-		Namespace:   "ns",
-		Tenant:      "tnt",
+
 		ActionType:  "send_email",
 		Payload:     map[string]any{"to": "a@b.c"},
 		MaxAttempts: ptr(5),
@@ -63,9 +62,10 @@ func TestEnqueueTaskURLAndBody(t *testing.T) {
 		t.Errorf("Authorization: got %q", got)
 	}
 	s := string(captured.body)
+	if strings.Contains(s, `"namespace"`) || strings.Contains(s, `"tenant"`) {
+		t.Fatal("request included tenant context")
+	}
 	for _, want := range []string{
-		`"namespace":"ns"`,
-		`"tenant":"tnt"`,
 		`"action_type":"send_email"`,
 		`"max_attempts":5`,
 	} {
@@ -84,8 +84,7 @@ func TestEnqueueTaskOmitsMaxAttemptsWhenNil(t *testing.T) {
 	c := NewClient(url)
 
 	if _, err := c.EnqueueTask(context.Background(), "q", &EnqueueTaskRequest{
-		Namespace:  "ns",
-		Tenant:     "tnt",
+
 		ActionType: "send_email",
 		Payload:    map[string]any{},
 	}); err != nil {
@@ -110,8 +109,7 @@ func TestPollTasksURLBodyAndLeaseFields(t *testing.T) {
 	c := NewClient(url)
 
 	tasks, err := c.PollTasks(context.Background(), "q", &PollTasksRequest{
-		Namespace:    "ns",
-		Tenant:       "tnt",
+
 		MaxTasks:     ptr(4),
 		LeaseSeconds: ptr(120),
 		WorkerID:     "w-1",
@@ -123,6 +121,9 @@ func TestPollTasksURLBodyAndLeaseFields(t *testing.T) {
 		t.Errorf("request: got %s %s", captured.method, captured.path)
 	}
 	s := string(captured.body)
+	if strings.Contains(s, `"namespace"`) || strings.Contains(s, `"tenant"`) {
+		t.Fatal("request included tenant context")
+	}
 	for _, want := range []string{
 		`"max_tasks":4`,
 		`"lease_seconds":120`,
@@ -156,7 +157,7 @@ func TestPollTasksEmptyQueueReturnsNoTasks(t *testing.T) {
 	defer teardown()
 	c := NewClient(url)
 
-	tasks, err := c.PollTasks(context.Background(), "q", &PollTasksRequest{Namespace: "ns", Tenant: "tnt"})
+	tasks, err := c.PollTasks(context.Background(), "q", &PollTasksRequest{})
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -171,8 +172,7 @@ func TestHeartbeatTaskURLAndBody(t *testing.T) {
 	c := NewClient(url)
 
 	if _, err := c.HeartbeatTask(context.Background(), "t-1", &HeartbeatTaskRequest{
-		Namespace:     "ns",
-		Tenant:        "tnt",
+
 		LeaseToken:    "lease-abc",
 		ExtendSeconds: ptr(90),
 	}); err != nil {
@@ -182,6 +182,9 @@ func TestHeartbeatTaskURLAndBody(t *testing.T) {
 		t.Errorf("request: got %s %s", captured.method, captured.path)
 	}
 	s := string(captured.body)
+	if strings.Contains(s, `"namespace"`) || strings.Contains(s, `"tenant"`) {
+		t.Fatal("request included tenant context")
+	}
 	if !strings.Contains(s, `"lease_token":"lease-abc"`) || !strings.Contains(s, `"extend_seconds":90`) {
 		t.Errorf("body: got %s", s)
 	}
@@ -193,8 +196,7 @@ func TestCompleteTaskURLAndBody(t *testing.T) {
 	c := NewClient(url)
 
 	task, err := c.CompleteTask(context.Background(), "t-1", &CompleteTaskRequest{
-		Namespace:  "ns",
-		Tenant:     "tnt",
+
 		LeaseToken: "lease-abc",
 		Result:     map[string]any{"sent": true},
 	})
@@ -218,8 +220,7 @@ func TestFailTaskURLAndBody(t *testing.T) {
 	c := NewClient(url)
 
 	if _, err := c.FailTask(context.Background(), "t-1", &FailTaskRequest{
-		Namespace:  "ns",
-		Tenant:     "tnt",
+
 		LeaseToken: "lease-abc",
 		Error:      "boom",
 		Retryable:  false,
@@ -230,6 +231,9 @@ func TestFailTaskURLAndBody(t *testing.T) {
 		t.Errorf("request: got %s %s", captured.method, captured.path)
 	}
 	s := string(captured.body)
+	if strings.Contains(s, `"namespace"`) || strings.Contains(s, `"tenant"`) {
+		t.Fatal("request included tenant context")
+	}
 	if !strings.Contains(s, `"error":"boom"`) || !strings.Contains(s, `"retryable":false`) {
 		t.Errorf("body: got %s", s)
 	}
@@ -240,7 +244,7 @@ func TestGetTaskURLAndQueryParams(t *testing.T) {
 	defer teardown()
 	c := NewClient(url)
 
-	task, err := c.GetTask(context.Background(), "t-1", "ns", "tnt")
+	task, err := c.GetTask(context.Background(), "t-1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -257,7 +261,7 @@ func TestGetTaskNotFoundReturnsNil(t *testing.T) {
 	defer teardown()
 	c := NewClient(url)
 
-	task, err := c.GetTask(context.Background(), "missing", "ns", "tnt")
+	task, err := c.GetTask(context.Background(), "missing")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -273,7 +277,7 @@ func TestListTasksStatusFilter(t *testing.T) {
 	defer teardown()
 	c := NewClient(url)
 
-	tasks, err := c.ListTasks(context.Background(), "q", "ns", "tnt", TaskStatusPending)
+	tasks, err := c.ListTasks(context.Background(), "q", TaskStatusPending)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -292,10 +296,7 @@ func TestQueuePathSegmentsArePercentEncoded(t *testing.T) {
 
 	// A queue name with a slash must be percent-encoded so it
 	// cannot leak into additional path components.
-	if _, err := c.PollTasks(context.Background(), "q/escape", &PollTasksRequest{
-		Namespace: "ns",
-		Tenant:    "tnt",
-	}); err != nil {
+	if _, err := c.PollTasks(context.Background(), "q/escape", &PollTasksRequest{}); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
 	if !strings.Contains(captured.path, "/q%2Fescape/") {
@@ -311,8 +312,7 @@ func TestQueueErrorSurfacesAsAPIError(t *testing.T) {
 	c := NewClient(url)
 
 	_, err := c.CompleteTask(context.Background(), "t-1", &CompleteTaskRequest{
-		Namespace:  "ns",
-		Tenant:     "tnt",
+
 		LeaseToken: "stale",
 		Result:     nil,
 	})
@@ -336,7 +336,7 @@ func TestQueueServerErrorIsRetryable(t *testing.T) {
 	defer teardown()
 	c := NewClient(url)
 
-	_, err := c.PollTasks(context.Background(), "q", &PollTasksRequest{Namespace: "ns", Tenant: "tnt"})
+	_, err := c.PollTasks(context.Background(), "q", &PollTasksRequest{})
 	if err == nil {
 		t.Fatalf("expected error on 500")
 	}

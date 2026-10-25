@@ -13,8 +13,6 @@
 
 export interface CreateBusTopic {
   name: string;
-  namespace: string;
-  tenant: string;
   partitions?: number;
   replicationFactor?: number;
   retentionMs?: number;
@@ -40,8 +38,6 @@ export interface BusTopic {
 
 export interface PublishBusMessage {
   topic?: string;
-  namespace?: string;
-  tenant?: string;
   name?: string;
   key?: string;
   payload: unknown;
@@ -62,8 +58,6 @@ export interface PublishReceipt {
 export interface CreateBusSubscription {
   id: string;
   topic: string;
-  namespace: string;
-  tenant: string;
   startingOffset?: string;
   ackMode?: string;
   receiptRequired?: boolean;
@@ -110,8 +104,6 @@ export interface BusLag {
 
 export interface RegisterBusSchema {
   subject: string;
-  namespace: string;
-  tenant: string;
   body: unknown;
   labels?: Record<string, string>;
 }
@@ -132,8 +124,6 @@ export interface BusSchema {
 
 export interface RegisterBusAgent {
   agentId: string;
-  namespace: string;
-  tenant: string;
   capabilities?: string[];
   inboxSuffix?: string;
   heartbeatTtlMs?: number;
@@ -193,8 +183,6 @@ export function setBusAgentAdminStateBody(
 
 export interface CreateBusConversation {
   conversationId: string;
-  namespace: string;
-  tenant: string;
   participants?: string[];
   topicSubject?: string;
   eventsTopic?: string;
@@ -544,10 +532,7 @@ export function parseStreamEndEnvelope(d: Record<string, unknown>): StreamEndEnv
  * `skip_serializing_if = "Option::is_none"` shape.
  */
 export function createBusTopicBody(req: CreateBusTopic): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    name: req.name,
-    namespace: req.namespace,
-    tenant: req.tenant,
+  const body: Record<string, unknown> = {name: req.name
   };
   if (req.partitions !== undefined) body.partitions = req.partitions;
   if (req.replicationFactor !== undefined) body.replication_factor = req.replicationFactor;
@@ -560,8 +545,6 @@ export function createBusTopicBody(req: CreateBusTopic): Record<string, unknown>
 export function publishBusMessageBody(req: PublishBusMessage): Record<string, unknown> {
   const body: Record<string, unknown> = { payload: req.payload };
   if (req.topic !== undefined) body.topic = req.topic;
-  if (req.namespace !== undefined) body.namespace = req.namespace;
-  if (req.tenant !== undefined) body.tenant = req.tenant;
   if (req.name !== undefined) body.name = req.name;
   if (req.key !== undefined) body.key = req.key;
   if (req.headers && Object.keys(req.headers).length > 0) body.headers = req.headers;
@@ -569,11 +552,7 @@ export function publishBusMessageBody(req: PublishBusMessage): Record<string, un
 }
 
 export function createBusSubscriptionBody(req: CreateBusSubscription): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    id: req.id,
-    topic: req.topic,
-    namespace: req.namespace,
-    tenant: req.tenant,
+  const body: Record<string, unknown> = {id: req.id, topic: req.topic
   };
   if (req.startingOffset !== undefined) body.starting_offset = req.startingOffset;
   if (req.ackMode !== undefined) body.ack_mode = req.ackMode;
@@ -586,21 +565,14 @@ export function createBusSubscriptionBody(req: CreateBusSubscription): Record<st
 }
 
 export function registerBusSchemaBody(req: RegisterBusSchema): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    subject: req.subject,
-    namespace: req.namespace,
-    tenant: req.tenant,
-    body: req.body,
+  const body: Record<string, unknown> = {subject: req.subject, body: req.body
   };
   if (req.labels && Object.keys(req.labels).length > 0) body.labels = req.labels;
   return body;
 }
 
 export function registerBusAgentBody(req: RegisterBusAgent): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    agent_id: req.agentId,
-    namespace: req.namespace,
-    tenant: req.tenant,
+  const body: Record<string, unknown> = {agent_id: req.agentId
   };
   if (req.capabilities && req.capabilities.length > 0) body.capabilities = req.capabilities;
   if (req.inboxSuffix !== undefined) body.inbox_suffix = req.inboxSuffix;
@@ -611,10 +583,7 @@ export function registerBusAgentBody(req: RegisterBusAgent): Record<string, unkn
 }
 
 export function createBusConversationBody(req: CreateBusConversation): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    conversation_id: req.conversationId,
-    namespace: req.namespace,
-    tenant: req.tenant,
+  const body: Record<string, unknown> = {conversation_id: req.conversationId
   };
   if (req.participants && req.participants.length > 0) body.participants = req.participants;
   if (req.topicSubject !== undefined) body.topic_subject = req.topicSubject;

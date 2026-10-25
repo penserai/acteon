@@ -83,7 +83,7 @@ message identity and inspect durable evidence rather than constructing new work.
 
 - Original requesters can durably stop future starts for an accepted service
   task and its descendant budget subtree. `POST
-  /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the same
+  /a2a/agents/{agent}/v1/tasks/{id}/stop` uses the same
   private authentication and source-context requirements as observation. Its
   response contains the original task, `future_starts_blocked: true`, and a
   separate `cancellation_confirmed` finality verdict.

@@ -5,7 +5,6 @@ import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Drawer } from '../components/ui/Drawer'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -38,19 +37,15 @@ const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'timed_out'])
 const columnHelper = createDataTableColumnHelper<SwarmRunSnapshot>()
 
 export function SwarmRuns() {
-  const [namespace, setNamespace] = useState('')
-  const [tenant, setTenant] = useState('')
   const [status, setStatus] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const params = useMemo(
     () => ({
-      namespace: namespace || undefined,
-      tenant: tenant || undefined,
       status: status || undefined,
       limit: 100,
     }),
-    [namespace, tenant, status],
+    [status],
   )
 
   const { data, isLoading, error } = useSwarmRuns(params)
@@ -98,16 +93,6 @@ export function SwarmRuns() {
     <div>
       <PageHeader title="Swarm Runs" />
       <div className={styles.controls}>
-        <Input
-          placeholder="Namespace"
-          value={namespace}
-          onChange={(e) => setNamespace(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
         <Select
           value={status}
           onChange={(e) => setStatus(e.target.value)}

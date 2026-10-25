@@ -1687,8 +1687,6 @@ async fn kafka_stream_replay(
             .client
             .create_bus_topic(&acteon_client::CreateBusTopic {
                 name: topic.name.clone(),
-                namespace: NAMESPACE.into(),
-                tenant: TENANT.into(),
                 partitions: Some(1),
                 replication_factor: Some(1),
                 ..Default::default()
@@ -1707,8 +1705,6 @@ async fn kafka_stream_replay(
             .create_bus_subscription(&acteon_client::CreateSubscription {
                 id: format!("neural-{}-{run_id}", source.as_str()),
                 topic: topics[&source].kafka_topic_name(),
-                namespace: NAMESPACE.into(),
-                tenant: TENANT.into(),
                 starting_offset: Some("earliest".into()),
                 receipt_required: true,
                 ack_timeout_ms: Some(60_000),
@@ -1724,8 +1720,6 @@ async fn kafka_stream_replay(
             .client
             .register_bus_schema(&acteon_client::RegisterBusSchema {
                 subject: format!("telemetry-{}-{run_id}", source.as_str()),
-                namespace: NAMESPACE.into(),
-                tenant: TENANT.into(),
                 body: telemetry_consume_schema(source),
                 labels: std::collections::HashMap::new(),
             })
@@ -1733,13 +1727,7 @@ async fn kafka_stream_replay(
         http.as_ref()
             .unwrap()
             .client
-            .bind_topic_schema(
-                NAMESPACE,
-                TENANT,
-                &topics[&source].name,
-                &schema.subject,
-                schema.version,
-            )
+            .bind_topic_schema(&topics[&source].name, &schema.subject, schema.version)
             .await?;
         consume_contracts.insert(
             source.as_str().to_string(),
@@ -1848,7 +1836,7 @@ async fn kafka_stream_replay(
             .as_ref()
             .unwrap()
             .client
-            .get_bus_session(NAMESPACE, TENANT, &subscription_ids[2], &expired_session)
+            .get_bus_session(&subscription_ids[2], &expired_session)
             .await
             .is_ok()
         {
@@ -1870,7 +1858,7 @@ async fn kafka_stream_replay(
             .as_ref()
             .unwrap()
             .client
-            .list_stage_quarantine(NAMESPACE, TENANT, "windows", None, 10)
+            .list_stage_quarantine("windows", None, 10)
             .await?
             .entries
             .len();
@@ -1886,14 +1874,12 @@ async fn kafka_stream_replay(
             ));
         }
         let client = &http.as_ref().unwrap().client;
-        let status = client
-            .stream_stage_status(NAMESPACE, TENANT, "windows")
-            .await?;
+        let status = client.stream_stage_status("windows").await?;
         if status.quarantined_records != 1 || status.counters != managed_stage {
             return Err(error("operator status disagrees with durable stage"));
         }
         let retained = client
-            .get_stage_quarantined_input(NAMESPACE, TENANT, "windows", &quarantined_inputs[0].id)
+            .get_stage_quarantined_input("windows", &quarantined_inputs[0].id)
             .await?;
         if retained != quarantined_inputs[0] {
             return Err(error("operator inspection changed original input"));
@@ -1902,8 +1888,8 @@ async fn kafka_stream_replay(
             request_id: uuid::Uuid::new_v4(), reason: "repair malformed log; preserve event deduplication".into(),
             payload: serde_json::to_value(telemetry_event(&fixtures[0], SignalSource::Logs))?,
         };
-        let queued = client.request_stage_replay(NAMESPACE,TENANT,"windows",&retained.id,&request).await?;
-        if queued != client.request_stage_replay(NAMESPACE,TENANT,"windows",&retained.id,&request).await? { return Err(error("replay request was not idempotent")); }
+        let queued = client.request_stage_replay("windows",&retained.id,&request).await?;
+        if queued != client.request_stage_replay("windows",&retained.id,&request).await? { return Err(error("replay request was not idempotent")); }
         let before_positions = stage.checkpoint().positions().to_vec();
         // A replacement worker reloads the durable request rather than receiving
         // a broker redelivery or repeating an operator's HTTP command.
@@ -1913,9 +1899,9 @@ async fn kafka_stream_replay(
             request_id: uuid::Uuid::new_v4(), command: acteon_bus::StreamStageCommand::Halt,
             expected_control_revision: status.control_revision, reason: "pause window stage for audited maintenance".into(), reset_retry_budget: false,
         };
-        let halted = client.control_stage(NAMESPACE,TENANT,"windows",&halt).await?;
-        if halted != client.control_stage(NAMESPACE,TENANT,"windows",&halt).await?
-            || halted != client.get_stage_control_audit(NAMESPACE,TENANT,"windows",halt.request_id).await? {
+        let halted = client.control_stage("windows",&halt).await?;
+        if halted != client.control_stage("windows",&halt).await?
+            || halted != client.get_stage_control_audit("windows",halt.request_id).await? {
             return Err(error("halt command audit or idempotence mismatch"));
         }
         // Recreate the worker while halted: the durable control survives replacement.
@@ -1934,20 +1920,20 @@ async fn kafka_stream_replay(
             request_id: uuid::Uuid::new_v4(), command: acteon_bus::StreamStageCommand::Resume,
             expected_control_revision: halted.control_revision, reason: "resume verified window stage".into(), reset_retry_budget: false,
         };
-        let resumed = client.control_stage(NAMESPACE,TENANT,"windows",&resume).await?;
-        if halted != client.control_stage(NAMESPACE,TENANT,"windows",&halt).await?
-            || client.stream_stage_status(NAMESPACE,TENANT,"windows").await?.operator_halted {
+        let resumed = client.control_stage("windows",&resume).await?;
+        if halted != client.control_stage("windows",&halt).await?
+            || client.stream_stage_status("windows").await?.operator_halted {
             return Err(error("retrying old halt undid newer resume"));
         }
         let operator_controls = vec![halted, resumed];
         let halted_processing_probes = 2;
         let replay_result = stage.replay_once(&processor,&tokio_util::sync::CancellationToken::new()).await?;
-        if !matches!(replay_result, StreamStageResult::ReplayCompleted{request_id,..} if request_id == request.request_id) { return Err(error(format!("repair replay did not complete: {replay_result:?}; audit: {:?}",client.get_stage_replay_audit(NAMESPACE,TENANT,"windows",request.request_id).await?))); }
-        let operator_replay = client.get_stage_replay_audit(NAMESPACE,TENANT,"windows",request.request_id).await?;
+        if !matches!(replay_result, StreamStageResult::ReplayCompleted{request_id,..} if request_id == request.request_id) { return Err(error(format!("repair replay did not complete: {replay_result:?}; audit: {:?}",client.get_stage_replay_audit("windows",request.request_id).await?))); }
+        let operator_replay = client.get_stage_replay_audit("windows",request.request_id).await?;
         if operator_replay.status != acteon_bus::StreamReplayStatus::Completed
             || operator_replay.attempts != 1 || stage.checkpoint().positions() != before_positions
-            || operator_replay != client.request_stage_replay(NAMESPACE,TENANT,"windows",&retained.id,&request).await?
-            || client.stream_stage_status(NAMESPACE,TENANT,"windows").await?.quarantined_records != 0 { return Err(error("replay audit, source progress or idempotence mismatch")); }
+            || operator_replay != client.request_stage_replay("windows",&retained.id,&request).await?
+            || client.stream_stage_status("windows").await?.quarantined_records != 0 { return Err(error("replay audit, source progress or idempotence mismatch")); }
         let operator_quarantines_discarded = 0;
         let mut source_receipts_acknowledged = 0;
         let mut recovery_redeliveries = 0;

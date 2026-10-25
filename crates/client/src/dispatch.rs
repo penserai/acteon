@@ -1,4 +1,4 @@
-use acteon_core::{Action, ActionOutcome, Attachment};
+use acteon_core::{ActionOutcome, ActionRequest, Attachment};
 use serde::{Deserialize, Serialize};
 
 use crate::{ActeonClient, Error};
@@ -26,9 +26,9 @@ pub struct ErrorResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BatchResult {
-    /// Action was processed successfully.
+    /// `ActionRequest` was processed successfully.
     Success(ActionOutcome),
-    /// Action processing failed.
+    /// `ActionRequest` processing failed.
     Error {
         /// Error details.
         error: ErrorResponse,
@@ -71,17 +71,17 @@ impl ActeonClient {
     /// ```no_run
     /// # async fn example() -> Result<(), acteon_client::Error> {
     /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
+    /// use acteon_core::ActionRequest;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    /// let action = ActionRequest::new("email", "send", serde_json::json!({}));
     ///
     /// let outcome = client.dispatch(&action).await?;
     /// println!("Outcome: {:?}", outcome);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn dispatch(&self, action: &Action) -> Result<ActionOutcome, Error> {
+    pub async fn dispatch(&self, action: &ActionRequest) -> Result<ActionOutcome, Error> {
         self.dispatch_inner(action, false, None).await
     }
 
@@ -101,10 +101,10 @@ impl ActeonClient {
     /// ```no_run
     /// # async fn example() -> Result<(), acteon_client::Error> {
     /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
+    /// use acteon_core::ActionRequest;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    /// let action = ActionRequest::new("email", "send", serde_json::json!({}));
     /// let key = acteon_crypto::signing::parse_signing_key("hex-or-b64-key", "my-signer")
     ///     .expect("valid key");
     /// let outcome = client.dispatch_signed(&action, &key).await?;
@@ -114,11 +114,12 @@ impl ActeonClient {
     #[cfg(feature = "signing")]
     pub async fn dispatch_signed(
         &self,
-        action: &Action,
+        action: &ActionRequest,
         key: &acteon_crypto::signing::ActionSigningKey,
     ) -> Result<ActionOutcome, Error> {
         let mut signed = action.clone();
-        let canonical = signed.canonical_bytes();
+        let scope = self.identity().await?.scope;
+        let canonical = signed.clone().into_action(&scope).canonical_bytes();
         signed.signature = Some(key.sign(&canonical));
         signed.signer_id = Some(key.signer_id().to_owned());
         self.dispatch_inner(&signed, false, None).await
@@ -141,12 +142,13 @@ impl ActeonClient {
     #[cfg(feature = "signing")]
     pub async fn dispatch_signed_with_kid(
         &self,
-        action: &Action,
+        action: &ActionRequest,
         key: &acteon_crypto::signing::ActionSigningKey,
         kid: impl Into<String>,
     ) -> Result<ActionOutcome, Error> {
         let mut signed = action.clone();
-        let canonical = signed.canonical_bytes();
+        let scope = self.identity().await?.scope;
+        let canonical = signed.clone().into_action(&scope).canonical_bytes();
         signed.signature = Some(key.sign(&canonical));
         signed.signer_id = Some(key.signer_id().to_owned());
         signed.kid = Some(kid.into());
@@ -163,17 +165,17 @@ impl ActeonClient {
     /// ```no_run
     /// # async fn example() -> Result<(), acteon_client::Error> {
     /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
+    /// use acteon_core::ActionRequest;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    /// let action = ActionRequest::new("email", "send", serde_json::json!({}));
     ///
     /// let outcome = client.dispatch_dry_run(&action).await?;
     /// println!("Would result in: {:?}", outcome);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn dispatch_dry_run(&self, action: &Action) -> Result<ActionOutcome, Error> {
+    pub async fn dispatch_dry_run(&self, action: &ActionRequest) -> Result<ActionOutcome, Error> {
         self.dispatch_inner(action, true, None).await
     }
 
@@ -181,17 +183,17 @@ impl ActeonClient {
     ///
     /// This is a convenience wrapper that clones the action, sets the given
     /// attachments, and dispatches it. For repeated use, prefer constructing
-    /// the action with [`Action::with_attachments`] directly.
+    /// the action with [`ActionRequest::with_attachments`] directly.
     ///
     /// # Example
     ///
     /// ```no_run
     /// # async fn example() -> Result<(), acteon_client::Error> {
     /// use acteon_client::{ActeonClient, Attachment};
-    /// use acteon_core::Action;
+    /// use acteon_core::ActionRequest;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    /// let action = ActionRequest::new("email", "send", serde_json::json!({}));
     ///
     /// let attachments = vec![
     ///     Attachment {
@@ -210,7 +212,7 @@ impl ActeonClient {
     /// ```
     pub async fn dispatch_with_attachments(
         &self,
-        action: &Action,
+        action: &ActionRequest,
         attachments: Vec<Attachment>,
     ) -> Result<ActionOutcome, Error> {
         let mut action = action.clone();
@@ -221,7 +223,7 @@ impl ActeonClient {
     /// Dispatch with explicit permit references and the configured credentials.
     pub async fn dispatch_with_permits(
         &self,
-        action: &Action,
+        action: &ActionRequest,
         permits: &[PermitReference],
     ) -> Result<ActionOutcome, Error> {
         self.dispatch_inner(action, false, Some(permits)).await
@@ -230,7 +232,7 @@ impl ActeonClient {
     /// Dispatch a batch using explicit permit references for every action.
     pub async fn dispatch_batch_with_permits(
         &self,
-        actions: &[Action],
+        actions: &[ActionRequest],
         permits: &[PermitReference],
     ) -> Result<Vec<BatchResult>, Error> {
         self.dispatch_batch_inner(actions, false, Some(permits))
@@ -239,7 +241,7 @@ impl ActeonClient {
 
     async fn dispatch_inner(
         &self,
-        action: &Action,
+        action: &ActionRequest,
         dry_run: bool,
         permits: Option<&[PermitReference]>,
     ) -> Result<ActionOutcome, Error> {
@@ -281,12 +283,12 @@ impl ActeonClient {
     /// ```no_run
     /// # async fn example() -> Result<(), acteon_client::Error> {
     /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
+    /// use acteon_core::ActionRequest;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let actions = vec![
-    ///     Action::new("ns", "tenant", "email", "send", serde_json::json!({})),
-    ///     Action::new("ns", "tenant", "sms", "send", serde_json::json!({})),
+    ///     ActionRequest::new("email", "send", serde_json::json!({})),
+    ///     ActionRequest::new("sms", "send", serde_json::json!({})),
     /// ];
     ///
     /// let results = client.dispatch_batch(&actions).await?;
@@ -299,7 +301,10 @@ impl ActeonClient {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn dispatch_batch(&self, actions: &[Action]) -> Result<Vec<BatchResult>, Error> {
+    pub async fn dispatch_batch(
+        &self,
+        actions: &[ActionRequest],
+    ) -> Result<Vec<BatchResult>, Error> {
         self.dispatch_batch_inner(actions, false, None).await
     }
 
@@ -309,14 +314,14 @@ impl ActeonClient {
     /// executing any actions.
     pub async fn dispatch_batch_dry_run(
         &self,
-        actions: &[Action],
+        actions: &[ActionRequest],
     ) -> Result<Vec<BatchResult>, Error> {
         self.dispatch_batch_inner(actions, true, None).await
     }
 
     async fn dispatch_batch_inner(
         &self,
-        actions: &[Action],
+        actions: &[ActionRequest],
         dry_run: bool,
         permits: Option<&[PermitReference]>,
     ) -> Result<Vec<BatchResult>, Error> {
@@ -367,5 +372,60 @@ async fn dispatch_error(response: reqwest::Response) -> Result<Error, Error> {
             status,
             message: body,
         })
+    }
+}
+
+#[cfg(all(test, feature = "signing"))]
+mod context_tests {
+    use super::*;
+    use acteon_core::TenantContext;
+    use axum::{
+        Json, Router,
+        http::HeaderMap,
+        routing::{get, post},
+    };
+    use serde_json::{Value, json};
+    use std::future::IntoFuture;
+
+    #[tokio::test]
+    async fn signing_binds_authenticated_context_without_sending_scope() {
+        let key = acteon_crypto::signing::ActionSigningKey::from_bytes([17; 32], "pipeline");
+        let verifier = key.verifying_key();
+        let app = Router::new()
+            .route("/v1/auth/identity", get(|headers: HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer service-key");
+                Json(json!({"credential_id":"service-key","role":"executor","auth_method":"api_key",
+                    "scope":{"namespace":"payments","tenant":"bank-a"},"principal":null}))
+            }))
+            .route("/v1/dispatch", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let verifier = verifier.clone();
+                async move {
+                    assert_eq!(headers["authorization"], "Bearer service-key");
+                    assert!(body.get("namespace").is_none());
+                    assert!(body.get("tenant").is_none());
+                    assert_eq!(body["payload"]["tenant"], "business-value");
+                    let request: ActionRequest = serde_json::from_value(body).unwrap();
+                    let action = request.into_action(&TenantContext::new("payments", "bank-a"));
+                    let signature = action.signature.as_ref().unwrap();
+                    verifier.verify(signature, &action.canonical_bytes()).unwrap();
+                    let mut foreign = action.clone();
+                    foreign.tenant = "bank-b".into();
+                    assert!(verifier.verify(signature, &foreign.canonical_bytes()).is_err());
+                    Json(json!("Deduplicated"))
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = ActeonClient::builder(format!("http://{}", listener.local_addr().unwrap()))
+            .api_key("service-key")
+            .build()
+            .unwrap();
+        let server = tokio::spawn(axum::serve(listener, app).into_future());
+        let action = ActionRequest::new("email", "send", json!({"tenant":"business-value"}));
+        client.dispatch_signed(&action, &key).await.unwrap();
+        client
+            .dispatch_signed_with_kid(&action, &key, "rotation-2")
+            .await
+            .unwrap();
+        server.abort();
     }
 }

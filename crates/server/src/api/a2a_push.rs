@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -441,7 +441,7 @@ pub type SetPushConfigBody = SetPushConfigInput;
 pub async fn rest_set_push_config(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, task_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, task_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(body): Json<SetPushConfigBody>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
@@ -458,7 +458,7 @@ pub async fn rest_set_push_config(
 pub async fn rest_list_push_configs(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, task_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, task_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
         return resp;
@@ -474,7 +474,7 @@ pub async fn rest_list_push_configs(
 pub async fn rest_get_push_config(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, task_id, config_id)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, task_id, config_id)): crate::auth::context::ScopedPath<(String, String, String, String)>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
         return resp;
@@ -490,7 +490,7 @@ pub async fn rest_get_push_config(
 pub async fn rest_delete_push_config(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, task_id, config_id)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, task_id, config_id)): crate::auth::context::ScopedPath<(String, String, String, String)>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
         return resp;
@@ -574,7 +574,7 @@ fn render_rest_error(err: &PushConfigError) -> Response {
 // Dead-Letter Queue (operator surface)
 //
 // The DLQ is *not* part of the A2A protocol — it lives at
-// `/v1/a2a/{ns}/{tenant}/push-dlq[/{id}]` under Acteon's operator
+// `/v1/a2a/push-dlq[/{id}]` under Acteon's operator
 // namespace and uses the same Dispatch-permission + `(ns, tenant,
 // a2a, dlq)` grant check as the rest of the operator surface. The
 // REST list returns the most recent entries sorted descending by
@@ -762,11 +762,14 @@ pub(crate) async fn delete_dlq_entry(
     Ok(())
 }
 
-/// `GET /v1/a2a/{namespace}/{tenant}/push-dlq` — list DLQ entries.
+/// `GET /v1/a2a/push-dlq` — list DLQ entries.
 pub async fn rest_list_push_dlq(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
         return resp;
@@ -778,11 +781,11 @@ pub async fn rest_list_push_dlq(
     }
 }
 
-/// `GET /v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}` — read one.
+/// `GET /v1/a2a/push-dlq/{entryId}` — read one.
 pub async fn rest_get_push_dlq(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, entry_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, entry_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
         return resp;
@@ -794,11 +797,11 @@ pub async fn rest_get_push_dlq(
     }
 }
 
-/// `DELETE /v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}`.
+/// `DELETE /v1/a2a/push-dlq/{entryId}`.
 pub async fn rest_delete_push_dlq(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, entry_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, entry_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> Response {
     if let Some(resp) = guard(&identity, &namespace, &tenant) {
         return resp;

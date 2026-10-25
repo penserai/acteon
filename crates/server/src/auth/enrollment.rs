@@ -19,6 +19,7 @@ pub struct AuthenticatedCredential {
     auth_method: String,
     role: Role,
     grants: Vec<super::config::Grant>,
+    scope: acteon_core::TenantContext,
 }
 impl AuthenticatedCredential {
     pub(super) fn from_identity(
@@ -41,11 +42,17 @@ impl AuthenticatedCredential {
             auth_method: identity.auth_method.clone(),
             role: identity.role,
             grants: identity.grants.clone(),
+            scope: identity.scope.clone(),
         }))
     }
+    pub(super) fn matches_scope(&self, namespace: &str, tenant: &str) -> bool {
+        self.scope.matches(namespace, tenant)
+    }
     pub(super) fn can_manage_scope(&self, namespace: &str, tenant: &str) -> bool {
-        self.role
-            .has_permission(super::role::Permission::OperationsManage)
+        self.scope.matches(namespace, tenant)
+            && self
+                .role
+                .has_permission(super::role::Permission::OperationsManage)
             && self.grants.iter().any(|grant| {
                 super::config::tenant_matches(&grant.tenants, tenant)
                     && grant.namespaces.iter().any(|n| n == "*" || n == namespace)
@@ -77,12 +84,13 @@ struct EnrollmentPolicy {
     principal: PrincipalIdentity,
     role: Role,
     grants: Vec<Value>,
+    scope: acteon_core::TenantContext,
 }
 /// Rotation may expose several API key hashes for one logical credential, only
 /// when their complete policy agrees. Other shared IDs are ambiguous and refused.
 pub(super) fn validate_enrollments(config: &AuthFileConfig) -> Result<(), String> {
     let mut ids = BTreeMap::new();
-    for (id, principal, role, grants, method) in config
+    for (id, principal, role, grants, scope, method) in config
         .users
         .iter()
         .map(|u| {
@@ -91,6 +99,7 @@ pub(super) fn validate_enrollments(config: &AuthFileConfig) -> Result<(), String
                 u.principal.as_ref(),
                 &u.role,
                 &u.grants,
+                &u.scope,
                 "jwt",
             )
         })
@@ -100,6 +109,7 @@ pub(super) fn validate_enrollments(config: &AuthFileConfig) -> Result<(), String
                 k.principal.as_ref(),
                 &k.role,
                 &k.grants,
+                &k.scope,
                 "api_key",
             )
         }))
@@ -117,6 +127,7 @@ pub(super) fn validate_enrollments(config: &AuthFileConfig) -> Result<(), String
                 .clone(),
             role: Role::from_str_loose(role).ok_or("invalid enrollment role")?,
             grants: canonical_grants(grants)?,
+            scope: scope.clone(),
         };
         if let Some(previous) = ids.get(id)
             && (method != "api_key" || previous != &policy)

@@ -77,9 +77,9 @@ type WorkerTask struct {
 // EnqueueTaskRequest is the request body for enqueueing a task.
 type EnqueueTaskRequest struct {
 	// Namespace scopes the task.
-	Namespace string `json:"namespace"`
+
 	// Tenant scopes the task.
-	Tenant string `json:"tenant"`
+
 	// ActionType drives worker handler dispatch.
 	ActionType string `json:"action_type"`
 	// Payload is the arbitrary JSON payload delivered to the worker.
@@ -92,9 +92,9 @@ type EnqueueTaskRequest struct {
 // PollTasksRequest is the request body for polling a queue.
 type PollTasksRequest struct {
 	// Namespace scopes the poll.
-	Namespace string `json:"namespace"`
+
 	// Tenant scopes the poll.
-	Tenant string `json:"tenant"`
+
 	// MaxTasks is the maximum number of tasks to lease in one poll
 	// (server default 1 when nil).
 	MaxTasks *int `json:"max_tasks,omitempty"`
@@ -108,9 +108,9 @@ type PollTasksRequest struct {
 // HeartbeatTaskRequest is the request body for extending a task lease.
 type HeartbeatTaskRequest struct {
 	// Namespace scopes the task.
-	Namespace string `json:"namespace"`
+
 	// Tenant scopes the task.
-	Tenant string `json:"tenant"`
+
 	// LeaseToken is the lease token returned by poll.
 	LeaseToken string `json:"lease_token"`
 	// ExtendSeconds is the new lease duration in seconds from now
@@ -121,9 +121,9 @@ type HeartbeatTaskRequest struct {
 // CompleteTaskRequest is the request body for completing a task.
 type CompleteTaskRequest struct {
 	// Namespace scopes the task.
-	Namespace string `json:"namespace"`
+
 	// Tenant scopes the task.
-	Tenant string `json:"tenant"`
+
 	// LeaseToken is the lease token returned by poll.
 	LeaseToken string `json:"lease_token"`
 	// Result is the task result. For chain worker steps this becomes
@@ -135,9 +135,9 @@ type CompleteTaskRequest struct {
 // FailTaskRequest is the request body for failing a task.
 type FailTaskRequest struct {
 	// Namespace scopes the task.
-	Namespace string `json:"namespace"`
+
 	// Tenant scopes the task.
-	Tenant string `json:"tenant"`
+
 	// LeaseToken is the lease token returned by poll.
 	LeaseToken string `json:"lease_token"`
 	// Error is the error message.
@@ -278,10 +278,9 @@ func (c *Client) FailTask(ctx context.Context, taskID string, req *FailTaskReque
 // GetTask calls `GET /v1/queues/tasks/{taskID}` to fetch a single
 // task. Returns (nil, nil) when the task does not exist, matching
 // the GetRecurring convention.
-func (c *Client) GetTask(ctx context.Context, taskID, namespace, tenant string) (*WorkerTask, error) {
+func (c *Client) GetTask(ctx context.Context, taskID string) (*WorkerTask, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	path := fmt.Sprintf("/v1/queues/tasks/%s?%s", queueSeg(taskID), params.Encode())
 
 	var out WorkerTask
@@ -298,10 +297,9 @@ func (c *Client) GetTask(ctx context.Context, taskID, namespace, tenant string) 
 // ListTasks calls `GET /v1/queues/{queue}/tasks` to list a queue's
 // tasks. `status` optionally filters by lifecycle status (see the
 // TaskStatus* constants); pass "" for all statuses.
-func (c *Client) ListTasks(ctx context.Context, queue, namespace, tenant, status string) ([]WorkerTask, error) {
+func (c *Client) ListTasks(ctx context.Context, queue, status string) ([]WorkerTask, error) {
 	params := url.Values{}
-	params.Set("namespace", namespace)
-	params.Set("tenant", tenant)
+
 	if status != "" {
 		params.Set("status", status)
 	}

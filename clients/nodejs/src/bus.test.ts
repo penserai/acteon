@@ -45,19 +45,12 @@ import { ActeonClient } from "./client.js";
 
 describe("bus request body builders", () => {
   it("create topic minimal", () => {
-    const body = createBusTopicBody({ name: "t", namespace: "n", tenant: "te" });
-    assert.deepEqual(body, { name: "t", namespace: "n", tenant: "te" });
+    const body = createBusTopicBody({name: "t" });
+    assert.deepEqual(body, {name: "t" });
   });
 
   it("create topic snake_cases optional fields", () => {
-    const body = createBusTopicBody({
-      name: "t",
-      namespace: "n",
-      tenant: "te",
-      partitions: 4,
-      replicationFactor: 2,
-      retentionMs: 86_400_000,
-      labels: { env: "prod" },
+    const body = createBusTopicBody({name: "t", partitions: 4, replicationFactor: 2, retentionMs: 86_400_000, labels: { env: "prod" }
     });
     assert.equal(body.replication_factor, 2);
     assert.equal(body.retention_ms, 86_400_000);
@@ -70,14 +63,7 @@ describe("bus request body builders", () => {
   });
 
   it("subscription request snake-cases ack-mode + dlq", () => {
-    const body = createBusSubscriptionBody({
-      id: "s1",
-      topic: "n.te.t",
-      namespace: "n",
-      tenant: "te",
-      ackMode: "manual",
-      ackTimeoutMs: 30_000,
-      deadLetterTopic: "n.te.t-dlq",
+    const body = createBusSubscriptionBody({id: "s1", topic: "n.te.t", ackMode: "manual", ackTimeoutMs: 30_000, deadLetterTopic: "n.te.t-dlq"
     });
     assert.equal(body.ack_mode, "manual");
     assert.equal(body.ack_timeout_ms, 30_000);
@@ -85,11 +71,7 @@ describe("bus request body builders", () => {
   });
 
   it("schema request preserves arbitrary body", () => {
-    const body = registerBusSchemaBody({
-      subject: "orders",
-      namespace: "n",
-      tenant: "te",
-      body: { type: "object", properties: { x: { type: "number" } } },
+    const body = registerBusSchemaBody({subject: "orders", body: { type: "object", properties: { x: { type: "number" } } }
     });
     assert.deepEqual(body.body, {
       type: "object",
@@ -98,24 +80,14 @@ describe("bus request body builders", () => {
   });
 
   it("agent request snake-cases id + ttl", () => {
-    const body = registerBusAgentBody({
-      agentId: "a1",
-      namespace: "n",
-      tenant: "te",
-      capabilities: ["tools.calendar"],
-      heartbeatTtlMs: 30_000,
+    const body = registerBusAgentBody({agentId: "a1", capabilities: ["tools.calendar"], heartbeatTtlMs: 30_000
     });
     assert.equal(body.agent_id, "a1");
     assert.equal(body.heartbeat_ttl_ms, 30_000);
   });
 
   it("conversation request snake-cases id + topic-subject", () => {
-    const body = createBusConversationBody({
-      conversationId: "c1",
-      namespace: "n",
-      tenant: "te",
-      participants: ["a1", "a2"],
-      topicSubject: "agents.demo.thread",
+    const body = createBusConversationBody({conversationId: "c1", participants: ["a1", "a2"], topicSubject: "agents.demo.thread"
     });
     assert.equal(body.conversation_id, "c1");
     assert.equal(body.topic_subject, "agents.demo.thread");
@@ -534,33 +506,29 @@ describe("bus response parsers", () => {
 describe("busStreamConsumeUrl", () => {
   it("encodes path segments with embedded slashes + spaces", () => {
     const c = new ActeonClient("http://localhost:3000");
-    const url = c.busStreamConsumeUrl(
-      "agents/x",
-      "demo",
-      "thread/with/slashes",
-      "story 1",
+    const url = c.busStreamConsumeUrl("thread/with/slashes", "story 1"
     );
     // The slashes inside segments must be %2F-encoded so they
     // don't escape into URL grammar.
-    assert.match(url, /agents%2Fx/);
+    assert.notMatch(url, /agents%2Fx/);
     assert.match(url, /thread%2Fwith%2Fslashes/);
     assert.match(url, /story%201/);
   });
 
   it("returns the canonical URL for simple segments", () => {
     const c = new ActeonClient("http://localhost:3000");
-    const url = c.busStreamConsumeUrl("agents", "demo", "thread-1", "stream-1");
+    const url = c.busStreamConsumeUrl("thread-1", "stream-1");
     assert.equal(
       url,
-      "http://localhost:3000/v1/bus/streams/agents/demo/thread-1/stream-1",
+      "http://localhost:3000/v1/bus/streams/thread-1/stream-1",
     );
   });
 
   it("trims trailing slash from the base URL", () => {
     const c = new ActeonClient("http://localhost:3000/");
-    const url = c.busStreamConsumeUrl("a", "b", "c", "d");
+    const url = c.busStreamConsumeUrl("c", "d");
     // The constructor strips the trailing slash; consume URL inherits.
-    assert.equal(url, "http://localhost:3000/v1/bus/streams/a/b/c/d");
+    assert.equal(url, "http://localhost:3000/v1/bus/streams/c/d");
   });
 });
 
@@ -667,7 +635,7 @@ describe("SSE consumer line-protocol", () => {
     try {
       const c = new ActeonClient(`http://localhost:${port}`);
       const items: string[] = [];
-      for await (const item of c.consumeBusStream("agents", "demo", "thread-1", "s1")) {
+      for await (const item of c.consumeBusStream("thread-1", "s1")) {
         items.push(item.kind);
       }
       assert.deepEqual(items, ["chunk", "end"]);

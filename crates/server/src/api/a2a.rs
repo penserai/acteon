@@ -5,7 +5,7 @@
 //! had no API surface — only the background stale-task reaper reached
 //! it. Two transports share one set of method implementations:
 //!
-//! - **JSON-RPC 2.0** — `POST /a2a/{namespace}/{tenant}`. A2A's
+//! - **JSON-RPC 2.0** — `POST /a2a`. A2A's
 //!   primary transport: one endpoint, the method named in the
 //!   envelope. Single requests, batch arrays, and notifications
 //!   (requests with no `id` — processed, but not answered) are all
@@ -16,7 +16,7 @@
 //!   suffix split off in-handler, since axum's router matches whole
 //!   segments — the URL stays spec-exact.
 //!
-//! Both transports are scoped by a `{namespace}/{tenant}` path prefix.
+//! Both transports use the exact context bound to the authenticated credential.
 //! A2A itself has no notion of Acteon's multi-tenancy, so the tenant
 //! is carried in the URL and authorized against the caller's grants,
 //! mirroring the bus API. Request bodies are explicitly capped at
@@ -31,7 +31,7 @@
 //! pins an unsupported version is rejected before any work is done.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -400,15 +400,7 @@ async fn method_list_tasks_v1(
             "historyLength exceeds the A2A int32 range",
         ));
     }
-    if params
-        .tenant
-        .as_deref()
-        .is_some_and(|tenant| !tenant.is_empty() && tenant != scope.tenant)
-    {
-        return Err(A2aError::invalid_params(
-            "tenant does not match the selected agent interface",
-        ));
-    }
+    validate_v1_tenant(params.tenant.as_deref(), scope)?;
     let status = params
         .status
         .as_deref()
@@ -916,21 +908,25 @@ struct V1PushConfigCursor {
     last_id: String,
 }
 
-fn validate_v1_tenant(tenant: Option<&str>, scope: &TaskScope) -> Result<(), A2aError> {
-    if tenant.is_some_and(|tenant| !tenant.is_empty() && tenant != scope.tenant) {
+fn validate_v1_tenant(tenant: Option<&str>, _scope: &TaskScope) -> Result<(), A2aError> {
+    if tenant.is_some() {
         return Err(A2aError::invalid_params(
-            "tenant does not match the selected agent interface",
+            "tenant is derived from the authenticated credential",
         ));
     }
     Ok(())
 }
 
-fn validate_v1_params_tenant(params: &Value, scope: &TaskScope) -> Result<(), A2aError> {
-    match params.get("tenant") {
-        None | Some(Value::Null) => Ok(()),
-        Some(Value::String(tenant)) => validate_v1_tenant(Some(tenant), scope),
-        Some(_) => Err(A2aError::invalid_params("tenant must be a string")),
+fn validate_v1_params_tenant(params: &Value, _scope: &TaskScope) -> Result<(), A2aError> {
+    if ["tenant", "namespace", "scope", "tenant_scope"]
+        .iter()
+        .any(|key| params.get(*key).is_some())
+    {
+        return Err(A2aError::invalid_params(
+            "tenant and namespace are derived from the authenticated credential",
+        ));
     }
+    Ok(())
 }
 
 fn project_v1_push_config(
@@ -1708,6 +1704,7 @@ async fn dispatch_method(
     params: Value,
     actor: &str,
 ) -> Result<Value, A2aError> {
+    validate_v1_params_tenant(&params, scope)?;
     if is_v1_method(method) {
         return dispatch_v1_method(state, engine, scope, method, params, actor).await;
     }
@@ -2086,6 +2083,9 @@ async fn handle_v1_streaming_rpc(
         .and_then(Value::as_str)
         .expect("streaming dispatcher is entered only for a string method");
     let params = object.get("params").cloned().unwrap_or(Value::Null);
+    if let Err(error) = validate_v1_params_tenant(&params, scope) {
+        return v1_stream_rpc_error(request_id, &error);
+    }
     if let Err(error) = ensure_v1_streaming_supported(state, scope).await {
         return v1_stream_rpc_error(request_id, &error);
     }
@@ -2188,7 +2188,7 @@ async fn handle_v1_streaming_rpc(
         .into_response()
 }
 
-/// `POST /a2a/{namespace}/{tenant}` — the A2A JSON-RPC 2.0 endpoint.
+/// `POST /a2a` — the A2A JSON-RPC 2.0 endpoint.
 ///
 /// The raw body is parsed here rather than via the `Json` extractor so
 /// a malformed body becomes a JSON-RPC parse error (`-32700`) instead
@@ -2196,7 +2196,10 @@ async fn handle_v1_streaming_rpc(
 pub async fn a2a_rpc(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -2330,12 +2333,15 @@ fn task_not_modified_response(version: u64, history_length: Option<usize>) -> Re
     response
 }
 
-/// `POST /a2a/{namespace}/{tenant}/v1/message:send` — REST binding for
+/// `POST /a2a/v1/message:send` — REST binding for
 /// `message/send`.
 pub async fn a2a_rest_message_send(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
     headers: HeaderMap,
     Json(params): Json<MessageSendParams>,
 ) -> Response {
@@ -2376,12 +2382,16 @@ pub struct TaskGetQuery {
     history_length: Option<usize>,
 }
 
-/// `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}` — REST binding for
+/// `GET /a2a/v1/tasks/{id}` — REST binding for
 /// `tasks/get`. `?historyLength=N` trims the returned history.
 pub async fn a2a_rest_task_get(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
     headers: HeaderMap,
     Query(query): Query<TaskGetQuery>,
 ) -> Response {
@@ -2417,7 +2427,7 @@ pub async fn a2a_rest_task_get(
     versioned_task_response(task, version, history_length)
 }
 
-/// `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel` — REST
+/// `POST /a2a/v1/tasks/{id}:cancel` — REST
 /// binding for `tasks/cancel`.
 ///
 /// A2A spec §11 spells this `tasks/{id}:cancel`. axum's router matches
@@ -2429,7 +2439,7 @@ pub async fn a2a_rest_task_get(
 pub async fn a2a_rest_task_cancel(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id_and_verb)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, id_and_verb)): crate::auth::context::ScopedPath<(String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(e) = negotiate_version(&headers) {
@@ -2464,7 +2474,7 @@ pub async fn a2a_rest_task_cancel(
     )
 }
 
-/// `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}/events` — SSE stream
+/// `GET /a2a/v1/tasks/{id}/events` — SSE stream
 /// of task-lifecycle events.
 ///
 /// Emits `TaskTransitioned`, `TaskHistoryAppended`, and
@@ -2479,7 +2489,7 @@ pub async fn a2a_rest_task_cancel(
 pub async fn a2a_task_events(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, task_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, task_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(e) = negotiate_version(&headers) {

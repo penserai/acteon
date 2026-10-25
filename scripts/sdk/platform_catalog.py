@@ -29,11 +29,11 @@ LOGICAL_ROUTE_VARIANTS = {
     "agent_services_peer_submission_action": [
         {
             "name": "agent_services_peer_cancel",
-            "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
+            "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
         },
         {
             "name": "agent_services_peer_refresh",
-            "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
+            "path": "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
         },
     ],
     "governance_federation_delivery_action": [
@@ -47,7 +47,6 @@ LOGICAL_ROUTE_VARIANTS = {
         },
     ],
 }
-
 
 def registered_operations():
     source = (ROOT / "crates/server/src/api/mod.rs").read_text()
@@ -85,7 +84,6 @@ def registered_operations():
     assert len({x["name"] for x in result}) == len(result), "Duplicate operation names"
     return sorted(result, key=lambda x: x["name"])
 
-
 def operations():
     result = []
     for operation in registered_operations():
@@ -104,7 +102,6 @@ def operations():
             )
     assert len({x["name"] for x in result}) == len(result), "Duplicate operation names"
     return sorted(result, key=lambda x: x["name"])
-
 
 def render(ops):
     finite = [o for o in ops if o["response"] != "stream"]
@@ -229,7 +226,6 @@ def render(ops):
     files["crates/client/src/platform_catalog.rs"] = rust
     return files
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
@@ -263,7 +259,6 @@ def main():
     if failed:
         raise SystemExit("Stale platform catalog: " + ", ".join(failed))
     print(f"Platform catalog: {len(operations())} logical operations accounted for")
-
 
 if __name__ == "__main__":
     main()

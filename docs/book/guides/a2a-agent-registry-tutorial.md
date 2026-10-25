@@ -60,7 +60,7 @@ Every bus payload flows through a Kafka topic (or its in-memory
 equivalent). Create one for the workload:
 
 ```bash
-curl -X POST http://localhost:8080/v1/bus/topics/demo/acme \
+curl -X POST http://localhost:8080/v1/bus/topics \
   -H 'Content-Type: application/json' \
   -d '{"name": "agent-events", "partitions": 3}'
 ```
@@ -112,11 +112,9 @@ thread.
 # Create the conversation
 curl -X POST http://localhost:8080/v1/bus/conversations \
   -H 'Content-Type: application/json' -d '{
-    "conversation_id": "conv-demo-1",
-    "namespace": "demo",
-    "tenant": "acme",
-    "title": "Invoice OCR + summary"
-  }'
+  "conversation_id": "conv-demo-1",
+  "title": "Invoice OCR + summary"
+}'
 
 # Append three messages
 for text in \
@@ -124,7 +122,7 @@ for text in \
   "Extracted: Invoice #4521 — \$128.40" \
   "Summary: 1 invoice for \$128.40 from vendor 4521"; do
   curl -s -X POST \
-    http://localhost:8080/v1/bus/conversations/demo/acme/conv-demo-1/messages \
+    http://localhost:8080/v1/bus/conversations/conv-demo-1/messages \
     -H 'Content-Type: application/json' \
     -d "{\"payload\":{\"text\":\"$text\"}}" > /dev/null
 done
@@ -156,14 +154,16 @@ states.
 # Register a flaky one
 curl -X POST http://localhost:8080/v1/bus/agents \
   -H 'Content-Type: application/json' -d '{
-    "namespace": "demo", "tenant": "acme",
-    "agent_id": "flaky-bot", "display_name": "Flaky Bot",
-    "capabilities": ["test"]
-  }'
+  "agent_id": "flaky-bot",
+  "display_name": "Flaky Bot",
+  "capabilities": [
+    "test"
+  ]
+}'
 
 # Suspend with a 1h auto-expire
 curl -X PUT \
-  http://localhost:8080/v1/bus/agents/demo/acme/flaky-bot/admin-state \
+  http://localhost:8080/v1/bus/agents/flaky-bot/admin-state \
   -H 'Content-Type: application/json' -d '{
     "admin_state": "suspended",
     "reason": "investigating runaway tool calls",
@@ -172,7 +172,7 @@ curl -X PUT \
 
 # A send while suspended -> 403 with the operator's reason
 curl -i -X POST \
-  http://localhost:8080/v1/bus/agents/demo/acme/flaky-bot/send \
+  http://localhost:8080/v1/bus/agents/flaky-bot/send \
   -H 'Content-Type: application/json' \
   -d '{"payload": {"task": "summarize"}}'
 # -> HTTP/1.1 403 Forbidden
@@ -188,7 +188,7 @@ To ban it permanently when the investigation confirms a problem:
 
 ```bash
 curl -X PUT \
-  http://localhost:8080/v1/bus/agents/demo/acme/flaky-bot/admin-state \
+  http://localhost:8080/v1/bus/agents/flaky-bot/admin-state \
   -H 'Content-Type: application/json' \
   -d '{"admin_state":"banned","reason":"confirmed credential leak"}'
 ```
@@ -206,7 +206,7 @@ This is what `/.well-known/agent-card` walks.
 
 ```bash
 curl -X PUT \
-  http://localhost:8080/v1/bus/agents/demo/acme/planner-01/card \
+  http://localhost:8080/v1/bus/agents/planner-01/card \
   -H 'Content-Type: application/json' -d '{
     "name": "Planning Agent",
     "description": "Plans multi-step actions across other agents.",
@@ -216,7 +216,7 @@ curl -X PUT \
   }'
 
 # External A2A clients then walk:
-curl http://localhost:8080/a2a/demo/acme/.well-known/agent.json
+curl http://localhost:8080/a2a/.well-known/agent.json
 ```
 
 The discovery endpoint omits any agent whose effective `admin_state`

@@ -30,7 +30,7 @@ Operator-banned (compromised, abusive, or decommissioned). Same enforcement as `
 ### Set admin state
 
 ```text
-PUT /v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state
+PUT /v1/bus/agents/{agent_id}/admin-state
 ```
 
 ```json
@@ -126,7 +126,7 @@ curl -X PUT \
 | Suspected misbehavior, not yet confirmed | `Suspended` (no expiry, manual reinstate) |
 | Confirmed compromise / abuse | `Banned` |
 | Decommissioning an agent permanently | `Banned` — preserves audit |
-| Outright deletion | `DELETE /v1/bus/agents/{ns}/{t}/{id}` — loses audit, prefer `Banned` |
+| Outright deletion | `DELETE /v1/bus/agents/{id}` — loses audit, prefer `Banned` |
 
 ## See also
 

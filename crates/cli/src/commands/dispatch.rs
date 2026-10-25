@@ -7,12 +7,6 @@ use crate::OutputFormat;
 
 #[derive(Args, Debug)]
 pub struct DispatchArgs {
-    /// Namespace.
-    #[arg(long, default_value = "default")]
-    pub namespace: String,
-    /// Tenant.
-    #[arg(long)]
-    pub tenant: String,
     /// Provider name.
     #[arg(long)]
     pub provider: String,
@@ -57,8 +51,6 @@ pub async fn run(
 
     let outcome = ops
         .dispatch(
-            args.namespace.clone(),
-            args.tenant.clone(),
             args.provider.clone(),
             args.action_type.clone(),
             payload,

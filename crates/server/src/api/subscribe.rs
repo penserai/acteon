@@ -18,11 +18,12 @@
 //! Both "not found" and "wrong tenant" map to 403 to avoid leaking entity
 //! existence (per security review C1).
 
+use crate::auth::context::ScopedQuery;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -111,7 +112,7 @@ pub async fn subscribe(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(path): Path<SubscribePath>,
-    Query(sub_query): Query<SubscribeQuery>,
+    ScopedQuery(sub_query): ScopedQuery<SubscribeQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
     // 1. Check role permission.
     if !identity.role.has_permission(Permission::StreamSubscribe) {
@@ -180,6 +181,9 @@ pub async fn subscribe(
             drop(gateway);
 
             let group = group.ok_or_else(forbidden_or_not_found)?;
+            if !identity.can_manage_scope(&group.tenant, &group.namespace) {
+                return Err(forbidden_or_not_found());
+            }
 
             if sub_query.include_history {
                 build_group_catchup(&group)
@@ -195,11 +199,7 @@ pub async fn subscribe(
             if sub_query.include_history {
                 tokio::time::timeout(
                     CATCHUP_FETCH_TIMEOUT,
-                    build_action_catchup(
-                        state.audit.as_deref(),
-                        &path.entity_id,
-                        allowed_tenants.as_ref(),
-                    ),
+                    build_action_catchup(state.audit.as_deref(), &path.entity_id, &identity),
                 )
                 .await
                 .map_err(|_| catchup_timeout("action"))?
@@ -210,7 +210,7 @@ pub async fn subscribe(
     };
 
     // 5. Build a StreamQuery targeting the entity.
-    let query = match path.entity_type {
+    let mut query = match path.entity_type {
         EntityType::Chain => StreamQuery {
             chain_id: Some(path.entity_id.clone()),
             ..StreamQuery::default()
@@ -224,6 +224,8 @@ pub async fn subscribe(
             ..StreamQuery::default()
         },
     };
+
+    query.namespace = Some(identity.scope.namespace.clone());
 
     // 6. Enforce per-tenant connection limit.
     let connection_bucket = match &allowed_tenants {
@@ -306,6 +308,9 @@ pub async fn subscribe(
                 let mut signal_tx = Some(signal_tx);
                 while let Some(item) = det.next().await {
                     let Ok(event) = item else { continue };
+                    if !identity.scope.matches(&event.namespace, &event.tenant) {
+                        continue;
+                    }
                     if let Some(reason) =
                         detect_terminal(entity_type, &detector_entity_id, &event.event_type)
                     {
@@ -455,8 +460,8 @@ fn build_group_catchup(group: &acteon_core::EventGroup) -> Vec<Result<Event, Inf
         id: uuid::Uuid::now_v7().to_string(),
         timestamp: group.updated_at,
         event_type,
-        namespace: String::new(),
-        tenant: String::new(),
+        namespace: group.namespace.clone(),
+        tenant: group.tenant.clone(),
         action_type: None,
         action_id: None,
     };
@@ -475,8 +480,8 @@ fn build_group_catchup(group: &acteon_core::EventGroup) -> Vec<Result<Event, Inf
                 id: uuid::Uuid::now_v7().to_string(),
                 timestamp: group.updated_at,
                 event_type,
-                namespace: String::new(),
-                tenant: String::new(),
+                namespace: group.namespace.clone(),
+                tenant: group.tenant.clone(),
                 action_type: None,
                 action_id: None,
             };
@@ -493,8 +498,8 @@ fn build_group_catchup(group: &acteon_core::EventGroup) -> Vec<Result<Event, Inf
                 id: uuid::Uuid::now_v7().to_string(),
                 timestamp: group.updated_at,
                 event_type,
-                namespace: String::new(),
-                tenant: String::new(),
+                namespace: group.namespace.clone(),
+                tenant: group.tenant.clone(),
                 action_type: None,
                 action_id: None,
             };
@@ -521,7 +526,7 @@ fn build_group_catchup(group: &acteon_core::EventGroup) -> Vec<Result<Event, Inf
 async fn build_action_catchup(
     audit: Option<&dyn acteon_audit::store::AuditStore>,
     action_id: &str,
-    allowed_tenants: Option<&Vec<String>>,
+    identity: &CallerIdentity,
 ) -> Vec<Result<Event, Infallible>> {
     use acteon_core::stream::{reconstruct_outcome, sanitize_outcome};
 
@@ -542,10 +547,12 @@ async fn build_action_catchup(
         }
     };
 
-    // Tenant isolation.
-    if let Some(tenants) = allowed_tenants
-        && !tenants.iter().any(|t| t == &record.tenant)
-    {
+    if !identity.is_authorized(
+        &record.tenant,
+        &record.namespace,
+        &record.provider,
+        &record.action_type,
+    ) {
         return Vec::new();
     }
 

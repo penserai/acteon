@@ -278,15 +278,15 @@ export function agentServicePushConfigPage(value: unknown, taskId: string): Agen
     || typeof page.nextPageToken !== "string" || page.nextPageToken.length > 8192) throw new Error("agent service A2A push page is invalid");
   return Object.freeze({ configs: Object.freeze(page.configs.map(config => agentServicePushConfig(config, taskId))), nextPageToken: page.nextPageToken });
 }
-export function agentServiceBase(namespace: string, tenant: string, agent: string): string {
-  return agentServiceRpcBase(namespace, tenant, agent) + "/v1";
+export function agentServiceBase(agent: string): string {
+  return agentServiceRpcBase(agent) + "/v1";
 }
-export function agentServiceRpcBase(namespace: string, tenant: string, agent: string): string {
+export function agentServiceRpcBase(agent: string): string {
   const segment = (value: string) => {
     if (!value || value === "." || value === "..") throw new Error("invalid agent service path segment");
     return encodeURIComponent(value);
   };
-  return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}`;
+  return `/a2a/agents/${segment(agent)}`;
 }
 
 export type AgentServiceProviderAbort =

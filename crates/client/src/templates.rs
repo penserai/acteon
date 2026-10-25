@@ -58,10 +58,6 @@ pub struct TemplateProfileInfo {
 pub struct CreateTemplateRequest {
     /// Template name.
     pub name: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Raw `MiniJinja` template content.
     pub content: String,
     /// Optional human-readable description.
@@ -91,10 +87,6 @@ pub struct UpdateTemplateRequest {
 pub struct CreateProfileRequest {
     /// Profile name.
     pub name: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Field-to-template mappings.
     pub fields: std::collections::HashMap<String, serde_json::Value>,
     /// Optional human-readable description.
@@ -142,10 +134,6 @@ pub struct ListProfilesResponse {
 pub struct RenderPreviewRequest {
     /// Profile name to render.
     pub profile: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Payload variables to use for rendering.
     pub payload: serde_json::Value,
 }
@@ -191,25 +179,12 @@ impl ActeonClient {
         }
     }
 
-    /// List templates, optionally filtered by namespace and tenant.
-    pub async fn list_templates(
-        &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
-    ) -> Result<ListTemplatesResponse, Error> {
+    /// List templates, within the authenticated credential context.
+    pub async fn list_templates(&self) -> Result<ListTemplatesResponse, Error> {
         let url = format!("{}/v1/templates", self.base_url);
-
-        let mut query: Vec<(&str, &str)> = Vec::new();
-        if let Some(ns) = namespace {
-            query.push(("namespace", ns));
-        }
-        if let Some(t) = tenant {
-            query.push(("tenant", t));
-        }
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&query)
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -353,25 +328,12 @@ impl ActeonClient {
         }
     }
 
-    /// List template profiles, optionally filtered by namespace and tenant.
-    pub async fn list_profiles(
-        &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
-    ) -> Result<ListProfilesResponse, Error> {
+    /// List template profiles, within the authenticated credential context.
+    pub async fn list_profiles(&self) -> Result<ListProfilesResponse, Error> {
         let url = format!("{}/v1/templates/profiles", self.base_url);
-
-        let mut query: Vec<(&str, &str)> = Vec::new();
-        if let Some(ns) = namespace {
-            query.push(("namespace", ns));
-        }
-        if let Some(t) = tenant {
-            query.push(("tenant", t));
-        }
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&query)
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;

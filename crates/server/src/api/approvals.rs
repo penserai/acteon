@@ -1,11 +1,12 @@
 //! Approval API endpoints.
 //!
 //! Provides endpoints for the human-in-the-loop approval workflow.
-//! Public endpoints (approve/reject/status) are authenticated by HMAC signature
-//! in the query string. The list endpoint requires standard authentication.
+//! All endpoints use credential authentication and its exact tenant context.
 
+use crate::auth::context::ScopedQuery;
+use crate::auth::identity::CallerIdentity;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
@@ -59,20 +60,11 @@ pub struct ApprovalStatusResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ApprovalQueryParams {
     /// Filter by namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Filter by tenant.
+    #[schema(ignore)]
     pub tenant: String,
-}
-
-/// Query parameters for HMAC-authenticated approval endpoints.
-#[derive(Debug, Deserialize)]
-pub struct SigQuery {
-    /// HMAC-SHA256 signature.
-    pub sig: String,
-    /// Expiration timestamp (unix seconds) bound into the signature.
-    pub expires_at: i64,
-    /// Key ID identifying which HMAC key was used to produce the signature.
-    pub kid: Option<String>,
 }
 
 /// Response for listing pending approvals.
@@ -93,20 +85,15 @@ pub struct ApprovalPath {
     pub id: String,
 }
 
-/// `POST /v1/approvals/{namespace}/{tenant}/{id}/approve` -- approve a pending action (HMAC-authenticated).
+/// `POST /v1/approvals/{id}/approve` -- approve a pending action (credential-authenticated).
 #[utoipa::path(
     post,
-    path = "/v1/approvals/{namespace}/{tenant}/{id}/approve",
+    path = "/v1/approvals/{id}/approve",
     tag = "Approvals",
     summary = "Approve a pending action",
-    description = "Approves a pending action identified by namespace, tenant, and ID. Authenticated by HMAC signature in query parameter.",
+    description = "Approves a pending action identified by ID within the authenticated context. Requires an operator or admin credential.",
     params(
-        ("namespace" = String, Path, description = "Approval namespace"),
-        ("tenant" = String, Path, description = "Approval tenant"),
-        ("id" = String, Path, description = "Approval ID"),
-        ("sig" = String, Query, description = "HMAC-SHA256 signature"),
-        ("expires_at" = i64, Query, description = "Expiration timestamp (unix seconds) bound into the signature"),
-        ("kid" = Option<String>, Query, description = "Key ID identifying which HMAC key was used"),
+        ("id" = String, description = "Approval ID"),
     ),
     responses(
         (status = 200, description = "Action approved and executed", body = ApprovalActionResponse),
@@ -116,28 +103,16 @@ pub struct ApprovalPath {
 )]
 pub async fn approve(
     State(state): State<AppState>,
-    Path(path): Path<ApprovalPath>,
-    Query(sig_query): Query<SigQuery>,
+    crate::auth::context::ScopedPath(path): crate::auth::context::ScopedPath<ApprovalPath>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
 ) -> Result<impl IntoResponse, ServerError> {
     let gw = state.gateway.read().await;
 
-    // Load record to restore trace context before execution.
-    if let Ok(Some(record)) = gw
-        .get_approval_record(&path.namespace, &path.tenant, &path.id)
-        .await
-    {
-        super::trace_context::restore_trace_context(&record.action.trace_context);
-    }
+    let record = authorized_record(&gw, &identity, &path).await?;
+    super::trace_context::restore_trace_context(&record.action.trace_context);
 
     match gw
-        .execute_approval(
-            &path.namespace,
-            &path.tenant,
-            &path.id,
-            &sig_query.sig,
-            sig_query.expires_at,
-            sig_query.kid.as_deref(),
-        )
+        .execute_approval_authenticated(&path.namespace, &path.tenant, &path.id)
         .await
     {
         Ok(outcome) => {
@@ -170,20 +145,15 @@ pub async fn approve(
     }
 }
 
-/// `POST /v1/approvals/{namespace}/{tenant}/{id}/reject` -- reject a pending action (HMAC-authenticated).
+/// `POST /v1/approvals/{id}/reject` -- reject a pending action (credential-authenticated).
 #[utoipa::path(
     post,
-    path = "/v1/approvals/{namespace}/{tenant}/{id}/reject",
+    path = "/v1/approvals/{id}/reject",
     tag = "Approvals",
     summary = "Reject a pending action",
-    description = "Rejects a pending action identified by namespace, tenant, and ID. Authenticated by HMAC signature in query parameter.",
+    description = "Rejects a pending action identified by ID within the authenticated context. Requires an operator or admin credential.",
     params(
-        ("namespace" = String, Path, description = "Approval namespace"),
-        ("tenant" = String, Path, description = "Approval tenant"),
-        ("id" = String, Path, description = "Approval ID"),
-        ("sig" = String, Query, description = "HMAC-SHA256 signature"),
-        ("expires_at" = i64, Query, description = "Expiration timestamp (unix seconds) bound into the signature"),
-        ("kid" = Option<String>, Query, description = "Key ID identifying which HMAC key was used"),
+        ("id" = String, description = "Approval ID"),
     ),
     responses(
         (status = 200, description = "Action rejected", body = ApprovalActionResponse),
@@ -193,20 +163,14 @@ pub async fn approve(
 )]
 pub async fn reject(
     State(state): State<AppState>,
-    Path(path): Path<ApprovalPath>,
-    Query(sig_query): Query<SigQuery>,
+    crate::auth::context::ScopedPath(path): crate::auth::context::ScopedPath<ApprovalPath>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
 ) -> Result<impl IntoResponse, ServerError> {
     let gw = state.gateway.read().await;
+    authorized_record(&gw, &identity, &path).await?;
 
     match gw
-        .reject_approval(
-            &path.namespace,
-            &path.tenant,
-            &path.id,
-            &sig_query.sig,
-            sig_query.expires_at,
-            sig_query.kid.as_deref(),
-        )
+        .reject_approval_authenticated(&path.namespace, &path.tenant, &path.id)
         .await
     {
         Ok(()) => {
@@ -238,20 +202,15 @@ pub async fn reject(
     }
 }
 
-/// `GET /v1/approvals/{namespace}/{tenant}/{id}` -- get approval status (HMAC-authenticated).
+/// `GET /v1/approvals/{id}` -- get approval status (credential-authenticated).
 #[utoipa::path(
     get,
-    path = "/v1/approvals/{namespace}/{tenant}/{id}",
+    path = "/v1/approvals/{id}",
     tag = "Approvals",
     summary = "Get approval status",
-    description = "Retrieves the status of an approval by namespace, tenant, and ID. Does not expose the original action payload. Authenticated by HMAC signature in query parameter.",
+    description = "Retrieves the status of an approval by ID within the authenticated context. Does not expose the original action payload.",
     params(
-        ("namespace" = String, Path, description = "Approval namespace"),
-        ("tenant" = String, Path, description = "Approval tenant"),
-        ("id" = String, Path, description = "Approval ID"),
-        ("sig" = String, Query, description = "HMAC-SHA256 signature"),
-        ("expires_at" = i64, Query, description = "Expiration timestamp (unix seconds) bound into the signature"),
-        ("kid" = Option<String>, Query, description = "Key ID identifying which HMAC key was used"),
+        ("id" = String, description = "Approval ID"),
     ),
     responses(
         (status = 200, description = "Approval status retrieved", body = ApprovalStatusResponse),
@@ -260,47 +219,24 @@ pub async fn reject(
 )]
 pub async fn get_approval(
     State(state): State<AppState>,
-    Path(path): Path<ApprovalPath>,
-    Query(sig_query): Query<SigQuery>,
+    crate::auth::context::ScopedPath(path): crate::auth::context::ScopedPath<ApprovalPath>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
 ) -> Result<impl IntoResponse, ServerError> {
     let gw = state.gateway.read().await;
 
-    match gw
-        .get_approval_status(
-            &path.namespace,
-            &path.tenant,
-            &path.id,
-            &sig_query.sig,
-            sig_query.expires_at,
-            sig_query.kid.as_deref(),
-        )
-        .await
-    {
-        Ok(Some(status)) => {
-            let response = ApprovalStatusResponse {
-                token: status.token,
-                status: status.status,
-                rule: status.rule,
-                created_at: status.created_at.to_rfc3339(),
-                expires_at: status.expires_at.to_rfc3339(),
-                decided_at: status.decided_at.map(|dt| dt.to_rfc3339()),
-                message: status.message,
-            };
-            Ok((StatusCode::OK, Json(serde_json::json!(response))))
-        }
-        Ok(None) => Ok((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!(ErrorResponse {
-                error: "approval not found or expired".into(),
-            })),
-        )),
-        Err(e) => Ok((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!(ErrorResponse {
-                error: e.to_string(),
-            })),
-        )),
-    }
+    let status = authorized_record(&gw, &identity, &path).await?;
+    Ok((
+        StatusCode::OK,
+        Json(ApprovalStatusResponse {
+            token: status.token,
+            status: status.status,
+            rule: status.rule,
+            created_at: status.created_at.to_rfc3339(),
+            expires_at: status.expires_at.to_rfc3339(),
+            decided_at: status.decided_at.map(|dt| dt.to_rfc3339()),
+            message: status.message,
+        }),
+    ))
 }
 
 /// `GET /v1/approvals` -- list pending approvals (protected, requires auth).
@@ -311,8 +247,6 @@ pub async fn get_approval(
     summary = "List pending approvals",
     description = "Lists pending approvals filtered by namespace and tenant. Requires authentication.",
     params(
-        ("namespace" = String, Query, description = "Approval namespace"),
-        ("tenant" = String, Query, description = "Approval tenant"),
     ),
     responses(
         (status = 200, description = "List of pending approvals", body = ListApprovalsResponse),
@@ -323,7 +257,7 @@ pub async fn get_approval(
 pub async fn list_approvals(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<crate::auth::identity::CallerIdentity>,
-    Query(params): Query<ApprovalQueryParams>,
+    ScopedQuery(params): ScopedQuery<ApprovalQueryParams>,
 ) -> Result<impl IntoResponse, ServerError> {
     use crate::auth::role::Permission;
 
@@ -368,4 +302,41 @@ pub async fn list_approvals(
             })),
         )),
     }
+}
+
+impl crate::auth::context::ScopedPathParams for ApprovalPath {
+    fn bind_path(
+        scope: acteon_core::TenantContext,
+        values: Vec<String>,
+    ) -> Result<Self, axum::response::Response> {
+        let (namespace, tenant, id) =
+            <(String, String, String) as crate::auth::context::ScopedPathParams>::bind_path(
+                scope, values,
+            )?;
+        Ok(Self {
+            namespace,
+            tenant,
+            id,
+        })
+    }
+}
+
+async fn authorized_record(
+    gateway: &acteon_gateway::Gateway,
+    identity: &CallerIdentity,
+    path: &ApprovalPath,
+) -> Result<acteon_gateway::ApprovalRecord, ServerError> {
+    let record = gateway
+        .get_approval_record(&path.namespace, &path.tenant, &path.id)
+        .await?
+        .ok_or(GatewayError::ApprovalNotFound)?;
+    if !identity.is_authorized(
+        record.action.tenant.as_str(),
+        record.action.namespace.as_str(),
+        record.action.provider.as_str(),
+        &record.action.action_type,
+    ) {
+        return Err(GatewayError::ApprovalNotFound.into());
+    }
+    Ok(record)
 }

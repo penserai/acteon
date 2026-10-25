@@ -3,7 +3,6 @@ import { useStream } from '../api/hooks/useStream'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { shortTime } from '../lib/format'
 import { cn } from '../lib/cn'
@@ -12,8 +11,6 @@ import { Pause, Play, Circle } from 'lucide-react'
 import styles from './EventStream.module.css'
 
 export function EventStream() {
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [paused, setPaused] = useState(false)
@@ -28,8 +25,6 @@ export function EventStream() {
   }, [paused])
 
   const { status } = useStream({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     event_type: typeFilter || undefined,
     onEvent: handleEvent,
     enabled: true,
@@ -53,9 +48,6 @@ export function EventStream() {
           )} />
           <span className={styles.statusLabel}>{status}</span>
         </div>
-
-        <Input placeholder="Namespace" value={ns} onChange={(e) => setNs(e.target.value)} className={styles.filterInput} />
-        <Input placeholder="Tenant" value={tenant} onChange={(e) => setTenant(e.target.value)} className={styles.filterInput} />
         <Select
           options={[
             { value: '', label: 'All Types' },

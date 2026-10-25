@@ -193,12 +193,10 @@ and the map is `{}`).
 curl -X POST http://localhost:8080/v1/templates \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "alert-body",
-    "namespace": "monitoring",
-    "tenant": "ops-team",
-    "content": "<h1>{{ title }}</h1><p>Severity: {{ severity }}</p><p>{{ message }}</p>{% if runbook_url %}<p><a href=\"{{ runbook_url }}\">Runbook</a></p>{% endif %}",
-    "description": "HTML body for alert emails"
-  }'
+  "name": "alert-body",
+  "content": "<h1>{{ title }}</h1><p>Severity: {{ severity }}</p><p>{{ message }}</p>{% if runbook_url %}<p><a href=\"{{ runbook_url }}\">Runbook</a></p>{% endif %}",
+  "description": "HTML body for alert emails"
+}'
 ```
 
 **Response (201):**
@@ -225,7 +223,7 @@ The server validates:
 ### `GET /v1/templates` -- List Templates
 
 ```bash
-curl "http://localhost:8080/v1/templates?namespace=monitoring&tenant=ops-team"
+curl "http://localhost:8080/v1/templates"
 ```
 
 ### `PUT /v1/templates/{id}` -- Update a Template
@@ -258,16 +256,16 @@ Profiles support two field types: **inline** (a plain string) and **`$ref`**
 curl -X POST http://localhost:8080/v1/templates/profiles \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "alert-email-profile",
-    "namespace": "monitoring",
-    "tenant": "ops-team",
-    "fields": {
-      "subject": "[{{ severity | upper }}] {{ title }}",
-      "body": { "$ref": "alert-body" },
-      "footer": "Sent by Acteon at {{ now | default(\"unknown\") }}"
+  "name": "alert-email-profile",
+  "fields": {
+    "subject": "[{{ severity | upper }}] {{ title }}",
+    "body": {
+      "$ref": "alert-body"
     },
-    "description": "Maps email fields for alert notifications"
-  }'
+    "footer": "Sent by Acteon at {{ now | default(\"unknown\") }}"
+  },
+  "description": "Maps email fields for alert notifications"
+}'
 ```
 
 **Response (201):**
@@ -296,7 +294,7 @@ the same namespace + tenant scope. Referencing a nonexistent template returns
 ### `GET /v1/templates/profiles` -- List Profiles
 
 ```bash
-curl "http://localhost:8080/v1/templates/profiles?namespace=monitoring&tenant=ops-team"
+curl "http://localhost:8080/v1/templates/profiles"
 ```
 
 ### `PUT /v1/templates/profiles/{id}` -- Update a Profile
@@ -327,19 +325,17 @@ time:
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "monitoring",
-    "tenant": "ops-team",
-    "provider": "email",
-    "action_type": "send_alert",
-    "template": "alert-email-profile",
-    "payload": {
-      "title": "Database connection pool exhausted",
-      "severity": "critical",
-      "message": "Connection pool on db-primary-01 reached 100% utilization.",
-      "runbook_url": "https://wiki.internal/runbooks/db-pool",
-      "to": "oncall@company.com"
-    }
-  }'
+  "provider": "email",
+  "action_type": "send_alert",
+  "template": "alert-email-profile",
+  "payload": {
+    "title": "Database connection pool exhausted",
+    "severity": "critical",
+    "message": "Connection pool on db-primary-01 reached 100% utilization.",
+    "runbook_url": "https://wiki.internal/runbooks/db-pool",
+    "to": "oncall@company.com"
+  }
+}'
 ```
 
 After template rendering, the payload delivered to the provider will contain:
@@ -371,24 +367,22 @@ Use the render preview endpoint to test template output without dispatching:
 curl -X POST http://localhost:8080/v1/templates/render \
   -H "Content-Type: application/json" \
   -d '{
-    "profile": "alert-email-profile",
-    "namespace": "monitoring",
-    "tenant": "ops-team",
-    "payload": {
-      "title": "Test Alert",
-      "severity": "warning",
-      "message": "This is a test."
-    },
-    "attachments": [
-      {
-        "id": "runbook",
-        "name": "Runbook",
-        "filename": "runbook.pdf",
-        "content_type": "application/pdf",
-        "data_base64": ""
-      }
-    ]
-  }'
+  "profile": "alert-email-profile",
+  "payload": {
+    "title": "Test Alert",
+    "severity": "warning",
+    "message": "This is a test."
+  },
+  "attachments": [
+    {
+      "id": "runbook",
+      "name": "Runbook",
+      "filename": "runbook.pdf",
+      "content_type": "application/pdf",
+      "data_base64": ""
+    }
+  ]
+}'
 ```
 
 The optional `attachments` array lets you test templates that reference
@@ -466,8 +460,6 @@ This ordering means:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `namespace` | string | None | Filter by namespace |
-| `tenant` | string | None | Filter by tenant |
 | `limit` | int | 100 | Maximum results to return |
 | `offset` | int | 0 | Number of results to skip |
 

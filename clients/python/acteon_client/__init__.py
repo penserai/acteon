@@ -301,6 +301,7 @@ from .workforce import WorkforceTeam as WorkforceTeam
 
 __all__ = [
     "CredentialIdentity",
+    "TenantContext",
     "PrincipalIdentity",
     "PlatformOperation",
     "ActeonClient",
@@ -539,7 +540,6 @@ __all__ += [
     "ProviderReconciliationRequest",
     "ProviderHistoryAttempt",
 ]
-
 
 __all__ += [
     "AGENT_EXECUTION_CONTEXT_HEADER",

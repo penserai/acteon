@@ -249,7 +249,7 @@ pub struct ListChainDefinitionsResponse {
 }
 
 impl ActeonClient {
-    /// List chains filtered by namespace, tenant, and optional status.
+    /// List chains filtered by optional status within the credential context.
     ///
     /// # Example
     ///
@@ -258,22 +258,17 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.list_chains("notifications", "tenant-1", Some("running")).await?;
+    /// let result = client.list_chains(Some("running")).await?;
     /// for chain in result.chains {
     ///     println!("{}: {} (step {}/{})", chain.chain_id, chain.chain_name, chain.current_step, chain.total_steps);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_chains(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        status: Option<&str>,
-    ) -> Result<ListChainsResponse, Error> {
+    pub async fn list_chains(&self, status: Option<&str>) -> Result<ListChainsResponse, Error> {
         let url = format!("{}/v1/chains", self.base_url);
 
-        let mut query: Vec<(&str, &str)> = vec![("namespace", namespace), ("tenant", tenant)];
+        let mut query: Vec<(&str, &str)> = vec![];
         if let Some(s) = status {
             query.push(("status", s));
         }
@@ -308,22 +303,16 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let detail = client.get_chain("chain-123", "notifications", "tenant-1").await?;
+    /// let detail = client.get_chain("chain-123").await?;
     /// println!("{}: {} steps", detail.chain_name, detail.total_steps);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_chain(
-        &self,
-        chain_id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<ChainDetailResponse, Error> {
+    pub async fn get_chain(&self, chain_id: &str) -> Result<ChainDetailResponse, Error> {
         let url = format!("{}/v1/chains/{}", self.base_url, chain_id);
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -356,24 +345,18 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let history = client.get_chain_history("chain-123", "notifications", "tenant-1").await?;
+    /// let history = client.get_chain_history("chain-123").await?;
     /// for step in &history.steps {
     ///     println!("{}: {} attempts", step.name, step.attempts.len());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_chain_history(
-        &self,
-        chain_id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<ChainHistoryResponse, Error> {
+    pub async fn get_chain_history(&self, chain_id: &str) -> Result<ChainHistoryResponse, Error> {
         let url = format!("{}/v1/chains/{}/history", self.base_url, chain_id);
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -408,8 +391,6 @@ impl ActeonClient {
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let detail = client.cancel_chain(
     ///     "chain-123",
-    ///     "notifications",
-    ///     "tenant-1",
     ///     Some("no longer needed"),
     ///     Some("admin@example.com"),
     /// ).await?;
@@ -420,17 +401,13 @@ impl ActeonClient {
     pub async fn cancel_chain(
         &self,
         chain_id: &str,
-        namespace: &str,
-        tenant: &str,
+
         reason: Option<&str>,
         cancelled_by: Option<&str>,
     ) -> Result<ChainDetailResponse, Error> {
         let url = format!("{}/v1/chains/{}/cancel", self.base_url, chain_id);
 
-        let mut body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
-        });
+        let mut body = serde_json::json!({});
         if let Some(r) = reason {
             body["reason"] = serde_json::Value::String(r.to_string());
         }
@@ -481,22 +458,16 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let dag = client.get_chain_dag("chain-123", "notifications", "tenant-1").await?;
+    /// let dag = client.get_chain_dag("chain-123").await?;
     /// println!("DAG for {}: {} nodes", dag.chain_name, dag.nodes.len());
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_chain_dag(
-        &self,
-        chain_id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<DagResponse, Error> {
+    pub async fn get_chain_dag(&self, chain_id: &str) -> Result<DagResponse, Error> {
         let url = format!("{}/v1/chains/{}/dag", self.base_url, chain_id);
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;

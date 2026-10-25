@@ -1,10 +1,9 @@
 # API Key Scoping
 
-Acteon API keys and JWT users are authorized via a list of **grants**. Each
-grant specifies which tenants, namespaces, providers, and action types the
-principal is allowed to dispatch, audit, or replay. A request is allowed
-when **every** dimension on at least one of the caller's grants matches the
-action.
+Every API key and JWT user has one exact, provisioned `scope`. The server derives
+request ownership from that credential. Grants restrict namespaces, tenants,
+providers, and action types within that scope; they never allow callers to
+select a different tenant. See [tenant context](../api/tenant-context.md).
 
 This page covers:
 
@@ -25,7 +24,8 @@ providers  = ["email", "sms"]
 actions    = ["send_email", "send_sms"]
 ```
 
-An action is authorized iff:
+An action must first match the credential’s exact namespace and tenant. Within
+that context, a grant authorizes an action iff:
 
 1. The grant's `tenants` list contains `"*"`, an exact match for the action's
    tenant, or a **parent tenant** (see hierarchical matching below), **and**
@@ -48,9 +48,8 @@ grant in order, and the first one that matches authorizes the request.
 | `providers` | Provider IDs (e.g. `"email"`, `"sms"`, `"slack"`, `"webhook"`) | `"*"` |
 | `actions` | Action type strings (e.g. `"send_email"`, `"create_ticket"`) | `"*"` |
 
-The `providers` field defaults to `["*"]` when omitted, so existing
-`auth.toml` files written before provider scoping was added continue to
-work unchanged.
+The `providers` field defaults to `["*"]` when omitted. The credential’s
+`scope` is always required.
 
 ## Hierarchical tenant matching
 
@@ -58,8 +57,8 @@ Tenant IDs support hierarchical scoping via dotted notation. A grant on
 tenant `"acme"` automatically covers any tenant starting with `acme.` —
 including `acme.us-east`, `acme.us-east.prod`, `acme.eu-west`, and so on.
 
-This lets operators write a single grant for a parent organization rather
-than enumerating every region or environment.
+This lets operators reuse a parent grant across separately provisioned child
+credentials. Each credential still accesses only its own exact scope.
 
 ### Examples
 
@@ -95,6 +94,7 @@ jwt_expiry_seconds = 3600
 
 # ─── Admin user with full access ─────────────────────────
 [[users]]
+scope = { namespace = "operations", tenant = "acme" }
 username = "admin"
 password_hash = "ENC[AES256-GCM,...]"  # Argon2 hash, then encrypted
 role = "admin"
@@ -106,30 +106,33 @@ actions    = ["*"]
 
 # ─── Scoped API key for a single product team ────────────
 [[api_keys]]
+scope = { namespace = "notifications", tenant = "acme" }
 name = "acme-notifications-team"
 key_hash = "ENC[AES256-GCM,...]"       # SHA-256 hex of raw key, then encrypted
 role = "operator"
 
-# Team can dispatch email and sms from any sub-tenant of "acme".
+# This credential dispatches email and SMS only from its provisioned scope.
 [[api_keys.grants]]
-tenants    = ["acme"]                  # Covers acme, acme.us-east, acme.eu-west, ...
+tenants    = ["acme"]                  # Grant covers provisioned scopes below acme
 namespaces = ["notifications"]
 providers  = ["email", "sms"]
 actions    = ["send_email", "send_sms"]
 
 # ─── Scoped API key for a single region ──────────────────
 [[api_keys]]
+scope = { namespace = "alerts", tenant = "acme.us-east" }
 name = "acme-us-east-oncall"
 key_hash = "ENC[AES256-GCM,...]"
 role = "operator"
 [[api_keys.grants]]
-tenants    = ["acme.us-east"]          # Only acme.us-east and its children
+tenants    = ["acme.us-east"]          # Credential remains pinned to its exact scope
 namespaces = ["alerts"]
 providers  = ["pagerduty", "slack"]
 actions    = ["*"]
 
 # ─── Read-only auditor ───────────────────────────────────
 [[api_keys]]
+scope = { namespace = "operations", tenant = "acme" }
 name = "compliance-auditor"
 key_hash = "ENC[AES256-GCM,...]"
 role = "viewer"                         # Viewer role → no dispatch permission
@@ -166,13 +169,13 @@ lookup on failure.
 ```bash
 curl -H "Authorization: Bearer $ACTEON_API_KEY" \
      -H "Content-Type: application/json" \
-     -d '{"namespace":"notifications","tenant":"acme","provider":"email","action_type":"send_email","payload":{}}' \
+     -d '{"provider":"email","action_type":"send_email","payload":{}}' \
      https://acteon.example.com/v1/dispatch
 ```
 
-### `X-API-Key` (legacy)
+### `X-API-Key`
 
-Still supported for curl examples, scripts, and tools that reserve the
+Supported for scripts and tools that reserve the
 `Authorization` header for other purposes:
 
 ```bash
@@ -236,23 +239,11 @@ or reads scoped data:
 
 ### Tenant scoping of read queries
 
-`GET /v1/audit`, `GET /v1/analytics`, and `GET /v1/rules/coverage` delegate
-filtering to the audit/analytics backend, so the server constrains every
-query to the caller's authorized tenants — hierarchically, matching grant
-semantics:
-
-- **Wildcard caller** (`tenants = ["*"]`) — unrestricted; an explicit
-  `?tenant=` is honored as-is.
-- **Caller names a tenant** (`?tenant=acme.us-east`) — allowed only if a grant
-  covers it (a grant on `acme` covers `acme.us-east`); the query is pinned to
-  that exact tenant. A tenant outside every grant returns **403**.
-- **Scoped caller, no `?tenant=`** — the query returns the **union of the
-  caller's granted subtrees**. A grant on `acme` returns `acme` and every
-  `acme.*` record; grants on `acme` + `globex` aggregate across both. No
-  tenant needs to be named, and no records outside the grants are ever
-  returned.
-
-This boundary is server-set and cannot be influenced by client input.
+`GET /v1/audit`, `GET /v1/analytics`, and `GET /v1/rules/coverage` always
+constrain backend queries to the credential's exact namespace and tenant.
+This also applies to wildcard grants and administrator credentials. Query
+parameters such as `?tenant=` and `?namespace=` are rejected with **400**.
+There is no union across granted subtrees and no request-time tenant selection.
 
 Role-based permissions (admin / operator / viewer) are enforced separately
 and orthogonally — a viewer cannot dispatch even with a matching grant, and

@@ -32,8 +32,8 @@ class WorkforceTest {
         });
         server.start();
         try(var client=new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort(),"operator-key")) {
-            assertEquals(fixture.get("scope"),mapper.readTree(mapper.writeValueAsString(client.workforce("prod","acme"))));
-            assertTrue(requests.get(0).contains("namespace=prod"));assertTrue(requests.get(0).contains("tenant=acme"));
+            assertEquals(fixture.get("scope"),mapper.readTree(mapper.writeValueAsString(client.workforce())));
+            assertFalse(requests.get(0).contains("namespace=prod"));assertFalse(requests.get(0).contains("tenant=acme"));
             Workforce.ChangeRequest request=null;
             int index=1;
             for(var wire:fixture.get("changes")) {

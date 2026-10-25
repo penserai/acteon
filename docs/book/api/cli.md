@@ -1,5 +1,8 @@
 # CLI
 
+Tenant context comes from the authenticated JWT or API key. Requests do not
+accept tenant selectors. See [credential-derived context](tenant-context.md).
+
 The `acteon-cli` binary provides a command-line interface for interacting with the Acteon gateway. It shares the same operations layer as the [MCP Server](mcp-server.md), so every capability exposed to AI agents is also available from the terminal.
 
 ## Installation
@@ -53,21 +56,18 @@ Send an action through the gateway:
 ```bash
 # Inline JSON payload
 acteon-cli dispatch \
-  --tenant prod \
   --provider slack \
   --type send_alert \
   --payload '{"channel": "#ops", "message": "Deploy complete"}'
 
 # Payload from file
 acteon-cli dispatch \
-  --tenant prod \
   --provider email \
   --type send_email \
   --payload @payload.json
 
 # With metadata labels
 acteon-cli dispatch \
-  --tenant prod \
   --provider webhook \
   --type notify \
   --payload '{"url": "https://example.com"}' \
@@ -76,7 +76,6 @@ acteon-cli dispatch \
 
 # Dry-run mode (preview without executing)
 acteon-cli dispatch \
-  --tenant prod \
   --provider slack \
   --type send_alert \
   --payload '{"message": "test"}' \
@@ -85,8 +84,6 @@ acteon-cli dispatch \
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--namespace` | no | Namespace (default: `default`) |
-| `--tenant` | yes | Tenant identifier |
 | `--provider` | yes | Target provider |
 | `--type` | yes | Action type |
 | `--payload` | yes | JSON string or `@file` path |
@@ -99,19 +96,17 @@ Query the audit trail:
 
 ```bash
 # Recent records for a tenant
-acteon-cli audit --tenant prod
+acteon-cli audit
 
 # Filter by outcome
-acteon-cli audit --tenant prod --outcome suppressed
+acteon-cli audit --outcome suppressed
 
 # Filter by provider and limit
-acteon-cli audit --tenant prod --provider slack --limit 50
+acteon-cli audit --provider slack --limit 50
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--tenant` | no | Filter by tenant |
-| `--namespace` | no | Filter by namespace |
 | `--provider` | no | Filter by provider |
 | `--action-type` | no | Filter by action type |
 | `--outcome` | no | Filter by outcome |
@@ -138,23 +133,19 @@ Manage stateful events:
 
 ```bash
 # List events for a tenant
-acteon-cli events list --namespace alerts --tenant prod
+acteon-cli events list
 
 # Filter by state
-acteon-cli events list --namespace alerts --tenant prod --status open
+acteon-cli events list --status open
 
 # Acknowledge an event
 acteon-cli events manage \
   --fingerprint abc123 \
-  --namespace alerts \
-  --tenant prod \
   --action acknowledged
 
 # Resolve an event
 acteon-cli events manage \
   --fingerprint abc123 \
-  --namespace alerts \
-  --tenant prod \
   --action resolved
 ```
 
@@ -164,7 +155,7 @@ Manage task chain executions, definitions, and DAGs:
 
 ```bash
 # List active and completed chains
-acteon chains list --namespace alerts --tenant prod
+acteon chains list
 
 # Inspect a specific chain
 acteon chains get <chain-id>
@@ -179,7 +170,7 @@ acteon chains dag <chain-id>
 acteon chains history <chain-id>
 
 # List reusable chain definitions
-acteon chains definitions list --namespace alerts --tenant prod
+acteon chains definitions list
 ```
 
 ### `bus`
@@ -195,23 +186,23 @@ acteon bus topics create <topic-name>
 acteon bus publish --topic alerts.critical --payload '{"event":"cpu_spike"}'
 
 # Subscriptions
-acteon bus subscriptions list --namespace alerts --tenant prod
-acteon bus subscriptions lag --namespace alerts --tenant prod --id <sub-id>
-acteon bus subscriptions ack --namespace alerts --tenant prod --id <sub-id> --offset 1234
+acteon bus subscriptions list
+acteon bus subscriptions lag --id <sub-id>
+acteon bus subscriptions ack --id <sub-id> --offset 1234
 
 # Agents
-acteon bus agents list --namespace agents --tenant prod
-acteon bus agents heartbeat --namespace agents --tenant prod --agent-id <agent-id>
-acteon bus agents send --namespace agents --tenant prod --agent-id <agent-id> --message '{"cmd":"run"}'
+acteon bus agents list
+acteon bus agents heartbeat --agent-id <agent-id>
+acteon bus agents send --agent-id <agent-id> --message '{"cmd":"run"}'
 
 # Conversations
-acteon bus conversations list --namespace agents --tenant prod
-acteon bus conversations messages --namespace agents --tenant prod --conversation-id <id>
+acteon bus conversations list
+acteon bus conversations messages --conversation-id <id>
 
 # Tool Calls & HITL Approvals
-acteon bus tools post-call --namespace agents --tenant prod --conversation-id <id> --tool-name "restart_svc" --args '{"svc":"auth"}'
-acteon bus approvals list --namespace agents --tenant prod
-acteon bus approvals approve --namespace agents --tenant prod --id <approval-id>
+acteon bus tools post-call --conversation-id <id> --tool-name "restart_svc" --args '{"svc":"auth"}'
+acteon bus approvals list
+acteon bus approvals approve --id <approval-id>
 ```
 
 ### `recurring`
@@ -220,7 +211,7 @@ Manage cron-scheduled recurring actions:
 
 ```bash
 # List recurring actions
-acteon recurring list --namespace periodic --tenant prod
+acteon recurring list
 
 # Pause and resume recurring action
 acteon recurring pause --id <id>
@@ -236,7 +227,7 @@ Manage tenant quota limits and usage tracking:
 
 ```bash
 # List quota policies
-acteon quotas list --namespace alerts --tenant prod
+acteon quotas list
 
 # Inspect current quota usage and remaining allowance
 acteon quotas usage --id <quota-id>
@@ -251,12 +242,10 @@ Manage Alertmanager-compatible alert silences:
 
 ```bash
 # List silences
-acteon silences list --namespace alerts --tenant prod
+acteon silences list
 
 # Create a silence
 acteon silences create \
-  --namespace alerts \
-  --tenant prod \
   --matcher "alertname=HighCPU" \
   --matcher "cluster=prod-us" \
   --starts-at "2026-03-01T00:00:00Z" \
@@ -274,7 +263,7 @@ Manage data retention policies for audit and DLQ records:
 
 ```bash
 # List retention policies
-acteon retention list --namespace alerts --tenant prod
+acteon retention list
 
 # Inspect specific policy
 acteon retention get <policy-id>
@@ -286,7 +275,7 @@ Manage MiniJinja payload templates and mapping profiles:
 
 ```bash
 # List templates
-acteon templates list --namespace alerts --tenant prod
+acteon templates list
 
 # Test render a template preview
 acteon templates render \
@@ -297,7 +286,7 @@ acteon templates render \
 acteon templates reload
 
 # List profiles
-acteon templates profiles list --namespace alerts --tenant prod
+acteon templates profiles list
 ```
 
 ### `plugins`
@@ -318,7 +307,7 @@ Inspect and manage event grouping batches:
 
 ```bash
 # List active groups
-acteon groups list --namespace alerts --tenant prod
+acteon groups list
 
 # Force flush / close an active group
 acteon groups flush <group-key>
@@ -345,7 +334,7 @@ Inspect compliance status and verify audit chain integrity:
 acteon compliance status
 
 # Cryptographically verify the SHA-256 audit hash chain
-acteon compliance verify --namespace alerts --tenant prod
+acteon compliance verify
 ```
 
 ### `providers`
@@ -363,7 +352,7 @@ Review and decide on Human-In-The-Loop (HITL) approval gates:
 
 ```bash
 # List pending approvals
-acteon approvals list --namespace alerts --tenant prod
+acteon approvals list
 
 # Approve or reject an action
 acteon approvals approve --id <approval-id>
@@ -416,7 +405,7 @@ acteon-cli --format json rules list | jq '.[].name'
 
 # Dispatch and capture outcome
 OUTCOME=$(acteon-cli --format json dispatch \
-  --tenant prod --provider slack --type alert \
+  --provider slack --type alert \
   --payload '{"msg": "test"}')
 echo "$OUTCOME" | jq '.status'
 ```

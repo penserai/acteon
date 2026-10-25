@@ -14,8 +14,7 @@ import java.util.UUID;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class Action {
     private String id;
-    private String namespace;
-    private String tenant;
+
     private String provider;
     @JsonProperty("action_type")
     private String actionType;
@@ -45,10 +44,9 @@ public class Action {
         this.createdAt = Instant.now().toString();
     }
 
-    public Action(String namespace, String tenant, String provider, String actionType, Map<String, Object> payload) {
+    public Action(String provider, String actionType, Map<String, Object> payload) {
         this.id = UUID.randomUUID().toString();
-        this.namespace = namespace;
-        this.tenant = tenant;
+
         this.provider = provider;
         this.actionType = actionType;
         this.payload = payload;
@@ -62,12 +60,6 @@ public class Action {
     // Getters and setters
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
@@ -124,8 +116,7 @@ public class Action {
 
     public static class Builder {
         private String id = UUID.randomUUID().toString();
-        private String namespace;
-        private String tenant;
+
         private String provider;
         private String actionType;
         private Map<String, Object> payload;
@@ -136,8 +127,7 @@ public class Action {
         private List<Attachment> attachments;
 
         public Builder id(String id) { this.id = id; return this; }
-        public Builder namespace(String namespace) { this.namespace = namespace; return this; }
-        public Builder tenant(String tenant) { this.tenant = tenant; return this; }
+
         public Builder provider(String provider) { this.provider = provider; return this; }
         public Builder actionType(String actionType) { this.actionType = actionType; return this; }
         public Builder payload(Map<String, Object> payload) { this.payload = payload; return this; }
@@ -150,8 +140,7 @@ public class Action {
         public Action build() {
             Action action = new Action();
             action.id = this.id;
-            action.namespace = this.namespace;
-            action.tenant = this.tenant;
+
             action.provider = this.provider;
             action.actionType = this.actionType;
             action.payload = this.payload;

@@ -10,11 +10,6 @@ import java.util.Map;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class EvaluateRulesRequest {
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     @JsonProperty("provider")
     private String provider;
@@ -42,19 +37,12 @@ public class EvaluateRulesRequest {
 
     public EvaluateRulesRequest() {}
 
-    public EvaluateRulesRequest(String namespace, String tenant, String provider, String actionType, Map<String, Object> payload) {
-        this.namespace = namespace;
-        this.tenant = tenant;
+    public EvaluateRulesRequest(String provider, String actionType, Map<String, Object> payload) {
+
         this.provider = provider;
         this.actionType = actionType;
         this.payload = payload;
     }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }

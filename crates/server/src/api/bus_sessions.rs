@@ -5,12 +5,7 @@ use crate::{
     auth::identity::CallerIdentity,
     bus_sessions::{SessionError, SessionHandle},
 };
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -112,11 +107,15 @@ async fn lookup(
         .map_err(IntoResponse::into_response)
 }
 
-#[utoipa::path(post, path="/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions", tag="bus", request_body=OpenSessionRequest, responses((status=200, body=SessionResponse), (status=409, body=ErrorResponse), (status=429, body=ErrorResponse)))]
+#[utoipa::path(post, path="/v1/bus/subscriptions/{id}/sessions", tag="bus", request_body=OpenSessionRequest, responses((status=200, body=SessionResponse), (status=409, body=ErrorResponse), (status=429, body=ErrorResponse)))]
 pub async fn open(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((ns, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((ns, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
     Json(req): Json<OpenSessionRequest>,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]
@@ -167,11 +166,13 @@ pub async fn open(
     }
 }
 
-#[utoipa::path(get, path="/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}", tag="bus", responses((status=200, body=SessionResponse), (status=404, body=ErrorResponse)))]
+#[utoipa::path(get, path="/v1/bus/subscriptions/{id}/sessions/{session}", tag="bus", responses((status=200, body=SessionResponse), (status=404, body=ErrorResponse)))]
 pub async fn get(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((ns, tenant, id, session)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, session)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]
     {
@@ -186,11 +187,13 @@ pub async fn get(
         disabled()
     }
 }
-#[utoipa::path(delete, path="/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}", tag="bus", responses((status=204), (status=404, body=ErrorResponse)))]
+#[utoipa::path(delete, path="/v1/bus/subscriptions/{id}/sessions/{session}", tag="bus", responses((status=204), (status=404, body=ErrorResponse)))]
 pub async fn close(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((ns, tenant, id, session)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, session)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]
     {
@@ -208,11 +211,13 @@ pub async fn close(
         disabled()
     }
 }
-#[utoipa::path(post, path="/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/receive", tag="bus", request_body=ReceiveRequest, responses((status=200, body=ReceiveResponse), (status=410, body=ErrorResponse)))]
+#[utoipa::path(post, path="/v1/bus/subscriptions/{id}/sessions/{session}/receive", tag="bus", request_body=ReceiveRequest, responses((status=200, body=ReceiveResponse), (status=410, body=ErrorResponse)))]
 pub async fn receive(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((ns, tenant, id, session)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, session)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
     Json(req): Json<ReceiveRequest>,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]
@@ -232,11 +237,13 @@ pub async fn receive(
         disabled()
     }
 }
-#[utoipa::path(post, path="/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/validate", tag="bus", request_body=ReceiptRequest, responses((status=200, body=ReceiptResponse), (status=409, body=ErrorResponse)))]
+#[utoipa::path(post, path="/v1/bus/subscriptions/{id}/sessions/{session}/validate", tag="bus", request_body=ReceiptRequest, responses((status=200, body=ReceiptResponse), (status=409, body=ErrorResponse)))]
 pub async fn validate(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((ns, tenant, id, session)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, session)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
     Json(req): Json<ReceiptRequest>,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]
@@ -256,11 +263,13 @@ pub async fn validate(
         disabled()
     }
 }
-#[utoipa::path(post, path="/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack", tag="bus", request_body=ReceiptRequest, responses((status=200, body=ReceiptResponse), (status=409, body=ErrorResponse)))]
+#[utoipa::path(post, path="/v1/bus/subscriptions/{id}/sessions/{session}/ack", tag="bus", request_body=ReceiptRequest, responses((status=200, body=ReceiptResponse), (status=409, body=ErrorResponse)))]
 pub async fn ack(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((ns, tenant, id, session)): Path<(String, String, String, uuid::Uuid)>,
+    crate::auth::context::ScopedPath((ns, tenant, id, session)): crate::auth::context::ScopedPath<
+        (String, String, String, uuid::Uuid),
+    >,
     Json(req): Json<ReceiptRequest>,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]

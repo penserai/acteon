@@ -35,6 +35,7 @@ fn configuration(revision: u64) -> AuthFileConfig {
         },
         users: Vec::new(),
         api_keys: vec![ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("prod", "acme"),
             authority_id: None,
             name: "maya-assistant".into(),
             principal: Some(
@@ -415,6 +416,7 @@ async fn jwt_sessions_refresh_only_from_current_tables_and_stale_replica_login_i
         .unwrap()
         .to_string();
     cfg.users.push(UserConfig {
+        scope: acteon_core::TenantContext::new("prod", "acme"),
         authority_id: None,
         username: "maya".into(),
         principal: Some(PrincipalIdentity::new("human/maya", PrincipalKind::Human).unwrap()),
@@ -545,6 +547,7 @@ async fn jwt_enrollment_cannot_silently_switch_to_a_replacement() {
         .unwrap()
         .to_string();
     cfg.users.push(UserConfig {
+        scope: acteon_core::TenantContext::new("prod", "acme"),
         authority_id: None,
         username: "maya".into(),
         principal: Some(PrincipalIdentity::new("human/maya", PrincipalKind::Human).unwrap()),
@@ -667,6 +670,7 @@ authority_revision = {revision}
 [settings]
 jwt_secret = "jwt-test-secret-at-least-32-bytes"
 [[api_keys]]
+scope = {{ namespace = "prod", tenant = "acme" }}
 name = "maya-assistant"
 key_hash = {key_hash:?}
 role = {role:?}
@@ -950,6 +954,7 @@ async fn invalid_and_cross_method_enrollment_ids_are_refused() {
     }
     cfg.api_keys[0].authority_id = Some("credential/one".into());
     cfg.users.push(UserConfig {
+        scope: acteon_core::TenantContext::new("prod", "acme"),
         authority_id: Some("credential/one".into()),
         username: "same-actor".into(),
         principal: cfg.api_keys[0].principal.clone(),
@@ -1056,6 +1061,7 @@ async fn projection_isolates_unrelated_scope_actors_without_enlarging_issuance()
     unrelated.key_hash = SecretString::new(hash_api_key("other-team-key").into());
     unrelated.principal =
         Some(PrincipalIdentity::new("other-team-agent", PrincipalKind::Agent).unwrap());
+    unrelated.scope.namespace = "secondary".into();
     unrelated.grants[0].namespaces = vec!["secondary".into()];
     cfg.api_keys.push(unrelated);
 
@@ -1067,6 +1073,7 @@ async fn projection_isolates_unrelated_scope_actors_without_enlarging_issuance()
 
     // A matching grant cannot turn the auth file into an issuance whitelist.
     cfg.authority_revision = Some(2);
+    cfg.api_keys[1].scope.namespace = "prod".into();
     cfg.api_keys[1].grants[0].namespaces = vec!["prod".into()];
     assert!(projector.project(&auth, &cfg).is_err());
     assert!(projector.publish(&auth, &cfg, 2).await.is_err());
@@ -1341,7 +1348,10 @@ async fn partial_multi_scope_publication_is_restrictive_and_identical_retry_conv
                 let now = chrono::Utc::now().timestamp_millis();
                 Json(json!({
                     "first": proof.scope("prod", "acme").unwrap().verify_current(&a, now).await.is_ok(),
-                    "second": proof.scope("secondary", "acme").unwrap().verify_current(&b, now).await.is_ok(),
+                    "second": match proof.scope("secondary", "acme") {
+                        Ok(binding) => binding.verify_current(&b, now).await.is_ok(),
+                        Err(_) => false,
+                    },
                 }))
             }
         }
@@ -1355,7 +1365,7 @@ async fn partial_multi_scope_publication_is_restrictive_and_identical_retry_conv
     let read = || client.get(&url).bearer_auth("key-original").send();
     assert_eq!(
         read().await.unwrap().json::<Value>().await.unwrap(),
-        json!({"first":true,"second":true})
+        json!({"first":true,"second":false})
     );
     cfg.authority_revision = Some(2);
     cfg.api_keys[0].grants[0].providers = vec!["read".into()];
@@ -1370,19 +1380,19 @@ async fn partial_multi_scope_publication_is_restrictive_and_identical_retry_conv
     assert!(provider.reload(&cfg).await.is_err());
     assert_eq!(
         read().await.unwrap().json::<Value>().await.unwrap(),
-        json!({"first":false,"second":true})
+        json!({"first":false,"second":false})
     );
     provider.reload(&cfg).await.unwrap();
     assert_eq!(
         read().await.unwrap().json::<Value>().await.unwrap(),
-        json!({"first":true,"second":true})
+        json!({"first":true,"second":false})
     );
     cfg.authority_revision = Some(1);
     cfg.api_keys[0].grants[0].providers = vec!["read".into(), "write".into()];
     assert!(provider.reload(&cfg).await.is_err());
     assert_eq!(
         read().await.unwrap().json::<Value>().await.unwrap(),
-        json!({"first":true,"second":true})
+        json!({"first":true,"second":false})
     );
     task.abort();
 }

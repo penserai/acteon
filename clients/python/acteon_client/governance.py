@@ -3,7 +3,7 @@
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from .models import ActionOutcome, PrincipalIdentity
+from .models import ActionOutcome, CredentialIdentity, PrincipalIdentity, TenantContext
 from .platform_catalog import PlatformOperation
 
 
@@ -50,8 +50,6 @@ class GovernancePermitDeclaration:
 
 @dataclass
 class PublishGovernancePermitRequest:
-    namespace: str
-    tenant: str
     change_id: str
     expected_revision: int
     permit: GovernancePermitDeclaration
@@ -114,8 +112,6 @@ class FederationTrustDeclaration:
 
 @dataclass
 class PublishFederationTrustRequest:
-    namespace: str
-    tenant: str
     change_id: str
     expected_revision: int
     trust: FederationTrustDeclaration
@@ -124,8 +120,6 @@ class PublishFederationTrustRequest:
 
 @dataclass
 class RevokeFederationTrustRequest:
-    namespace: str
-    tenant: str
     change_id: str
     trust_id: str
     expected_revision: int
@@ -349,16 +343,12 @@ class FederationDeliveryEvidencePage:
 
 @dataclass
 class AbandonFederationDeliveryRequest:
-    namespace: str
-    tenant: str
     disposition_id: str
     reason: str
 
 
 @dataclass
 class ReconcileFederationDeliveryRequest:
-    namespace: str
-    tenant: str
     proof_base64: str
 
 
@@ -408,8 +398,6 @@ GovernanceIntervention = (
 
 @dataclass
 class GovernanceInterventionRequest:
-    namespace: str
-    tenant: str
     change_id: str
     change: GovernanceIntervention
     reason: str
@@ -730,8 +718,6 @@ RegistryProjection = Literal["agent", "card"]
 
 @dataclass
 class GovernanceRegistryMutationRequest:
-    namespace: str
-    tenant: str
     agent_id: str
     change_id: str
     expected_registry_revision: int
@@ -800,19 +786,19 @@ class GovernanceRegistryMutationReceipt:
 
     @classmethod
     def from_dict(
-        cls, data: dict[str, Any], request: GovernanceRegistryMutationRequest
+        cls, data: dict[str, Any], request: GovernanceRegistryMutationRequest, scope: TenantContext
     ) -> "GovernanceRegistryMutationReceipt":
         result = cls(**data)
         fields = (
-            "namespace",
-            "tenant",
             "agent_id",
             "change_id",
             "projection",
             "expected_registry_revision",
         )
         if (
-            any(getattr(result, key) != getattr(request, key) for key in fields)
+            result.namespace != scope.namespace
+            or result.tenant != scope.tenant
+            or any(getattr(result, key) != getattr(request, key) for key in fields)
             or type(result.expected_registry_revision) is not int
             or result.expected_registry_revision < 0
             or result.delivery_complete is not True
@@ -830,6 +816,10 @@ class GovernanceRegistryMutationReceipt:
 class _GovernanceMixin:
     if TYPE_CHECKING:
 
+        def identity(self) -> CredentialIdentity: ...
+
+    if TYPE_CHECKING:
+
         def platform_request(
             self,
             operation: PlatformOperation,
@@ -840,12 +830,15 @@ class _GovernanceMixin:
         ) -> Any: ...
 
     def registry_projection(
-        self, namespace: str, tenant: str, agent_id: str, projection: RegistryProjection
+        self, agent_id: str, projection: RegistryProjection
     ) -> GovernanceRegistryProjectionView:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         data = self.platform_request(
             PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION,
             path={"agent_id": agent_id},
-            query={"namespace": namespace, "tenant": tenant, "projection": projection},
+            query={"projection": projection},
         )
         return GovernanceRegistryProjectionView.from_dict(
             data, namespace, tenant, agent_id, projection
@@ -855,55 +848,49 @@ class _GovernanceMixin:
         self, request: GovernanceRegistryMutationRequest
     ) -> GovernanceRegistryMutationReceipt:
         """Send once; retain this exact request/change ID for explicit recovery."""
+        scope = self.identity().scope
         sent = GovernanceRegistryMutationRequest(**asdict(request))
         data = self.platform_request(
             PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, body=asdict(sent)
         )
-        return GovernanceRegistryMutationReceipt.from_dict(data, sent)
+        return GovernanceRegistryMutationReceipt.from_dict(data, sent, scope)
 
-    def governance(self, namespace: str, tenant: str) -> GovernanceScopeView:
+    def governance(self) -> GovernanceScopeView:
         return GovernanceScopeView.from_dict(
             self.platform_request(
                 PlatformOperation.GOVERNANCE_INSPECT,
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
-    def provider_execution_history(
-        self, namespace: str, tenant: str, execution_id: str
-    ) -> ProviderExecutionHistory:
+    def provider_execution_history(self, execution_id: str) -> ProviderExecutionHistory:
         return ProviderExecutionHistory.from_dict(
             self.platform_request(
                 PlatformOperation.GOVERNANCE_PROVIDER_HISTORY,
                 path={"execution_id": execution_id},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
     def provider_reconciliation_correlation(
-        self, namespace: str, tenant: str, execution_id: str, ordinal: int
+        self, execution_id: str, ordinal: int
     ) -> ProviderReconciliationCorrelation:
         return ProviderReconciliationCorrelation.from_dict(
             self.platform_request(
                 PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION,
                 path={"execution_id": execution_id, "ordinal": str(ordinal)},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
     def accept_provider_reconciliation(
-        self,
-        namespace: str,
-        tenant: str,
-        execution_id: str,
-        ordinal: int,
-        request: ProviderReconciliationRequest,
+        self, execution_id: str, ordinal: int, request: ProviderReconciliationRequest
     ) -> ProviderHistoryReceipt:
         return ProviderHistoryReceipt.from_dict(
             self.platform_request(
                 PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION,
                 path={"execution_id": execution_id, "ordinal": str(ordinal)},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
                 body=asdict(request),
             )
         )
@@ -934,13 +921,9 @@ class _GovernanceMixin:
         )
 
     def federation_delivery_evidence(
-        self,
-        namespace: str,
-        tenant: str,
-        after: str | None = None,
-        limit: int | None = None,
+        self, after: str | None = None, limit: int | None = None
     ) -> FederationDeliveryEvidencePage:
-        query: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        query: dict[str, Any] = {}
         if after is not None:
             query["after"] = after
         if limit is not None:
@@ -965,14 +948,12 @@ class _GovernanceMixin:
             )
         )
 
-    def federation_finality_correlation(
-        self, namespace: str, tenant: str, delivery_id: str
-    ) -> FederationFinalityCorrelation:
+    def federation_finality_correlation(self, delivery_id: str) -> FederationFinalityCorrelation:
         return FederationFinalityCorrelation.from_dict(
             self.platform_request(
                 PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
                 path={"delivery_id": delivery_id},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
@@ -990,15 +971,15 @@ class _GovernanceMixin:
         )
 
     def import_federation_envelope(
-        self,
-        namespace: str,
-        tenant: str,
-        envelope: SignedFederationEnvelopeDeclaration,
+        self, envelope: SignedFederationEnvelopeDeclaration
     ) -> FederationImportReceipt:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         receipt = FederationImportReceipt.from_dict(
             self.platform_request(
                 PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
-                path={"namespace": namespace, "tenant": tenant},
+                path={},
                 body={"envelope": asdict(envelope)},
             )
         )
@@ -1006,29 +987,25 @@ class _GovernanceMixin:
             raise ValueError("federation import receipt identity or execution state mismatch")
         return receipt
 
-    def federation_capabilities(
-        self, namespace: str, tenant: str, agent: str
-    ) -> SignedFederationCapabilityCard:
+    def federation_capabilities(self, agent: str) -> SignedFederationCapabilityCard:
         return SignedFederationCapabilityCard.from_dict(
             self.platform_request(
                 PlatformOperation.FEDERATION_CAPABILITIES,
-                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                path={"agent": agent},
             )
         )
 
     def invoke_federated_agent(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        invocation: SignedFederationInvocationDeclaration,
-        message: dict[str, Any],
+        self, agent: str, invocation: SignedFederationInvocationDeclaration, message: dict[str, Any]
     ) -> dict[str, Any]:
+        scope = (self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         task = cast(
             dict[str, Any],
             self.platform_request(
                 PlatformOperation.FEDERATION_INVOKE_AGENT,
-                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                path={"agent": agent},
                 body={"invocation": asdict(invocation), "message": message},
             ),
         )
@@ -1042,67 +1019,29 @@ class _GovernanceMixin:
         return task
 
     def export_federated_message(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        profile: str,
-        message: dict[str, Any],
+        self, agent: str, task_id: str, profile: str, message: dict[str, Any]
     ) -> FederationExportReceipt:
         return self._federation_export_request(
-            PlatformOperation.FEDERATION_EXPORT_MESSAGE,
-            namespace,
-            tenant,
-            agent,
-            task_id,
-            profile,
-            message,
+            PlatformOperation.FEDERATION_EXPORT_MESSAGE, agent, task_id, profile, message
         )
 
     def observe_federated_export(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        profile: str,
-        message: dict[str, Any],
+        self, agent: str, task_id: str, profile: str, message: dict[str, Any]
     ) -> FederationExportReceipt:
         return self._federation_export_request(
-            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
-            namespace,
-            tenant,
-            agent,
-            task_id,
-            profile,
-            message,
+            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE, agent, task_id, profile, message
         )
 
     def replay_federated_export(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        profile: str,
-        message: dict[str, Any],
+        self, agent: str, task_id: str, profile: str, message: dict[str, Any]
     ) -> FederationExportReceipt:
         return self._federation_export_request(
-            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
-            namespace,
-            tenant,
-            agent,
-            task_id,
-            profile,
-            message,
+            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE, agent, task_id, profile, message
         )
 
     def _federation_export_request(
         self,
         operation: PlatformOperation,
-        namespace: str,
-        tenant: str,
         agent: str,
         task_id: str,
         profile: str,
@@ -1111,13 +1050,7 @@ class _GovernanceMixin:
         return FederationExportReceipt.from_dict(
             self.platform_request(
                 operation,
-                path={
-                    "namespace": namespace,
-                    "tenant": tenant,
-                    "agent": agent,
-                    "task_id": task_id,
-                    "profile": profile,
-                },
+                path={"agent": agent, "task_id": task_id, "profile": profile},
                 body={"message": message},
             )
         )
@@ -1133,6 +1066,10 @@ class _GovernanceMixin:
 class _AsyncGovernanceMixin:
     if TYPE_CHECKING:
 
+        async def identity(self) -> CredentialIdentity: ...
+
+    if TYPE_CHECKING:
+
         async def platform_request(
             self,
             operation: PlatformOperation,
@@ -1143,12 +1080,15 @@ class _AsyncGovernanceMixin:
         ) -> Any: ...
 
     async def registry_projection(
-        self, namespace: str, tenant: str, agent_id: str, projection: RegistryProjection
+        self, agent_id: str, projection: RegistryProjection
     ) -> GovernanceRegistryProjectionView:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         data = await self.platform_request(
             PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION,
             path={"agent_id": agent_id},
-            query={"namespace": namespace, "tenant": tenant, "projection": projection},
+            query={"projection": projection},
         )
         return GovernanceRegistryProjectionView.from_dict(
             data, namespace, tenant, agent_id, projection
@@ -1158,55 +1098,49 @@ class _AsyncGovernanceMixin:
         self, request: GovernanceRegistryMutationRequest
     ) -> GovernanceRegistryMutationReceipt:
         """Send once; retain this exact request/change ID for explicit recovery."""
+        scope = (await self.identity()).scope
         sent = GovernanceRegistryMutationRequest(**asdict(request))
         data = await self.platform_request(
             PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, body=asdict(sent)
         )
-        return GovernanceRegistryMutationReceipt.from_dict(data, sent)
+        return GovernanceRegistryMutationReceipt.from_dict(data, sent, scope)
 
-    async def governance(self, namespace: str, tenant: str) -> GovernanceScopeView:
+    async def governance(self) -> GovernanceScopeView:
         return GovernanceScopeView.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_INSPECT,
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
-    async def provider_execution_history(
-        self, namespace: str, tenant: str, execution_id: str
-    ) -> ProviderExecutionHistory:
+    async def provider_execution_history(self, execution_id: str) -> ProviderExecutionHistory:
         return ProviderExecutionHistory.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_PROVIDER_HISTORY,
                 path={"execution_id": execution_id},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
     async def provider_reconciliation_correlation(
-        self, namespace: str, tenant: str, execution_id: str, ordinal: int
+        self, execution_id: str, ordinal: int
     ) -> ProviderReconciliationCorrelation:
         return ProviderReconciliationCorrelation.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION,
                 path={"execution_id": execution_id, "ordinal": str(ordinal)},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
     async def accept_provider_reconciliation(
-        self,
-        namespace: str,
-        tenant: str,
-        execution_id: str,
-        ordinal: int,
-        request: ProviderReconciliationRequest,
+        self, execution_id: str, ordinal: int, request: ProviderReconciliationRequest
     ) -> ProviderHistoryReceipt:
         return ProviderHistoryReceipt.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION,
                 path={"execution_id": execution_id, "ordinal": str(ordinal)},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
                 body=asdict(request),
             )
         )
@@ -1239,13 +1173,9 @@ class _AsyncGovernanceMixin:
         )
 
     async def federation_delivery_evidence(
-        self,
-        namespace: str,
-        tenant: str,
-        after: str | None = None,
-        limit: int | None = None,
+        self, after: str | None = None, limit: int | None = None
     ) -> FederationDeliveryEvidencePage:
-        query: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
+        query: dict[str, Any] = {}
         if after is not None:
             query["after"] = after
         if limit is not None:
@@ -1271,13 +1201,13 @@ class _AsyncGovernanceMixin:
         )
 
     async def federation_finality_correlation(
-        self, namespace: str, tenant: str, delivery_id: str
+        self, delivery_id: str
     ) -> FederationFinalityCorrelation:
         return FederationFinalityCorrelation.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
                 path={"delivery_id": delivery_id},
-                query={"namespace": namespace, "tenant": tenant},
+                query={},
             )
         )
 
@@ -1295,15 +1225,15 @@ class _AsyncGovernanceMixin:
         )
 
     async def import_federation_envelope(
-        self,
-        namespace: str,
-        tenant: str,
-        envelope: SignedFederationEnvelopeDeclaration,
+        self, envelope: SignedFederationEnvelopeDeclaration
     ) -> FederationImportReceipt:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         receipt = FederationImportReceipt.from_dict(
             await self.platform_request(
                 PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
-                path={"namespace": namespace, "tenant": tenant},
+                path={},
                 body={"envelope": asdict(envelope)},
             )
         )
@@ -1311,29 +1241,25 @@ class _AsyncGovernanceMixin:
             raise ValueError("federation import receipt identity or execution state mismatch")
         return receipt
 
-    async def federation_capabilities(
-        self, namespace: str, tenant: str, agent: str
-    ) -> SignedFederationCapabilityCard:
+    async def federation_capabilities(self, agent: str) -> SignedFederationCapabilityCard:
         return SignedFederationCapabilityCard.from_dict(
             await self.platform_request(
                 PlatformOperation.FEDERATION_CAPABILITIES,
-                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                path={"agent": agent},
             )
         )
 
     async def invoke_federated_agent(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        invocation: SignedFederationInvocationDeclaration,
-        message: dict[str, Any],
+        self, agent: str, invocation: SignedFederationInvocationDeclaration, message: dict[str, Any]
     ) -> dict[str, Any]:
+        scope = (await self.identity()).scope
+        namespace = scope.namespace
+        tenant = scope.tenant
         task = cast(
             dict[str, Any],
             await self.platform_request(
                 PlatformOperation.FEDERATION_INVOKE_AGENT,
-                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                path={"agent": agent},
                 body={"invocation": asdict(invocation), "message": message},
             ),
         )
@@ -1347,67 +1273,29 @@ class _AsyncGovernanceMixin:
         return task
 
     async def export_federated_message(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        profile: str,
-        message: dict[str, Any],
+        self, agent: str, task_id: str, profile: str, message: dict[str, Any]
     ) -> FederationExportReceipt:
         return await self._federation_export_request(
-            PlatformOperation.FEDERATION_EXPORT_MESSAGE,
-            namespace,
-            tenant,
-            agent,
-            task_id,
-            profile,
-            message,
+            PlatformOperation.FEDERATION_EXPORT_MESSAGE, agent, task_id, profile, message
         )
 
     async def observe_federated_export(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        profile: str,
-        message: dict[str, Any],
+        self, agent: str, task_id: str, profile: str, message: dict[str, Any]
     ) -> FederationExportReceipt:
         return await self._federation_export_request(
-            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
-            namespace,
-            tenant,
-            agent,
-            task_id,
-            profile,
-            message,
+            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE, agent, task_id, profile, message
         )
 
     async def replay_federated_export(
-        self,
-        namespace: str,
-        tenant: str,
-        agent: str,
-        task_id: str,
-        profile: str,
-        message: dict[str, Any],
+        self, agent: str, task_id: str, profile: str, message: dict[str, Any]
     ) -> FederationExportReceipt:
         return await self._federation_export_request(
-            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
-            namespace,
-            tenant,
-            agent,
-            task_id,
-            profile,
-            message,
+            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE, agent, task_id, profile, message
         )
 
     async def _federation_export_request(
         self,
         operation: PlatformOperation,
-        namespace: str,
-        tenant: str,
         agent: str,
         task_id: str,
         profile: str,
@@ -1416,13 +1304,7 @@ class _AsyncGovernanceMixin:
         return FederationExportReceipt.from_dict(
             await self.platform_request(
                 operation,
-                path={
-                    "namespace": namespace,
-                    "tenant": tenant,
-                    "agent": agent,
-                    "task_id": task_id,
-                    "profile": profile,
-                },
+                path={"agent": agent, "task_id": task_id, "profile": profile},
                 body={"message": message},
             )
         )

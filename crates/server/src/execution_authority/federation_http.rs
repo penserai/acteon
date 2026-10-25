@@ -390,8 +390,6 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
             request.endpoint,
             &[
                 "a2a",
-                request.namespace,
-                request.tenant,
                 "federation",
                 "agents",
                 request.agent_id,
@@ -471,20 +469,12 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
         &self,
         request: FederationImportRequest<'_>,
     ) -> Result<FederationImportDisposition, FederationTransportError> {
-        let envelope = request
+        request
             .envelope
             .envelope()
             .map_err(|_| FederationTransportError::Invalid)?;
-        let endpoint = route_endpoint(
-            request.endpoint,
-            &[
-                "a2a",
-                envelope.agent_resource.namespace(),
-                envelope.agent_resource.tenant(),
-                "federation",
-                "envelopes:import",
-            ],
-        )?;
+        let endpoint =
+            route_endpoint(request.endpoint, &["a2a", "federation", "envelopes:import"])?;
         let Ok(builder) = self.client.post(&endpoint) else {
             return Ok(FederationImportDisposition::Rejected {
                 code: "federation_destination_refused".into(),
@@ -546,8 +536,6 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
             request.endpoint,
             &[
                 "a2a",
-                request.namespace,
-                request.tenant,
                 "federation",
                 "agents",
                 request.agent_id,
@@ -787,7 +775,7 @@ mod tests {
             .unwrap();
         let app = Router::new()
             .route(
-                "/a2a/remote/tenant/federation/agents/responder/capabilities",
+                "/a2a/federation/agents/responder/capabilities",
                 get(move |headers: HeaderMap| {
                     let card = capability_card.clone();
                     async move {
@@ -797,7 +785,7 @@ mod tests {
                 }),
             )
             .route(
-                "/a2a/remote/tenant/federation/envelopes:import",
+                "/a2a/federation/envelopes:import",
                 post(
                     move |headers: HeaderMap, Json(body): Json<ImportFederationEnvelopeRequest>| {
                         let envelope = import_envelope.clone();
@@ -828,7 +816,7 @@ mod tests {
                 ),
             )
             .route(
-                "/a2a/remote/tenant/federation/agents/responder/v1/message:send",
+                "/a2a/federation/agents/responder/v1/message:send",
                 post(
                     move |headers: HeaderMap, Json(body): Json<InvokeFederatedAgentRequest>| {
                         let message = invoke_message.clone();

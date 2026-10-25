@@ -544,17 +544,23 @@ Each transition is driven by an API call:
 # Acknowledge an incident
 curl -X PUT "http://localhost:8080/v1/events/incident-db-001/transition" \
   -H "Content-Type: application/json" \
-  -d '{"to": "acknowledged", "namespace": "incidents", "tenant": "ops-team"}'
+  -d '{
+  "to": "acknowledged"
+}'
 
 # Begin investigation
 curl -X PUT "http://localhost:8080/v1/events/incident-db-001/transition" \
   -H "Content-Type: application/json" \
-  -d '{"to": "investigating", "namespace": "incidents", "tenant": "ops-team"}'
+  -d '{
+  "to": "investigating"
+}'
 
 # Resolve the incident
 curl -X PUT "http://localhost:8080/v1/events/incident-db-001/transition" \
   -H "Content-Type: application/json" \
-  -d '{"to": "resolved", "namespace": "incidents", "tenant": "ops-team"}'
+  -d '{
+  "to": "resolved"
+}'
 ```
 
 ---
@@ -613,13 +619,13 @@ Query the audit trail to see what happened:
 
 ```bash
 # All dispatches
-curl -s "http://localhost:8080/v1/audit?namespace=incidents&tenant=ops-team&limit=50" | jq .
+curl -s "http://localhost:8080/v1/audit?limit=50" | jq .
 
 # Only suppressed actions
-curl -s "http://localhost:8080/v1/audit?namespace=incidents&tenant=ops-team&outcome=suppressed" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=suppressed" | jq .
 
 # Only chain-started actions
-curl -s "http://localhost:8080/v1/audit?namespace=incidents&tenant=ops-team&outcome=chain_started" | jq .
+curl -s "http://localhost:8080/v1/audit?outcome=chain_started" | jq .
 ```
 
 ---
@@ -716,18 +722,19 @@ a threshold:
 curl -X POST "http://localhost:8080/v1/recurring" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "incidents",
-    "tenant": "ops-team",
-    "cron_expr": "*/5 * * * *",
-    "timezone": "UTC",
-    "enabled": true,
-    "action_template": {
-      "provider": "slack-alerts",
-      "action_type": "escalation_check",
-      "payload": {"check": "stale_incidents", "threshold_minutes": 30}
-    },
-    "description": "Check for stale incidents every 5 minutes"
-  }'
+  "cron_expr": "*/5 * * * *",
+  "timezone": "UTC",
+  "enabled": true,
+  "action_template": {
+    "provider": "slack-alerts",
+    "action_type": "escalation_check",
+    "payload": {
+      "check": "stale_incidents",
+      "threshold_minutes": 30
+    }
+  },
+  "description": "Check for stale incidents every 5 minutes"
+}'
 ```
 
 ---

@@ -174,31 +174,22 @@ pub fn router(state: AppState) -> Router {
             get(signing_keys::discover_signing_keys),
         )
         // Login (must be public)
-        .route("/v1/auth/login", post(auth::login))
-        // Approvals (public, HMAC-authenticated via query signature)
+        .route("/v1/auth/login", post(auth::login));
+
+    let protected = Router::new()
+        // Approvals bind to the credential context; HMAC still authorizes the decision.
+        .route("/v1/approvals/{id}/approve", post(approvals::approve))
+        .route("/v1/approvals/{id}/reject", post(approvals::reject))
+        .route("/v1/approvals/{id}", get(approvals::get_approval))
+        // Tenant agent discovery requires authenticated context.
         .route(
-            "/v1/approvals/{namespace}/{tenant}/{id}/approve",
-            post(approvals::approve),
-        )
-        .route(
-            "/v1/approvals/{namespace}/{tenant}/{id}/reject",
-            post(approvals::reject),
-        )
-        .route(
-            "/v1/approvals/{namespace}/{tenant}/{id}",
-            get(approvals::get_approval),
-        )
-        // A2A Discovery — public, unauthenticated per A2A spec
-        .route(
-            "/a2a/{namespace}/{tenant}/.well-known/agent.json",
+            "/a2a/.well-known/agent.json",
             get(a2a_discovery::discover_agent),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+            "/a2a/.well-known/agent-card.json",
             get(a2a_discovery::discover_agent_v1),
-        );
-
-    let protected = Router::new()
+        )
         // Governance: independently declared authenticated operator authority.
         .route("/v1/workforce", get(workforce::inspect))
         .route("/v1/workforce/changes", post(workforce::change))
@@ -237,29 +228,29 @@ pub fn router(state: AppState) -> Router {
             post(governance::revoke_federation_trust),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+            "/a2a/federation/agents/{agent}/capabilities",
             get(federation::capabilities),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+            "/a2a/federation/envelopes:import",
             post(federation::import_envelope),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+            "/a2a/federation/agents/{agent}/v1/message:send",
             post(federation::invoke_agent),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+            "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
             post(federation::export_message)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+            "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
             post(federation::observe_export_message)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+            "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
             post(federation::replay_export_message)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
@@ -277,101 +268,101 @@ pub fn router(state: AppState) -> Router {
         // REST cancel verb shares the `tasks/{id}` path (its `{id}`
         // segment carries the `:cancel` suffix, split in-handler).
         .route(
-            "/a2a/{namespace}/{tenant}",
+            "/a2a",
             post(a2a::a2a_rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}",
+            "/a2a/agents/{agent}",
             post(agent_services::rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/v1/message:send",
+            "/a2a/v1/message:send",
             post(a2a::a2a_rest_message_send).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+            "/a2a/agents/{agent}/v1/message:send",
             post(agent_services::message_send)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop",
+            "/a2a/agents/{agent}/v1/tasks/{id}/stop",
             post(agent_services::task_stop),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send",
+            "/a2a/agents/{agent}/v1/tasks/{id}/message:send",
             post(agent_services::task_continue)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request",
+            "/a2a/agents/{agent}/v1/tasks/{id}/authorization:request",
             post(agent_services::task_authorization_request)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve",
+            "/a2a/agents/{agent}/v1/tasks/{id}/authorization:resolve",
             post(agent_services::task_authorization_resolve)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+            "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
             post(agent_services::peer_send)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+            "/a2a/agents/{agent}/v1/tasks/{id}/peers",
             get(agent_services::peer_discover),
         )
         // Axum captures the submission UUID and A2A action suffix as one
         // segment. The handler validates and dispatches `:refresh`/`:cancel`.
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
+            "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
             post(agent_services::peer_submission_action),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
+            "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
             post(agent_services::peer_continue)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
+            "/a2a/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
             post(agent_services::peer_authorization_resolve)
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+            "/a2a/agents/{agent}/v1/tasks/{id}",
             get(agent_services::task_get),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
+            "/a2a/v1/tasks/{id}",
             get(a2a::a2a_rest_task_get).post(a2a::a2a_rest_task_cancel),
         )
         // SSE stream of task lifecycle events (Phase 3.2). No body
         // limit needed — GET only — and the per-tenant connection cap
         // is enforced inside the handler.
         .route(
-            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/events",
+            "/a2a/v1/tasks/{id}/events",
             get(a2a::a2a_task_events),
         )
         // Push-notification config CRUD (Phase 4.1). The collection
         // endpoint registers `POST` (set) + `GET` (list); the item
         // endpoint registers `GET` (get) + `DELETE` (delete).
         .route(
-            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
+            "/a2a/v1/tasks/{id}/pushNotificationConfigs",
             post(a2a_push::rest_set_push_config).get(a2a_push::rest_list_push_configs),
         )
         .route(
-            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
+            "/a2a/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
             get(a2a_push::rest_get_push_config).delete(a2a_push::rest_delete_push_config),
         )
         // A2A push delivery DLQ (operator surface). Not part of the
         // A2A protocol — lives under /v1/a2a/... and uses the
         // standard A2A dispatch grant.
         .route(
-            "/v1/a2a/{namespace}/{tenant}/push-dlq",
+            "/v1/a2a/push-dlq",
             get(a2a_push::rest_list_push_dlq),
         )
         .route(
-            "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
+            "/v1/a2a/push-dlq/{entryId}",
             get(a2a_push::rest_get_push_dlq).delete(a2a_push::rest_delete_push_dlq),
         )
         // Rules management
@@ -537,7 +528,7 @@ pub fn router(state: AppState) -> Router {
             get(time_intervals::list_time_intervals).post(time_intervals::create_time_interval),
         )
         .route(
-            "/v1/time-intervals/{namespace}/{tenant}/{name}",
+            "/v1/time-intervals/{name}",
             get(time_intervals::get_time_interval)
                 .put(time_intervals::update_time_interval)
                 .delete(time_intervals::delete_time_interval),
@@ -613,67 +604,67 @@ pub fn router(state: AppState) -> Router {
             get(bus::list_subscriptions).post(bus::create_subscription),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}",
+            "/v1/bus/subscriptions/{id}",
             delete(bus::delete_subscription),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
+            "/v1/bus/subscriptions/{id}/ack",
             post(bus::ack_subscription),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/lag",
+            "/v1/bus/subscriptions/{id}/lag",
             get(bus::subscription_lag),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
+            "/v1/bus/subscriptions/{id}/deadletter",
             post(bus::deadletter_subscription),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions",
+            "/v1/bus/subscriptions/{id}/sessions",
             post(bus_sessions::open),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+            "/v1/bus/subscriptions/{id}/sessions/{session}",
             get(bus_sessions::get).delete(bus_sessions::close),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/receive",
+            "/v1/bus/subscriptions/{id}/sessions/{session}/receive",
             post(bus_sessions::receive),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/validate",
+            "/v1/bus/subscriptions/{id}/sessions/{session}/validate",
             post(bus_sessions::validate),
         )
         .route(
-            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack",
+            "/v1/bus/subscriptions/{id}/sessions/{session}/ack",
             post(bus_sessions::ack),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}",
+            "/v1/bus/stages/{id}",
             get(bus_stages::status),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine",
+            "/v1/bus/stages/{id}/quarantine",
             get(bus_stages::list),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+            "/v1/bus/stages/{id}/quarantine/{entry}",
             get(bus_stages::get).delete(bus_stages::discard),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay",
+            "/v1/bus/stages/{id}/quarantine/{entry}/replay",
             post(bus_stages::replay),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}/control",
+            "/v1/bus/stages/{id}/control",
             post(bus_stages::control),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}",
+            "/v1/bus/stages/{id}/controls/{request}",
             get(bus_stages::control_audit),
         )
         .route(
-            "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
+            "/v1/bus/stages/{id}/replays/{request}",
             get(bus_stages::replay_audit),
         )
         // Phase 3: JSON-Schema registry + topic binding. Tenant-scoped
@@ -684,15 +675,15 @@ pub fn router(state: AppState) -> Router {
             get(bus::list_schemas).post(bus::create_schema),
         )
         .route(
-            "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
+            "/v1/bus/schemas/{subject}",
             get(bus::get_subject_versions),
         )
         .route(
-            "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+            "/v1/bus/schemas/{subject}/{version}",
             get(bus::get_schema_version).delete(bus::delete_schema_version),
         )
         .route(
-            "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+            "/v1/bus/topics/{name}/schema",
             put(bus::bind_topic_schema).delete(bus::unbind_topic_schema),
         )
         // Phase 4: Agent identity + heartbeat + send-to-agent. Shared
@@ -703,32 +694,32 @@ pub fn router(state: AppState) -> Router {
             get(bus::list_agents).post(bus::register_agent),
         )
         .route(
-            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+            "/v1/bus/agents/{agent_id}",
             get(bus::get_agent)
                 .put(bus::update_agent)
                 .delete(bus::delete_agent),
         )
         .route(
-            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
+            "/v1/bus/agents/{agent_id}/heartbeat",
             post(bus::heartbeat_agent),
         )
         // A2A AgentCard CRUD — populates the discovery surface
         // (`/a2a/{ns}/{tenant}/.well-known/agent.json`).
         .route(
-            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+            "/v1/bus/agents/{agent_id}/card",
             put(a2a_discovery::put_agent_card)
                 .get(a2a_discovery::get_agent_card)
                 .delete(a2a_discovery::delete_agent_card),
         )
         .route(
-            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
+            "/v1/bus/agents/{agent_id}/send",
             post(bus::send_to_agent),
         )
         // Agent admin lifecycle — operator sets Active / Suspended /
         // Banned. Distinct from the derived liveness `status`; see
         // `AgentAdminState`.
         .route(
-            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state",
+            "/v1/bus/agents/{agent_id}/admin-state",
             put(bus::set_agent_admin_state),
         )
         // Phase 5: Conversations — multi-agent threads on a shared
@@ -740,17 +731,17 @@ pub fn router(state: AppState) -> Router {
             get(bus::list_conversations).post(bus::register_conversation),
         )
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+            "/v1/bus/conversations/{conversation_id}",
             get(bus::get_conversation)
                 .put(bus::update_conversation)
                 .delete(bus::delete_conversation),
         )
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+            "/v1/bus/conversations/{conversation_id}/transition",
             post(bus::transition_conversation),
         )
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+            "/v1/bus/conversations/{conversation_id}/messages",
             get(bus::replay_conversation_messages).post(bus::append_conversation_message),
         )
         // Phase 6a: tool-call envelopes (ride on top of conversation
@@ -758,47 +749,47 @@ pub fn router(state: AppState) -> Router {
         // `acteon.tool.call_id`, `acteon.correlation_id`,
         // `acteon.reply_to`).
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+            "/v1/bus/conversations/{conversation_id}/tool-calls",
             post(bus::post_tool_call),
         )
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+            "/v1/bus/conversations/{conversation_id}/tool-results",
             post(bus::post_tool_result),
         )
         .route(
-            "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+            "/v1/bus/tool-calls/{call_id}/result",
             get(bus::lookup_tool_result),
         )
         // Phase 6b: streaming chunks (server stamps
         // `acteon.envelope.kind ∈ stream_chunk|stream_end`,
         // `acteon.stream.id`, `acteon.stream.seq`).
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-chunks",
+            "/v1/bus/conversations/{conversation_id}/stream-chunks",
             post(bus::post_stream_chunk),
         )
         .route(
-            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-end",
+            "/v1/bus/conversations/{conversation_id}/stream-end",
             post(bus::post_stream_end),
         )
         .route(
-            "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
+            "/v1/bus/streams/{conversation_id}/{stream_id}",
             get(bus::consume_stream),
         )
         // Phase 6c: pre-publish HITL approvals for tool-calls.
         .route(
-            "/v1/bus/approvals/{namespace}/{tenant}",
+            "/v1/bus/approvals",
             get(bus::list_bus_approvals),
         )
         .route(
-            "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
+            "/v1/bus/approvals/{approval_id}",
             get(bus::get_bus_approval),
         )
         .route(
-            "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/approve",
+            "/v1/bus/approvals/{approval_id}/approve",
             post(bus::approve_bus_approval),
         )
         .route(
-            "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
+            "/v1/bus/approvals/{approval_id}/reject",
             post(bus::reject_bus_approval),
         )
         // Swarm runs

@@ -92,17 +92,19 @@ async def test_async_sessions_keep_receipt_capabilities():
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
         result = await client.platform_request(
             PlatformOperation.BUS_SESSIONS_ACK,
-            path={"namespace": "n", "tenant": "t", "id": "sub", "session": "session"},
+            path={"id": "sub", "session": "session"},
             body={"receipt_ids": ["opaque-receipt"]},
         )
         assert result["remaining_in_flight"] == 0
 
 
 def test_receipt_required_subscription_roundtrip():
-    req = CreateBusSubscription("s", "n.t.logs", "n", "t", receipt_required=True)
+    req = CreateBusSubscription("s", "n.t.logs", receipt_required=True)
     assert req.to_dict()["receipt_required"] is True
     wire = {
         **req.to_dict(),
+        "namespace": "n",
+        "tenant": "t",
         "starting_offset": "earliest",
         "ack_mode": "manual",
         "ack_timeout_ms": 30000,
@@ -146,18 +148,28 @@ def test_typed_bus_lookup_and_delete_use_registered_routes():
     seen = []
 
     def handler(request):
+        if request.url.path == "/v1/auth/identity":
+            return httpx.Response(
+                200,
+                json={
+                    "credential_id": "local",
+                    "auth_method": "api_key",
+                    "role": "admin",
+                    "principal": None,
+                    "scope": {"namespace": "n", "tenant": "t"},
+                },
+            )
         seen.append((request.method, request.url.path))
         if request.method == "GET":
-            assert request.url.params["namespace"] == "n"
-            assert request.url.params["tenant"] == "t"
+            assert not request.url.params
             return httpx.Response(200, json={"topics": [{**topic, "tenant": "other"}, topic]})
         return httpx.Response(204)
 
     with ActeonClient("http://localhost") as client:
         client._client.close()
         client._client = httpx.Client(transport=httpx.MockTransport(handler))
-        assert client.get_bus_topic("n", "t", "logs").tenant == "t"
-        client.delete_bus_topic("n", "t", "logs")
+        assert client.get_bus_topic("logs").tenant == "t"
+        client.delete_bus_topic("logs")
     assert seen == [
         ("GET", "/v1/bus/topics"),
         ("GET", "/v1/bus/topics"),

@@ -26,10 +26,6 @@ export interface Attachment {
 export interface Action {
   /** Unique action identifier. */
   id: string;
-  /** Logical grouping for the action. */
-  namespace: string;
-  /** Tenant identifier for multi-tenancy. */
-  tenant: string;
   /** Target provider name (e.g., "email", "sms"). */
   provider: string;
   /** Type of action (e.g., "send_notification"). */
@@ -62,13 +58,7 @@ export interface Action {
 /**
  * Create a new action with auto-generated ID.
  */
-export function createAction(
-  namespace: string,
-  tenant: string,
-  provider: string,
-  actionType: string,
-  payload: Record<string, unknown>,
-  options?: {
+export function createAction(provider: string, actionType: string, payload: Record<string, unknown>, options?: {
     id?: string;
     dedupKey?: string;
     metadata?: Record<string, string>;
@@ -77,18 +67,7 @@ export function createAction(
     attachments?: Attachment[];
   }
 ): Action {
-  return {
-    id: options?.id ?? randomUUID(),
-    namespace,
-    tenant,
-    provider,
-    actionType,
-    payload,
-    dedupKey: options?.dedupKey,
-    metadata: options?.metadata,
-    createdAt: options?.createdAt ?? new Date().toISOString(),
-    template: options?.template,
-    attachments: options?.attachments,
+  return {id: options?.id ?? randomUUID(), provider, actionType, payload, dedupKey: options?.dedupKey, metadata: options?.metadata, createdAt: options?.createdAt ?? new Date().toISOString(), template: options?.template, attachments: options?.attachments
   };
 }
 
@@ -96,14 +75,7 @@ export function createAction(
  * Convert an Action to the API request format.
  */
 export function actionToRequest(action: Action): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    id: action.id,
-    namespace: action.namespace,
-    tenant: action.tenant,
-    provider: action.provider,
-    action_type: action.actionType,
-    payload: action.payload,
-    created_at: action.createdAt,
+  const result: Record<string, unknown> = {id: action.id, provider: action.provider, action_type: action.actionType, payload: action.payload, created_at: action.createdAt
   };
   if (action.dedupKey) {
     result.dedup_key = action.dedupKey;
@@ -440,8 +412,6 @@ export interface ReloadResult {
  * Request to evaluate rules against a test action without dispatching.
  */
 export interface EvaluateRulesRequest {
-  namespace: string;
-  tenant: string;
   provider: string;
   action_type: string;
   payload: Record<string, unknown>;
@@ -519,8 +489,6 @@ export interface EvaluateRulesResponse {
  * O(limit) time. Treat the cursor as opaque.
  */
 export interface AuditQuery {
-  namespace?: string;
-  tenant?: string;
   provider?: string;
   actionType?: string;
   outcome?: string;
@@ -534,8 +502,7 @@ export interface AuditQuery {
  */
 export function auditQueryToParams(query: AuditQuery): URLSearchParams {
   const params = new URLSearchParams();
-  if (query.namespace) params.set("namespace", query.namespace);
-  if (query.tenant) params.set("tenant", query.tenant);
+
   if (query.provider) params.set("provider", query.provider);
   if (query.actionType) params.set("action_type", query.actionType);
   if (query.outcome) params.set("outcome", query.outcome);
@@ -628,8 +595,6 @@ export function parseAuditPage(data: Record<string, unknown>): AuditPage {
  * Query parameters for listing events.
  */
 export interface EventQuery {
-  namespace: string;
-  tenant: string;
   status?: string;
   limit?: number;
 }
@@ -639,8 +604,7 @@ export interface EventQuery {
  */
 export function eventQueryToParams(query: EventQuery): URLSearchParams {
   const params = new URLSearchParams();
-  params.set("namespace", query.namespace);
-  params.set("tenant", query.tenant);
+
   if (query.status) params.set("status", query.status);
   if (query.limit !== undefined) params.set("limit", query.limit.toString());
   return params;
@@ -907,12 +871,7 @@ export interface WebhookPayload {
  * );
  * ```
  */
-export function createWebhookAction(
-  namespace: string,
-  tenant: string,
-  url: string,
-  body: Record<string, unknown>,
-  options?: {
+export function createWebhookAction(url: string, body: Record<string, unknown>, options?: {
     actionType?: string;
     method?: string;
     headers?: Record<string, string>;
@@ -928,7 +887,7 @@ export function createWebhookAction(
   if (options?.headers) {
     payload.headers = options.headers;
   }
-  return createAction(namespace, tenant, "webhook", options?.actionType ?? "webhook", payload, {
+  return createAction("webhook", options?.actionType ?? "webhook", payload, {
     dedupKey: options?.dedupKey,
     metadata: options?.metadata,
   });
@@ -956,8 +915,6 @@ export interface ReplaySummary {
 
 /** Query parameters for bulk audit replay. */
 export interface ReplayQuery {
-  namespace?: string;
-  tenant?: string;
   provider?: string;
   actionType?: string;
   outcome?: string;
@@ -989,8 +946,7 @@ export function parseReplaySummary(data: Record<string, unknown>): ReplaySummary
 
 export function replayQueryToParams(query: ReplayQuery): URLSearchParams {
   const params = new URLSearchParams();
-  if (query.namespace !== undefined) params.set("namespace", query.namespace);
-  if (query.tenant !== undefined) params.set("tenant", query.tenant);
+
   if (query.provider !== undefined) params.set("provider", query.provider);
   if (query.actionType !== undefined) params.set("action_type", query.actionType);
   if (query.outcome !== undefined) params.set("outcome", query.outcome);
@@ -1008,8 +964,6 @@ export function replayQueryToParams(query: ReplayQuery): URLSearchParams {
 
 /** Request to create a recurring action. */
 export interface CreateRecurringAction {
-  namespace: string;
-  tenant: string;
   provider: string;
   actionType: string;
   payload: Record<string, unknown>;
@@ -1026,13 +980,7 @@ export interface CreateRecurringAction {
 
 /** Convert a CreateRecurringAction to the API request format. */
 export function createRecurringActionToRequest(action: CreateRecurringAction): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    namespace: action.namespace,
-    tenant: action.tenant,
-    provider: action.provider,
-    action_type: action.actionType,
-    payload: action.payload,
-    cron_expression: action.cronExpression,
+  const result: Record<string, unknown> = {provider: action.provider, action_type: action.actionType, payload: action.payload, cron_expression: action.cronExpression
   };
   if (action.name !== undefined) result.name = action.name;
   if (action.metadata !== undefined) result.metadata = action.metadata;
@@ -1064,8 +1012,6 @@ export function parseCreateRecurringResponse(data: Record<string, unknown>): Cre
 
 /** Query parameters for listing recurring actions. */
 export interface RecurringFilter {
-  namespace?: string;
-  tenant?: string;
   status?: string;
   limit?: number;
   offset?: number;
@@ -1073,8 +1019,7 @@ export interface RecurringFilter {
 
 export function recurringFilterToParams(filter: RecurringFilter): URLSearchParams {
   const params = new URLSearchParams();
-  if (filter.namespace !== undefined) params.set("namespace", filter.namespace);
-  if (filter.tenant !== undefined) params.set("tenant", filter.tenant);
+
   if (filter.status !== undefined) params.set("status", filter.status);
   if (filter.limit !== undefined) params.set("limit", filter.limit.toString());
   if (filter.offset !== undefined) params.set("offset", filter.offset.toString());
@@ -1177,8 +1122,6 @@ export function parseRecurringDetail(data: Record<string, unknown>): RecurringDe
 
 /** Request to update a recurring action. */
 export interface UpdateRecurringAction {
-  namespace: string;
-  tenant: string;
   name?: string;
   payload?: Record<string, unknown>;
   metadata?: Record<string, string>;
@@ -1193,8 +1136,6 @@ export interface UpdateRecurringAction {
 
 export function updateRecurringActionToRequest(action: UpdateRecurringAction): Record<string, unknown> {
   const result: Record<string, unknown> = {
-    namespace: action.namespace,
-    tenant: action.tenant,
   };
   if (action.name !== undefined) result.name = action.name;
   if (action.payload !== undefined) result.payload = action.payload;
@@ -1221,8 +1162,6 @@ export function updateRecurringActionToRequest(action: UpdateRecurringAction): R
  * policies may coexist for the same ``(namespace, tenant)``.
  */
 export interface CreateQuotaRequest {
-  namespace: string;
-  tenant: string;
   provider?: string;
   /** Caller-id scope. When set, only dispatches by that principal count against the policy. */
   principal?: string;
@@ -1237,12 +1176,7 @@ export interface CreateQuotaRequest {
 
 /** Convert a CreateQuotaRequest to the API request format. */
 export function createQuotaRequestToApi(req: CreateQuotaRequest): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    namespace: req.namespace,
-    tenant: req.tenant,
-    max_actions: req.maxActions,
-    window: req.window,
-    overage_behavior: req.overageBehavior,
+  const result: Record<string, unknown> = {max_actions: req.maxActions, window: req.window, overage_behavior: req.overageBehavior
   };
   if (req.provider !== undefined) result.provider = req.provider;
   if (req.principal !== undefined) result.principal = req.principal;
@@ -1254,8 +1188,6 @@ export function createQuotaRequestToApi(req: CreateQuotaRequest): Record<string,
 
 /** Request to update a quota policy. */
 export interface UpdateQuotaRequest {
-  namespace: string;
-  tenant: string;
   maxActions?: number;
   window?: string;
   overageBehavior?: string;
@@ -1266,8 +1198,6 @@ export interface UpdateQuotaRequest {
 /** Convert an UpdateQuotaRequest to the API request format. */
 export function updateQuotaRequestToApi(req: UpdateQuotaRequest): Record<string, unknown> {
   const result: Record<string, unknown> = {
-    namespace: req.namespace,
-    tenant: req.tenant,
   };
   if (req.maxActions !== undefined) result.max_actions = req.maxActions;
   if (req.window !== undefined) result.window = req.window;
@@ -1377,8 +1307,6 @@ export interface SilenceMatcher {
  * ``startsAt`` is omitted, the server uses its current time.
  */
 export interface CreateSilenceRequest {
-  namespace: string;
-  tenant: string;
   matchers: SilenceMatcher[];
   comment: string;
   startsAt?: string;
@@ -1390,15 +1318,11 @@ export interface CreateSilenceRequest {
 export function createSilenceRequestToApi(
   req: CreateSilenceRequest
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    namespace: req.namespace,
-    tenant: req.tenant,
-    matchers: req.matchers.map((m) => ({
+  const result: Record<string, unknown> = {matchers: req.matchers.map((m) => ({
       name: m.name,
       value: m.value,
       op: m.op,
-    })),
-    comment: req.comment,
+    })), comment: req.comment
   };
   if (req.startsAt !== undefined) result.starts_at = req.startsAt;
   if (req.endsAt !== undefined) result.ends_at = req.endsAt;
@@ -1530,8 +1454,6 @@ function timeRangeFromApi(data: Record<string, unknown>): TimeRange {
 
 export interface CreateTimeIntervalRequest {
   name: string;
-  namespace: string;
-  tenant: string;
   timeRanges: TimeRange[];
   location?: string;
   description?: string;
@@ -1540,11 +1462,7 @@ export interface CreateTimeIntervalRequest {
 export function createTimeIntervalRequestToApi(
   req: CreateTimeIntervalRequest
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    name: req.name,
-    namespace: req.namespace,
-    tenant: req.tenant,
-    time_ranges: req.timeRanges.map(timeRangeToApi),
+  const out: Record<string, unknown> = {name: req.name, time_ranges: req.timeRanges.map(timeRangeToApi)
   };
   if (req.location !== undefined) out.location = req.location;
   if (req.description !== undefined) out.description = req.description;
@@ -1621,8 +1539,6 @@ export function parseListTimeIntervalsResponse(
 
 /** Request to create a retention policy. */
 export interface CreateRetentionRequest {
-  namespace: string;
-  tenant: string;
   auditTtlSeconds: number;
   stateTtlSeconds: number;
   eventTtlSeconds: number;
@@ -1636,15 +1552,7 @@ export interface CreateRetentionRequest {
 
 /** Convert a CreateRetentionRequest to the API request format. */
 export function createRetentionRequestToApi(req: CreateRetentionRequest): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    namespace: req.namespace,
-    tenant: req.tenant,
-    audit_ttl_seconds: req.auditTtlSeconds,
-    state_ttl_seconds: req.stateTtlSeconds,
-    event_ttl_seconds: req.eventTtlSeconds,
-    timeline_ttl_seconds: req.timelineTtlSeconds,
-    cdc_ledger_ttl_seconds: req.cdcLedgerTtlSeconds,
-    cdc_archive_ttl_seconds: req.cdcArchiveTtlSeconds,
+  const result: Record<string, unknown> = {audit_ttl_seconds: req.auditTtlSeconds, state_ttl_seconds: req.stateTtlSeconds, event_ttl_seconds: req.eventTtlSeconds, timeline_ttl_seconds: req.timelineTtlSeconds, cdc_ledger_ttl_seconds: req.cdcLedgerTtlSeconds, cdc_archive_ttl_seconds: req.cdcArchiveTtlSeconds
   };
   if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
   if (req.description !== undefined) result.description = req.description;
@@ -2167,18 +2075,12 @@ export interface SseEvent {
 
 /** Options for the subscribe endpoint. */
 export interface SubscribeOptions {
-  /** Namespace for tenant isolation. */
-  namespace?: string;
-  /** Tenant for tenant isolation. */
-  tenant?: string;
   /** Emit synthetic catch-up events for the entity's current state (default: true). */
   includeHistory?: boolean;
 }
 
 /** Options for the stream endpoint. */
 export interface StreamOptions {
-  /** Filter events by namespace. */
-  namespace?: string;
   /** Filter events by action type. */
   actionType?: string;
   /** Filter events by outcome category (e.g., "executed", "suppressed", "failed"). */
@@ -2442,8 +2344,6 @@ export function parseHashChainVerification(data: Record<string, unknown>): HashC
 
 /** Request body for hash chain verification. */
 export interface VerifyHashChainRequest {
-  namespace: string;
-  tenant: string;
   from?: string;
   to?: string;
 }
@@ -2483,8 +2383,6 @@ export function parseTemplateInfo(data: Record<string, unknown>): TemplateInfo {
 /** Request to create a payload template. */
 export interface CreateTemplateRequest {
   name: string;
-  namespace: string;
-  tenant: string;
   content: string;
   description?: string;
   labels?: Record<string, string>;
@@ -2492,11 +2390,7 @@ export interface CreateTemplateRequest {
 
 /** Convert a CreateTemplateRequest to the API request format. */
 export function createTemplateRequestToApi(req: CreateTemplateRequest): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    name: req.name,
-    namespace: req.namespace,
-    tenant: req.tenant,
-    content: req.content,
+  const result: Record<string, unknown> = {name: req.name, content: req.content
   };
   if (req.description !== undefined) result.description = req.description;
   if (req.labels !== undefined) result.labels = req.labels;
@@ -2571,8 +2465,6 @@ export function parseTemplateProfileInfo(data: Record<string, unknown>): Templat
 /** Request to create a template profile. */
 export interface CreateProfileRequest {
   name: string;
-  namespace: string;
-  tenant: string;
   fields: Record<string, TemplateProfileField>;
   description?: string;
   labels?: Record<string, string>;
@@ -2580,11 +2472,7 @@ export interface CreateProfileRequest {
 
 /** Convert a CreateProfileRequest to the API request format. */
 export function createProfileRequestToApi(req: CreateProfileRequest): Record<string, unknown> {
-  const result: Record<string, unknown> = {
-    name: req.name,
-    namespace: req.namespace,
-    tenant: req.tenant,
-    fields: req.fields,
+  const result: Record<string, unknown> = {name: req.name, fields: req.fields
   };
   if (req.description !== undefined) result.description = req.description;
   if (req.labels !== undefined) result.labels = req.labels;
@@ -2625,8 +2513,6 @@ export function parseListProfilesResponse(data: Record<string, unknown>): ListPr
 /** Request to render a template profile with payload data. */
 export interface RenderPreviewRequest {
   profile: string;
-  namespace: string;
-  tenant: string;
   payload: Record<string, unknown>;
 }
 
@@ -2650,10 +2536,6 @@ export function parseRenderPreviewResponse(data: Record<string, unknown>): Rende
 export interface AnalyticsQuery {
   /** The metric to query (required). */
   metric: "volume" | "outcome_breakdown" | "top_action_types" | "latency" | "error_rate";
-  /** Optional namespace filter. */
-  namespace?: string;
-  /** Optional tenant filter. */
-  tenant?: string;
   /** Optional provider filter. */
   provider?: string;
   /** Optional action type filter. */
@@ -2724,8 +2606,7 @@ export interface AnalyticsResponse {
 export function analyticsQueryToParams(query: AnalyticsQuery): URLSearchParams {
   const params = new URLSearchParams();
   params.set("metric", query.metric);
-  if (query.namespace) params.set("namespace", query.namespace);
-  if (query.tenant) params.set("tenant", query.tenant);
+
   if (query.provider) params.set("provider", query.provider);
   if (query.actionType) params.set("action_type", query.actionType);
   if (query.outcome) params.set("outcome", query.outcome);
@@ -3519,8 +3400,6 @@ export function createGcpStorageDeletePayload(
 
 /** Options for a rule coverage analysis. */
 export interface CoverageQuery {
-  namespace?: string;
-  tenant?: string;
   /** Start of the time range (RFC 3339). */
   from?: string;
   /** End of the time range (RFC 3339). */
@@ -3697,7 +3576,6 @@ function optionalStringList(
   return value as string[];
 }
 
-
 // ---------------------------------------------------------------------------
 // Swarm runs
 // ---------------------------------------------------------------------------
@@ -3731,8 +3609,6 @@ export function parseSwarmRunSnapshot(data: Record<string, unknown>): SwarmRunSn
 }
 
 export interface SwarmRunFilter {
-  namespace?: string;
-  tenant?: string;
   status?: string;
   limit?: number;
   offset?: number;
@@ -3740,8 +3616,7 @@ export interface SwarmRunFilter {
 
 export function swarmRunFilterToParams(filter: SwarmRunFilter): URLSearchParams {
   const params = new URLSearchParams();
-  if (filter.namespace !== undefined) params.set("namespace", filter.namespace);
-  if (filter.tenant !== undefined) params.set("tenant", filter.tenant);
+
   if (filter.status !== undefined) params.set("status", filter.status);
   if (filter.limit !== undefined) params.set("limit", String(filter.limit));
   if (filter.offset !== undefined) params.set("offset", String(filter.offset));
@@ -3761,10 +3636,11 @@ export function parseListSwarmRunsResponse(data: Record<string, unknown>): ListS
   };
 }
 
-
 /** Stable actor metadata; descriptive kind confers no authority. */
 export interface PrincipalIdentity { id: string; kind: "human" | "agent" | "service" | "system"; }
+export interface TenantContext { namespace: string; tenant: string; }
 export interface CredentialIdentity {
+  scope: TenantContext;
   credentialId: string;
   authorityId?: string | null;
   authMethod: string;
@@ -3772,7 +3648,9 @@ export interface CredentialIdentity {
   principal: PrincipalIdentity | null;
 }
 export function parseCredentialIdentity(data: Record<string, unknown>): CredentialIdentity {
+  const scope = data.scope as TenantContext | undefined;
+  if (!scope || typeof scope.namespace !== "string" || !scope.namespace || typeof scope.tenant !== "string" || !scope.tenant) throw new Error("credential tenant context missing or malformed");
   const principal = data.principal as PrincipalIdentity | null | undefined;
-  return { credentialId: data.credential_id as string, authMethod: data.auth_method as string,
+  return { scope, credentialId: data.credential_id as string, authMethod: data.auth_method as string,
     role: data.role as string, principal: principal ?? null, authorityId: (data.authority_id as string | null | undefined) ?? null };
 }

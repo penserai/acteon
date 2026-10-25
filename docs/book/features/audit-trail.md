@@ -92,7 +92,7 @@ pub struct AuditRecord {
 curl "http://localhost:8080/v1/audit"
 
 # With filters
-curl "http://localhost:8080/v1/audit?tenant=tenant-1&outcome=suppressed&limit=50"
+curl "http://localhost:8080/v1/audit?outcome=suppressed&limit=50"
 
 # By date range
 curl "http://localhost:8080/v1/audit?from=2026-01-01T00:00:00Z&to=2026-01-31T23:59:59Z"
@@ -102,8 +102,6 @@ curl "http://localhost:8080/v1/audit?from=2026-01-01T00:00:00Z&to=2026-01-31T23:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `namespace` | string | Filter by namespace |
-| `tenant` | string | Filter by tenant |
 | `provider` | string | Filter by provider |
 | `action_type` | string | Filter by action type |
 | `outcome` | string | Filter by outcome (executed, suppressed, etc.) |
@@ -125,11 +123,11 @@ following page:
 
 ```bash
 # First page
-curl "http://localhost:8080/v1/audit?tenant=tenant-1&limit=50"
+curl "http://localhost:8080/v1/audit?limit=50"
 # -> { "records": [...], "limit": 50, "offset": 0, "total": ..., "next_cursor": "eyJ2..." }
 
 # Resume from the cursor — no offset scan, no count query
-curl "http://localhost:8080/v1/audit?tenant=tenant-1&limit=50&cursor=eyJ2..."
+curl "http://localhost:8080/v1/audit?limit=50&cursor=eyJ2..."
 # -> { "records": [...], "limit": 50, "offset": 0, "next_cursor": "eyJ3..." }
 ```
 

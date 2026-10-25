@@ -48,14 +48,14 @@ def main():
     base = f"http://127.0.0.1:{port}"
     opener = build_opener(ProxyHandler({}))
 
-    def request(path, body=None, method=None):
+    def request(path, body=None, method=None, key="acteon-policy-demo"):
         data = None if body is None else json.dumps(body).encode()
         req = Request(
             base + path,
             data=data,
             method=method,
             headers={
-                "Authorization": "Bearer acteon-policy-demo",
+                "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
             },
         )
@@ -66,8 +66,6 @@ def main():
         action = {
             "id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "namespace": "agent-swarm",
-            "tenant": "researcher",
             "provider": "research",
             "action_type": kind,
             "payload": {"query": "Summarize local evidence"},
@@ -129,26 +127,31 @@ def main():
                 dispatch("search", tenant="another-team")
                 raise AssertionError("Cross-tenant dispatch was accepted")
             except HTTPError as error:
-                assert error.code == 403
+                assert error.code == 422
             approval = dispatch("deploy", provider="deploy")["PendingApproval"]
-            # Use the exact signed capability returned by this server.
+            # Only the separately authenticated reviewer can decide.
             from urllib.parse import urlsplit
 
             url = urlsplit(approval["approve_url"])
-            decision = request(url.path + "?" + url.query, {}, "POST")
+            try:
+                request(url.path, {}, "POST")
+                raise AssertionError("Executor approved its own work")
+            except HTTPError as error:
+                assert error.code == 403
+            decision = request(url.path, {}, "POST", key="acteon-policy-reviewer")
             assert decision["status"] == "approved", decision
             assert "Executed" in decision["outcome"], decision
             chain = dispatch("research_request")["ChainStarted"]
             deadline = time.monotonic() + 15
             while True:
                 state = request(
-                    f"/v1/chains/{chain['chain_id']}?namespace=agent-swarm&tenant=researcher"
+                    f"/v1/chains/{chain['chain_id']}"
                 )
                 if state["status"] == "completed":
                     break
                 assert time.monotonic() < deadline, state
                 time.sleep(0.2)
-            quotas = request("/v1/quotas?namespace=agent-swarm&tenant=researcher")
+            quotas = request("/v1/quotas")
             assert quotas["count"] == 1, quotas
             assert quotas["quotas"][0]["max_actions"] == 50, quotas
             print(

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use acteon_audit_memory::MemoryAuditStore;
-use acteon_core::{Action, ActionOutcome};
+use acteon_core::{ActionOutcome, ActionRequest};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_provider::DynProvider;
@@ -457,9 +457,7 @@ async fn run_rust_client(base_url: &str) -> ClientTestResult {
     }
 
     // Test: Dispatch
-    let action = Action::new(
-        "test",
-        "rust-client",
+    let action = ActionRequest::new(
         "email",
         "send_notification",
         serde_json::json!({"to": "test@example.com", "subject": "Rust test"}),
@@ -489,16 +487,8 @@ async fn run_rust_client(base_url: &str) -> ClientTestResult {
     }
 
     // Test: Batch dispatch
-    let actions: Vec<Action> = (0..3)
-        .map(|i| {
-            Action::new(
-                "test",
-                "rust-client",
-                "email",
-                "batch_test",
-                serde_json::json!({"seq": i}),
-            )
-        })
+    let actions: Vec<ActionRequest> = (0..3)
+        .map(|i| ActionRequest::new("email", "batch_test", serde_json::json!({"seq": i})))
         .collect();
     match client.dispatch_batch(&actions).await {
         Ok(results) => {
@@ -533,7 +523,6 @@ async fn run_rust_client(base_url: &str) -> ClientTestResult {
 
     // Test: Query audit
     let query = AuditQuery {
-        tenant: Some("rust-client".to_string()),
         limit: Some(10),
         ..Default::default()
     };

@@ -72,7 +72,7 @@ pub async fn list_circuit_breakers(
     summary = "Trip circuit breaker",
     description = "Force-opens a circuit breaker, immediately rejecting all requests to the provider.",
     params(
-        ("provider" = String, Path, description = "Provider name")
+        ("provider" = String, description = "Provider name")
     ),
     responses(
         (status = 200, description = "Circuit breaker tripped", body = CircuitBreakerActionResponse),
@@ -137,7 +137,7 @@ pub async fn trip_circuit_breaker(
     summary = "Reset circuit breaker",
     description = "Force-closes a circuit breaker, restoring normal request flow to the provider.",
     params(
-        ("provider" = String, Path, description = "Provider name")
+        ("provider" = String, description = "Provider name")
     ),
     responses(
         (status = 200, description = "Circuit breaker reset", body = CircuitBreakerActionResponse),

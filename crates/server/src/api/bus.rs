@@ -16,6 +16,7 @@
 // not a real cost — silence the lint module-wide.
 #![allow(clippy::result_large_err)]
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::{BTreeMap, HashMap};
 
 use axum::Json;
@@ -460,7 +461,9 @@ fn validate_user_headers(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateTopicRequest {
     pub name: String,
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     #[serde(default)]
     pub partitions: Option<i32>,
@@ -505,8 +508,10 @@ pub struct ListTopicsResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListTopicsParams {
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
 }
 
@@ -517,8 +522,10 @@ pub struct PublishRequest {
     #[serde(default)]
     pub topic: Option<String>,
     #[serde(default)]
+    #[schema(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[schema(ignore)]
     pub tenant: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
@@ -583,7 +590,7 @@ fn service_unavailable(msg: &str) -> axum::response::Response {
 pub async fn create_topic(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateTopicRequest>,
+    ScopedJson(req): ScopedJson<CreateTopicRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -733,7 +740,7 @@ pub async fn create_topic(
 pub async fn list_topics(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListTopicsParams>,
+    ScopedQuery(params): ScopedQuery<ListTopicsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -878,7 +885,7 @@ pub async fn delete_topic(
 pub async fn publish(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<PublishRequest>,
+    ScopedJson(req): ScopedJson<PublishRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -1243,7 +1250,9 @@ pub struct CreateSubscriptionRequest {
     /// Must belong to the same `(namespace, tenant)` as the
     /// subscription — cross-tenant subscriptions are rejected.
     pub topic: String,
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     /// `earliest` or `latest`. Defaults to `latest`.
     #[serde(default)]
@@ -1297,8 +1306,10 @@ pub struct ListSubscriptionsResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListSubscriptionsParams {
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     #[serde(default)]
     pub topic: Option<String>,
@@ -1375,7 +1386,7 @@ pub struct DeadLetterResponse {
 pub async fn create_subscription(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateSubscriptionRequest>,
+    ScopedJson(req): ScopedJson<CreateSubscriptionRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -1602,7 +1613,7 @@ pub async fn create_subscription(
 pub async fn list_subscriptions(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListSubscriptionsParams>,
+    ScopedQuery(params): ScopedQuery<ListSubscriptionsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -1649,7 +1660,7 @@ pub async fn list_subscriptions(
 
 #[utoipa::path(
     delete,
-    path = "/v1/bus/subscriptions/{namespace}/{tenant}/{id}",
+    path = "/v1/bus/subscriptions/{id}",
     tag = "bus",
     responses(
         (status = 204, description = "Subscription deleted"),
@@ -1660,7 +1671,11 @@ pub async fn list_subscriptions(
 pub async fn delete_subscription(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -1725,7 +1740,7 @@ pub async fn delete_subscription(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
+    path = "/v1/bus/subscriptions/{id}/ack",
     tag = "bus",
     request_body = AckRequest,
     responses(
@@ -1737,7 +1752,11 @@ pub async fn delete_subscription(
 pub async fn ack_subscription(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
     Json(req): Json<AckRequest>,
 ) -> impl IntoResponse {
     // Legacy raw-offset transport. Receipt-required subscriptions reject it;
@@ -1793,7 +1812,7 @@ pub async fn ack_subscription(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/lag",
+    path = "/v1/bus/subscriptions/{id}/lag",
     tag = "bus",
     responses(
         (status = 200, description = "Lag snapshot", body = LagResponse),
@@ -1804,7 +1823,11 @@ pub async fn ack_subscription(
 pub async fn subscription_lag(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -1858,7 +1881,7 @@ pub async fn subscription_lag(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
+    path = "/v1/bus/subscriptions/{id}/deadletter",
     tag = "bus",
     request_body = DeadLetterRequest,
     responses(
@@ -1872,7 +1895,11 @@ pub async fn subscription_lag(
 pub async fn deadletter_subscription(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, id)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+        String,
+    )>,
     Json(req): Json<DeadLetterRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -2082,7 +2109,9 @@ const MAX_VERSION_ALLOC_ATTEMPTS: u32 = 8;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSchemaRequest {
     pub subject: String,
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     /// JSON Schema document (draft 2020-12). Validated by the
     /// `jsonschema` crate when compiled.
@@ -2115,8 +2144,10 @@ pub struct ListSchemasResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListSchemasParams {
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     #[serde(default)]
     pub subject: Option<String>,
@@ -2487,7 +2518,7 @@ async fn validate_payload_against_topic_schema(
 pub async fn create_schema(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateSchemaRequest>,
+    ScopedJson(req): ScopedJson<CreateSchemaRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -2688,7 +2719,7 @@ pub async fn create_schema(
 pub async fn list_schemas(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListSchemasParams>,
+    ScopedQuery(params): ScopedQuery<ListSchemasParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -2777,11 +2808,9 @@ pub async fn list_schemas(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
+    path = "/v1/bus/schemas/{subject}",
     tag = "bus",
     params(
-        ("namespace" = String, Path, description = "Topic namespace"),
-        ("tenant" = String, Path, description = "Tenant ID"),
         ("subject" = String, Path, description = "Schema subject"),
     ),
     responses(
@@ -2793,7 +2822,7 @@ pub async fn list_schemas(
 pub async fn get_subject_versions(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, subject)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, subject)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -2860,11 +2889,9 @@ pub async fn get_subject_versions(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+    path = "/v1/bus/schemas/{subject}/{version}",
     tag = "bus",
     params(
-        ("namespace" = String, Path, description = "Topic namespace"),
-        ("tenant" = String, Path, description = "Tenant ID"),
         ("subject" = String, Path, description = "Schema subject"),
         ("version" = String, Path, description = "Version number or 'latest'"),
     ),
@@ -2877,7 +2904,7 @@ pub async fn get_subject_versions(
 pub async fn get_schema_version(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, subject, version)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, subject, version)): crate::auth::context::ScopedPath<(String, String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -2991,11 +3018,9 @@ async fn resolve_schema_version(
 
 #[utoipa::path(
     delete,
-    path = "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+    path = "/v1/bus/schemas/{subject}/{version}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("subject" = String, Path),
         ("version" = i32, Path),
     ),
@@ -3009,7 +3034,7 @@ async fn resolve_schema_version(
 pub async fn delete_schema_version(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, subject, version)): Path<(String, String, String, i32)>,
+    crate::auth::context::ScopedPath((namespace, tenant, subject, version)): crate::auth::context::ScopedPath<(String, String, String, i32)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -3109,12 +3134,10 @@ pub async fn delete_schema_version(
 
 #[utoipa::path(
     put,
-    path = "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+    path = "/v1/bus/topics/{name}/schema",
     tag = "bus",
     request_body = BindTopicSchemaRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("name" = String, Path),
     ),
     responses(
@@ -3127,7 +3150,9 @@ pub async fn delete_schema_version(
 pub async fn bind_topic_schema(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, name)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, name)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
     Json(req): Json<BindTopicSchemaRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -3243,11 +3268,9 @@ pub async fn bind_topic_schema(
 
 #[utoipa::path(
     delete,
-    path = "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+    path = "/v1/bus/topics/{name}/schema",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("name" = String, Path),
     ),
     responses(
@@ -3259,7 +3282,9 @@ pub async fn bind_topic_schema(
 pub async fn unbind_topic_schema(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, name)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, name)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -3350,7 +3375,9 @@ pub async fn unbind_topic_schema(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterAgentRequest {
     pub agent_id: String,
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -3424,8 +3451,10 @@ pub struct ListAgentsResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListAgentsParams {
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Filter to agents advertising this capability token.
     #[serde(default)]
@@ -3636,7 +3665,7 @@ async fn ensure_agent_inbox_topic(
 pub async fn register_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<RegisterAgentRequest>,
+    ScopedJson(req): ScopedJson<RegisterAgentRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -3784,7 +3813,7 @@ pub async fn register_agent(
 pub async fn list_agents(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListAgentsParams>,
+    ScopedQuery(params): ScopedQuery<ListAgentsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -3853,11 +3882,9 @@ pub async fn list_agents(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    path = "/v1/bus/agents/{agent_id}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("agent_id" = String, Path),
     ),
     responses(
@@ -3869,7 +3896,7 @@ pub async fn list_agents(
 pub async fn get_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -3893,12 +3920,10 @@ pub async fn get_agent(
 
 #[utoipa::path(
     put,
-    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    path = "/v1/bus/agents/{agent_id}",
     tag = "bus",
     request_body = UpdateAgentRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("agent_id" = String, Path),
     ),
     responses(
@@ -3911,7 +3936,7 @@ pub async fn get_agent(
 pub async fn update_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -3982,11 +4007,9 @@ pub async fn update_agent(
 
 #[utoipa::path(
     delete,
-    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    path = "/v1/bus/agents/{agent_id}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("agent_id" = String, Path),
     ),
     responses(
@@ -3998,7 +4021,7 @@ pub async fn update_agent(
 pub async fn delete_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -4061,11 +4084,9 @@ pub async fn delete_agent(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
+    path = "/v1/bus/agents/{agent_id}/heartbeat",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("agent_id" = String, Path),
     ),
     responses(
@@ -4077,7 +4098,7 @@ pub async fn delete_agent(
 pub async fn heartbeat_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -4142,12 +4163,10 @@ pub async fn heartbeat_agent(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
+    path = "/v1/bus/agents/{agent_id}/send",
     tag = "bus",
     request_body = SendToAgentRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("agent_id" = String, Path),
     ),
     responses(
@@ -4166,7 +4185,7 @@ pub async fn heartbeat_agent(
 pub async fn send_to_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<SendToAgentRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -4326,7 +4345,7 @@ pub struct SetAgentAdminStateRequest {
 
 #[utoipa::path(
     put,
-    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state",
+    path = "/v1/bus/agents/{agent_id}/admin-state",
     tag = "bus",
     request_body = SetAgentAdminStateRequest,
     responses(
@@ -4341,7 +4360,7 @@ pub struct SetAgentAdminStateRequest {
 pub async fn set_agent_admin_state(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<SetAgentAdminStateRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -4469,7 +4488,9 @@ async fn load_agent(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateConversationRequest {
     pub conversation_id: String,
+    #[schema(ignore)]
     pub namespace: String,
+    #[schema(ignore)]
     pub tenant: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -4532,8 +4553,10 @@ pub struct ListConversationsResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListConversationsParams {
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
@@ -4792,7 +4815,7 @@ async fn ensure_conversation_events_topic(
 pub async fn register_conversation(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateConversationRequest>,
+    ScopedJson(req): ScopedJson<CreateConversationRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -4930,7 +4953,7 @@ pub async fn register_conversation(
 pub async fn list_conversations(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListConversationsParams>,
+    ScopedQuery(params): ScopedQuery<ListConversationsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -5002,11 +5025,9 @@ pub async fn list_conversations(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    path = "/v1/bus/conversations/{conversation_id}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -5018,7 +5039,7 @@ pub async fn list_conversations(
 pub async fn get_conversation(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -5043,12 +5064,10 @@ pub async fn get_conversation(
 
 #[utoipa::path(
     put,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    path = "/v1/bus/conversations/{conversation_id}",
     tag = "bus",
     request_body = UpdateConversationRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -5061,7 +5080,7 @@ pub async fn get_conversation(
 pub async fn update_conversation(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<UpdateConversationRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -5144,11 +5163,9 @@ pub async fn update_conversation(
 
 #[utoipa::path(
     delete,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    path = "/v1/bus/conversations/{conversation_id}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -5160,7 +5177,7 @@ pub async fn update_conversation(
 pub async fn delete_conversation(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -5222,12 +5239,10 @@ pub async fn delete_conversation(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+    path = "/v1/bus/conversations/{conversation_id}/transition",
     tag = "bus",
     request_body = ConversationTransitionRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -5240,7 +5255,7 @@ pub async fn delete_conversation(
 pub async fn transition_conversation(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<ConversationTransitionRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -5287,12 +5302,10 @@ pub async fn transition_conversation(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    path = "/v1/bus/conversations/{conversation_id}/messages",
     tag = "bus",
     request_body = AppendConversationMessageRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -5306,7 +5319,7 @@ pub async fn transition_conversation(
 pub async fn append_conversation_message(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<AppendConversationMessageRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -5508,11 +5521,9 @@ pub async fn append_conversation_message(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    path = "/v1/bus/conversations/{conversation_id}/messages",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
         ReplayConversationParams,
     ),
@@ -5526,7 +5537,7 @@ pub async fn append_conversation_message(
 pub async fn replay_conversation_messages(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Query(params): Query<ReplayConversationParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -6006,12 +6017,10 @@ fn stamp_tool_envelope_headers(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+    path = "/v1/bus/conversations/{conversation_id}/tool-calls",
     tag = "bus",
     request_body = PostToolCallRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -6025,7 +6034,7 @@ fn stamp_tool_envelope_headers(
 pub async fn post_tool_call(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<PostToolCallRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -6258,12 +6267,10 @@ pub async fn post_tool_call(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+    path = "/v1/bus/conversations/{conversation_id}/tool-results",
     tag = "bus",
     request_body = PostToolResultRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -6277,7 +6284,7 @@ pub async fn post_tool_call(
 pub async fn post_tool_result(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<PostToolResultRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -6484,11 +6491,9 @@ pub async fn post_tool_result(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+    path = "/v1/bus/tool-calls/{call_id}/result",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("call_id" = String, Path),
         ToolResultLookupParams,
     ),
@@ -6503,7 +6508,7 @@ pub async fn post_tool_result(
 pub async fn lookup_tool_result(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, call_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, call_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Query(params): Query<ToolResultLookupParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -6827,12 +6832,10 @@ fn stamp_stream_envelope_headers(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-chunks",
+    path = "/v1/bus/conversations/{conversation_id}/stream-chunks",
     tag = "bus",
     request_body = PostStreamChunkRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -6846,7 +6849,7 @@ fn stamp_stream_envelope_headers(
 pub async fn post_stream_chunk(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<PostStreamChunkRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -7030,12 +7033,10 @@ pub async fn post_stream_chunk(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-end",
+    path = "/v1/bus/conversations/{conversation_id}/stream-end",
     tag = "bus",
     request_body = PostStreamEndRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
     ),
     responses(
@@ -7049,7 +7050,7 @@ pub async fn post_stream_chunk(
 pub async fn post_stream_end(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<PostStreamEndRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -7248,11 +7249,9 @@ pub async fn post_stream_end(
 /// `bus` feature, and CI's `cargo doc` builds without it.
 #[utoipa::path(
     get,
-    path = "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
+    path = "/v1/bus/streams/{conversation_id}/{stream_id}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("conversation_id" = String, Path),
         ("stream_id" = String, Path),
         StreamConsumeParams,
@@ -7269,7 +7268,7 @@ pub async fn post_stream_end(
 pub async fn consume_stream(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, conversation_id, stream_id)): Path<(String, String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, conversation_id, stream_id)): crate::auth::context::ScopedPath<(String, String, String, String)>,
     Query(params): Query<StreamConsumeParams>,
 ) -> axum::response::Response {
     #[cfg(feature = "bus")]
@@ -7835,11 +7834,9 @@ async fn park_tool_call_for_approval(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/approvals/{namespace}/{tenant}",
+    path = "/v1/bus/approvals",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ListBusApprovalsParams,
     ),
     responses(
@@ -7850,7 +7847,10 @@ async fn park_tool_call_for_approval(
 pub async fn list_bus_approvals(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
     Query(params): Query<ListBusApprovalsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -7938,11 +7938,9 @@ pub async fn list_bus_approvals(
 
 #[utoipa::path(
     get,
-    path = "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
+    path = "/v1/bus/approvals/{approval_id}",
     tag = "bus",
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("approval_id" = String, Path),
     ),
     responses(
@@ -7954,7 +7952,7 @@ pub async fn list_bus_approvals(
 pub async fn get_bus_approval(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, approval_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, approval_id)): crate::auth::context::ScopedPath<(String, String, String)>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
     {
@@ -8032,12 +8030,10 @@ async fn load_approval(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/approve",
+    path = "/v1/bus/approvals/{approval_id}/approve",
     tag = "bus",
     request_body = BusApprovalDecisionRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("approval_id" = String, Path),
     ),
     responses(
@@ -8052,7 +8048,7 @@ async fn load_approval(
 pub async fn approve_bus_approval(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, approval_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, approval_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<BusApprovalDecisionRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -8368,12 +8364,10 @@ pub async fn approve_bus_approval(
 
 #[utoipa::path(
     post,
-    path = "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
+    path = "/v1/bus/approvals/{approval_id}/reject",
     tag = "bus",
     request_body = BusApprovalDecisionRequest,
     params(
-        ("namespace" = String, Path),
-        ("tenant" = String, Path),
         ("approval_id" = String, Path),
     ),
     responses(
@@ -8387,7 +8381,7 @@ pub async fn approve_bus_approval(
 pub async fn reject_bus_approval(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, approval_id)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, approval_id)): crate::auth::context::ScopedPath<(String, String, String)>,
     Json(req): Json<BusApprovalDecisionRequest>,
 ) -> impl IntoResponse {
     #[cfg(feature = "bus")]
@@ -8579,3 +8573,12 @@ mod tests {
         assert_eq!(req.reason.as_deref(), Some("exfiltration"));
     }
 }
+
+crate::auth::context::scoped_body!(
+    CreateConversationRequest,
+    CreateSchemaRequest,
+    CreateSubscriptionRequest,
+    CreateTopicRequest,
+    PublishRequest,
+    RegisterAgentRequest
+);

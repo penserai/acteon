@@ -215,6 +215,7 @@ nav:
     - MCP server: api/mcp-server.md
     - CLI: api/cli.md
     - Authentication: api/authentication.md
+    - Tenant context: api/tenant-context.md
     - YAML rule reference: api/rule-reference.md
   - Operate:
     - operations/index.md

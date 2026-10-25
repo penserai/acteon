@@ -13,12 +13,6 @@ public class CreateProfileRequest {
     @JsonProperty("name")
     private String name;
 
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
-
     @JsonProperty("fields")
     private Map<String, Object> fields;
 
@@ -30,21 +24,14 @@ public class CreateProfileRequest {
 
     public CreateProfileRequest() {}
 
-    public CreateProfileRequest(String name, String namespace, String tenant, Map<String, Object> fields) {
+    public CreateProfileRequest(String name, Map<String, Object> fields) {
         this.name = name;
-        this.namespace = namespace;
-        this.tenant = tenant;
+
         this.fields = fields;
     }
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public Map<String, Object> getFields() { return fields; }
     public void setFields(Map<String, Object> fields) { this.fields = fields; }

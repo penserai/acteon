@@ -123,6 +123,258 @@ pub struct Action {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kid: Option<String>,
 }
+/// HTTP dispatch input. Tenant ownership is populated by the server from the
+/// authenticated credential; it is never accepted from the request payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ActionRequest {
+    /// Unique action identifier.
+    pub id: ActionId,
+
+    /// Target provider for execution.
+    pub provider: ProviderId,
+
+    /// Action type discriminator (e.g. `send_email`, `send_sms`).
+    pub action_type: String,
+
+    /// Arbitrary JSON payload for the provider.
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub payload: serde_json::Value,
+
+    /// Optional metadata labels.
+    #[serde(default)]
+    pub metadata: ActionMetadata,
+
+    /// Optional deduplication key. If set, duplicate actions with the same
+    /// key are suppressed.
+    pub dedup_key: Option<String>,
+
+    /// Current state in the state machine (e.g., "open", "closed").
+    /// State names are defined by configuration, not hardcoded.
+    pub status: Option<String>,
+
+    /// Fingerprint for correlating related events.
+    /// Used to group events and track state across related actions.
+    pub fingerprint: Option<String>,
+
+    /// When this event started.
+    pub starts_at: Option<DateTime<Utc>>,
+
+    /// When this event ended.
+    pub ends_at: Option<DateTime<Utc>>,
+
+    /// Timestamp when the action was created.
+    pub created_at: DateTime<Utc>,
+
+    /// W3C Trace Context headers (`traceparent`, `tracestate`) captured at
+    /// dispatch time. Carries the distributed trace identity across async
+    /// boundaries such as chains, grouped notifications, and DLQ replays.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
+    pub trace_context: HashMap<String, String>,
+
+    /// Optional template profile name. When set, the gateway renders the
+    /// matching [`TemplateProfile`](crate::template::TemplateProfile) fields
+    /// using the payload as variables and merges the results into the payload
+    /// before provider execution.
+    #[serde(default)]
+    pub template: Option<String>,
+
+    /// Optional file attachments to include with the action.
+    ///
+    /// Providers that support attachments (email, Slack, Discord, webhook)
+    /// resolve these at execution time. Providers that don't simply ignore them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
+    pub attachments: Vec<Attachment>,
+
+    /// Ed25519 signature over the action's canonical bytes, base64-encoded.
+    /// Set by the client or server when action signing is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+
+    /// Identifier of the key that produced `signature`. Used to look
+    /// up the corresponding public key in the server's keyring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_id: Option<String>,
+
+    /// Optional key identifier for rotation. When the same `signer_id`
+    /// has more than one active key (e.g., during a rotation window),
+    /// `kid` selects the specific key to verify against. When `None`,
+    /// the verifier accepts any key registered under `signer_id` —
+    /// the legacy single-key behavior. Set this on signed dispatches
+    /// once the operator has provisioned multiple keys for the
+    /// signer; clients can fetch the active set via
+    /// `GET /.well-known/acteon-signing-keys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
+}
+
+impl ActionRequest {
+    /// Create a dispatch request without tenant metadata.
+    #[must_use]
+    pub fn new(
+        provider: impl Into<ProviderId>,
+        action_type: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: ActionId::new(Uuid::new_v4().to_string()),
+            provider: provider.into(),
+            action_type: action_type.into(),
+            payload,
+            metadata: ActionMetadata::default(),
+            dedup_key: None,
+            status: None,
+            fingerprint: None,
+            starts_at: None,
+            ends_at: None,
+            created_at: Utc::now(),
+            trace_context: HashMap::new(),
+            template: None,
+            attachments: Vec::new(),
+            signature: None,
+            signer_id: None,
+            kid: None,
+        }
+    }
+
+    /// Set a deduplication key.
+    #[must_use]
+    pub fn with_dedup_key(mut self, key: impl Into<String>) -> Self {
+        self.dedup_key = Some(key.into());
+        self
+    }
+
+    /// Set metadata labels.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: ActionMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Set the event status (state machine state).
+    #[must_use]
+    pub fn with_status(mut self, status: impl Into<String>) -> Self {
+        self.status = Some(status.into());
+        self
+    }
+
+    /// Set the fingerprint for event correlation.
+    #[must_use]
+    pub fn with_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
+        self.fingerprint = Some(fingerprint.into());
+        self
+    }
+
+    /// Set the event start time.
+    #[must_use]
+    pub fn with_starts_at(mut self, starts_at: DateTime<Utc>) -> Self {
+        self.starts_at = Some(starts_at);
+        self
+    }
+
+    /// Set the event end time.
+    #[must_use]
+    pub fn with_ends_at(mut self, ends_at: DateTime<Utc>) -> Self {
+        self.ends_at = Some(ends_at);
+        self
+    }
+
+    /// Set the W3C Trace Context for distributed trace propagation.
+    #[must_use]
+    pub fn with_trace_context(mut self, ctx: HashMap<String, String>) -> Self {
+        self.trace_context = ctx;
+        self
+    }
+
+    /// Set the template profile name for payload rendering.
+    #[must_use]
+    pub fn with_template(mut self, template: impl Into<String>) -> Self {
+        self.template = Some(template.into());
+        self
+    }
+
+    /// Set file attachments for the action.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: Vec<Attachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Set the Ed25519 signature (base64-encoded).
+    #[must_use]
+    pub fn with_signature(mut self, signature: impl Into<String>) -> Self {
+        self.signature = Some(signature.into());
+        self
+    }
+
+    /// Set the signer identity (keyring lookup key).
+    #[must_use]
+    pub fn with_signer_id(mut self, signer_id: impl Into<String>) -> Self {
+        self.signer_id = Some(signer_id.into());
+        self
+    }
+
+    /// Set the key identifier (`kid`) — used when the signer has more
+    /// than one active key during a rotation window.
+    #[must_use]
+    pub fn with_kid(mut self, kid: impl Into<String>) -> Self {
+        self.kid = Some(kid.into());
+        self
+    }
+
+    /// Attach trusted credential context at the server boundary.
+    #[must_use]
+    pub fn into_action(self, scope: &crate::TenantContext) -> Action {
+        Action {
+            namespace: scope.namespace.clone().into(),
+            tenant: scope.tenant.clone().into(),
+            id: self.id,
+            provider: self.provider,
+            action_type: self.action_type,
+            payload: self.payload,
+            metadata: self.metadata,
+            dedup_key: self.dedup_key,
+            status: self.status,
+            fingerprint: self.fingerprint,
+            starts_at: self.starts_at,
+            ends_at: self.ends_at,
+            created_at: self.created_at,
+            trace_context: self.trace_context,
+            template: self.template,
+            attachments: self.attachments,
+            signature: self.signature,
+            signer_id: self.signer_id,
+            kid: self.kid,
+        }
+    }
+}
+
+impl From<Action> for ActionRequest {
+    fn from(action: Action) -> Self {
+        Self {
+            id: action.id,
+            provider: action.provider,
+            action_type: action.action_type,
+            payload: action.payload,
+            metadata: action.metadata,
+            dedup_key: action.dedup_key,
+            status: action.status,
+            fingerprint: action.fingerprint,
+            starts_at: action.starts_at,
+            ends_at: action.ends_at,
+            created_at: action.created_at,
+            trace_context: action.trace_context,
+            template: action.template,
+            attachments: action.attachments,
+            signature: action.signature,
+            signer_id: action.signer_id,
+            kid: action.kid,
+        }
+    }
+}
 
 impl Action {
     /// Create a new action with required fields. Generates a UUID-v4 id and

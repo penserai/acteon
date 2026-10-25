@@ -87,15 +87,10 @@ impl ActeonClient {
     /// List executions (including terminal ones) with optional filters.
     pub async fn list_executions(
         &self,
-        namespace: &str,
-        tenant: &str,
         options: &ExecutionListOptions,
     ) -> Result<ListExecutionsResponse, Error> {
         let url = format!("{}/v1/executions", self.base_url);
-        let mut query: Vec<(&str, String)> = vec![
-            ("namespace", namespace.to_owned()),
-            ("tenant", tenant.to_owned()),
-        ];
+        let mut query: Vec<(&str, String)> = vec![];
         if let Some(ref v) = options.chain_name {
             query.push(("chain_name", v.clone()));
         }
@@ -136,16 +131,10 @@ impl ActeonClient {
     }
 
     /// Get one execution's visibility summary.
-    pub async fn get_execution(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        execution_id: &str,
-    ) -> Result<ExecutionSummary, Error> {
+    pub async fn get_execution(&self, execution_id: &str) -> Result<ExecutionSummary, Error> {
         let url = format!("{}/v1/executions/{execution_id}", self.base_url);
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -167,14 +156,11 @@ impl ActeonClient {
     /// and workflow executions alike).
     pub async fn get_execution_history(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
     ) -> Result<ExecutionHistoryResponse, Error> {
         let url = format!("{}/v1/executions/{execution_id}/history", self.base_url);
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -196,8 +182,6 @@ impl ActeonClient {
     /// becomes the wait step's response body.
     pub async fn signal_execution(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         signal_name: &str,
         payload: Option<Value>,
@@ -207,8 +191,7 @@ impl ActeonClient {
             self.base_url
         );
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "payload": payload,
         });
         let response = self
@@ -232,15 +215,12 @@ impl ActeonClient {
     /// overwritten).
     pub async fn upsert_execution_attributes(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         attributes: HashMap<String, Value>,
     ) -> Result<ExecutionSummary, Error> {
         let url = format!("{}/v1/executions/{execution_id}/attributes", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "attributes": attributes,
         });
         let response = self
@@ -273,16 +253,13 @@ impl ActeonClient {
     /// discarded.
     pub async fn reset_execution(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         step: &str,
         reason: Option<&str>,
     ) -> Result<ExecutionSummary, Error> {
         let url = format!("{}/v1/executions/{execution_id}/reset", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "step": step,
             "reason": reason,
         });

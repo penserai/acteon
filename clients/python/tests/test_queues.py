@@ -129,135 +129,100 @@ class TestWorkerTaskModel(unittest.TestCase):
 class TestQueueEndpoints(unittest.TestCase):
     def test_enqueue_task(self):
         c = _StubClient(body=_task_body(status="pending"))
-        task = c.enqueue_task("emails", "ns", "te", "send_email", {"to": "a@b.c"}, max_attempts=5)
+        task = c.enqueue_task("emails", "send_email", {"to": "a@b.c"}, max_attempts=5)
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/queues/emails/tasks")
         self.assertEqual(
             call.json,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "action_type": "send_email",
-                "payload": {"to": "a@b.c"},
-                "max_attempts": 5,
-            },
+            {"action_type": "send_email", "payload": {"to": "a@b.c"}, "max_attempts": 5},
         )
         self.assertEqual(task.task_id, "t-1")
 
     def test_enqueue_task_omits_absent_max_attempts(self):
         c = _StubClient(body=_task_body(status="pending"))
-        c.enqueue_task("emails", "ns", "te", "send_email", {})
+        c.enqueue_task("emails", "send_email", {})
         self.assertNotIn("max_attempts", c.calls[0].json)
 
     def test_poll_tasks(self):
         c = _StubClient(body={"tasks": [_task_body()]})
-        tasks = c.poll_tasks(
-            "emails",
-            "ns",
-            "te",
-            max_tasks=2,
-            lease_seconds=30,
-            worker_id="w-1",
-        )
+        tasks = c.poll_tasks("emails", max_tasks=2, lease_seconds=30, worker_id="w-1")
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/queues/emails/poll")
         self.assertEqual(
             call.json,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "max_tasks": 2,
-                "lease_seconds": 30,
-                "worker_id": "w-1",
-            },
+            {"max_tasks": 2, "lease_seconds": 30, "worker_id": "w-1"},
         )
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].lease_token, "lease-1")
 
     def test_poll_tasks_minimal_body(self):
         c = _StubClient(body={"tasks": []})
-        tasks = c.poll_tasks("emails", "ns", "te")
-        self.assertEqual(c.calls[0].json, {"namespace": "ns", "tenant": "te"})
+        tasks = c.poll_tasks("emails")
+        self.assertEqual(c.calls[0].json, {})
         self.assertEqual(tasks, [])
 
     def test_heartbeat_task(self):
         c = _StubClient(body=_task_body())
-        c.heartbeat_task("t-1", "ns", "te", "lease-1", extend_seconds=60)
+        c.heartbeat_task("t-1", "lease-1", extend_seconds=60)
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/queues/tasks/t-1/heartbeat")
         self.assertEqual(
             call.json,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "lease_token": "lease-1",
-                "extend_seconds": 60,
-            },
+            {"lease_token": "lease-1", "extend_seconds": 60},
         )
 
     def test_complete_task(self):
         c = _StubClient(body=_task_body(status="completed", result={"ok": True}))
-        task = c.complete_task("t-1", "ns", "te", "lease-1", {"ok": True})
+        task = c.complete_task("t-1", "lease-1", {"ok": True})
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/queues/tasks/t-1/complete")
         self.assertEqual(
             call.json,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "lease_token": "lease-1",
-                "result": {"ok": True},
-            },
+            {"lease_token": "lease-1", "result": {"ok": True}},
         )
         self.assertEqual(task.status, "completed")
 
     def test_fail_task(self):
         c = _StubClient(body=_task_body(status="failed", error="boom"))
-        task = c.fail_task("t-1", "ns", "te", "lease-1", "boom", True)
+        task = c.fail_task("t-1", "lease-1", "boom", True)
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/queues/tasks/t-1/fail")
         self.assertEqual(
             call.json,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "lease_token": "lease-1",
-                "error": "boom",
-                "retryable": True,
-            },
+            {"lease_token": "lease-1", "error": "boom", "retryable": True},
         )
         self.assertEqual(task.status, "failed")
 
     def test_get_task(self):
         c = _StubClient(body=_task_body())
-        task = c.get_task("t-1", "ns", "te")
+        task = c.get_task("t-1")
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
         self.assertEqual(call.path, "/v1/queues/tasks/t-1")
-        self.assertEqual(call.params, {"namespace": "ns", "tenant": "te"})
+        self.assertEqual(call.params, {})
         self.assertEqual(task.task_id, "t-1")
 
     def test_get_task_404_returns_none(self):
         c = _StubClient(status_code=404)
-        self.assertIsNone(c.get_task("missing", "ns", "te"))
+        self.assertIsNone(c.get_task("missing"))
 
     def test_list_tasks(self):
         c = _StubClient(body={"tasks": [_task_body()]})
-        tasks = c.list_tasks("emails", "ns", "te", status="leased")
+        tasks = c.list_tasks("emails", status="leased")
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
         self.assertEqual(call.path, "/v1/queues/emails/tasks")
-        self.assertEqual(call.params, {"namespace": "ns", "tenant": "te", "status": "leased"})
+        self.assertEqual(call.params, {"status": "leased"})
         self.assertEqual(len(tasks), 1)
 
     def test_path_segments_are_escaped(self):
         c = _StubClient(body={"tasks": []})
-        c.poll_tasks("a/b", "ns", "te")
+        c.poll_tasks("a/b")
         self.assertEqual(c.calls[0].path, "/v1/queues/a%2Fb/poll")
 
     def test_error_body_raises_api_error(self):
@@ -266,7 +231,7 @@ class TestQueueEndpoints(unittest.TestCase):
             body={"code": "LEASE_EXPIRED", "message": "lease expired"},
         )
         with self.assertRaises(ApiError) as cm:
-            c.complete_task("t-1", "ns", "te", "stale", {})
+            c.complete_task("t-1", "stale", {})
         self.assertEqual(cm.exception.code, "LEASE_EXPIRED")
 
 

@@ -2,11 +2,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiGet, apiPost } from '../client'
 import type { ApprovalStatus } from '../../types'
 
-export function useApprovals(params: { namespace?: string; tenant?: string }) {
+export function useApprovals() {
   return useQuery({
-    queryKey: ['approvals', params],
+    queryKey: ['approvals'],
     queryFn: async () => {
-      const res = await apiGet<{ approvals: ApprovalStatus[]; count: number }>('/v1/approvals', params)
+      const res = await apiGet<{ approvals: ApprovalStatus[]; count: number }>('/v1/approvals')
       return res.approvals
     },
     refetchInterval: 10000,
@@ -16,8 +16,8 @@ export function useApprovals(params: { namespace?: string; tenant?: string }) {
 export function useApproveAction() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ ns, tenant, id }: { ns: string; tenant: string; id: string }) =>
-      apiPost(`/v1/approvals/${encodeURIComponent(ns)}/${encodeURIComponent(tenant)}/${encodeURIComponent(id)}/approve`),
+    mutationFn: ({ id }: { id: string }) =>
+      apiPost(`/v1/approvals/${encodeURIComponent(id)}/approve`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['approvals'] }),
   })
 }
@@ -25,8 +25,8 @@ export function useApproveAction() {
 export function useRejectAction() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ ns, tenant, id }: { ns: string; tenant: string; id: string }) =>
-      apiPost(`/v1/approvals/${encodeURIComponent(ns)}/${encodeURIComponent(tenant)}/${encodeURIComponent(id)}/reject`),
+    mutationFn: ({ id }: { id: string }) =>
+      apiPost(`/v1/approvals/${encodeURIComponent(id)}/reject`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['approvals'] }),
   })
 }

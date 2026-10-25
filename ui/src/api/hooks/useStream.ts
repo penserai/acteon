@@ -1,9 +1,8 @@
+import { openEventStream } from '../sse'
 import { useEffect, useRef, useCallback, useState } from 'react'
 import type { StreamEvent } from '../../types'
 
 interface StreamOptions {
-  namespace?: string
-  tenant?: string
   action_type?: string
   event_type?: string
   onEvent: (event: StreamEvent) => void
@@ -26,9 +25,9 @@ const SSE_EVENT_TYPES = [
   'approval_resolved',
 ] as const
 
-export function useStream({ namespace, tenant, action_type, event_type, onEvent, enabled = true }: StreamOptions) {
+export function useStream({ action_type, event_type, onEvent, enabled = true }: StreamOptions) {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected')
-  const sourceRef = useRef<EventSource | null>(null)
+  const sourceRef = useRef<AbortController | null>(null)
   const onEventRef = useRef(onEvent)
   useEffect(() => {
     onEventRef.current = onEvent
@@ -40,42 +39,27 @@ export function useStream({ namespace, tenant, action_type, event_type, onEvent,
     if (!enabled) return
 
     const params = new URLSearchParams()
-    if (namespace) params.set('namespace', namespace)
-    if (tenant) params.set('tenant', tenant)
     if (action_type) params.set('action_type', action_type)
     if (event_type) params.set('event_type', event_type)
 
-    const baseUrl = import.meta.env.VITE_API_URL ?? ''
-    const url = `${baseUrl}/v1/stream?${params.toString()}`
-
     setStatus('connecting')
-    const source = new EventSource(url)
-    sourceRef.current = source
-
-    source.onopen = () => setStatus('connected')
-
-    const handler = (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as StreamEvent
-        if (!data.event_type) {
-          data.event_type = e.type
-        }
-        onEventRef.current(data)
-      } catch {
-        // ignore parse errors
-      }
-    }
-
-    for (const eventType of SSE_EVENT_TYPES) {
-      source.addEventListener(eventType, handler)
-    }
-
-    source.onerror = () => {
-      setStatus('disconnected')
-      source.close()
-      reconnectRef.current = setTimeout(() => connectRef.current(), 3000)
-    }
-  }, [namespace, tenant, action_type, event_type, enabled])
+    sourceRef.current?.abort()
+    sourceRef.current = openEventStream(`/v1/stream?${params.toString()}`, {
+      open: () => setStatus('connected'),
+      event: event => {
+        if (!SSE_EVENT_TYPES.includes(event.type as typeof SSE_EVENT_TYPES[number])) return
+        try {
+          const data = JSON.parse(event.data) as StreamEvent
+          if (!data.event_type) data.event_type = event.type
+          onEventRef.current(data)
+        } catch { /* Ignore malformed events. */ }
+      },
+      error: () => {
+        setStatus('disconnected')
+        reconnectRef.current = setTimeout(() => connectRef.current(), 3000)
+      },
+    })
+  }, [action_type, event_type, enabled])
 
   useEffect(() => {
     connectRef.current = connect
@@ -87,15 +71,16 @@ export function useStream({ namespace, tenant, action_type, event_type, onEvent,
     const timer = setTimeout(() => connect(), 0)
     return () => {
       clearTimeout(timer)
-      sourceRef.current?.close()
+      sourceRef.current?.abort()
       sourceRef.current = null
       if (reconnectRef.current) clearTimeout(reconnectRef.current)
     }
   }, [connect])
 
   const disconnect = useCallback(() => {
-    sourceRef.current?.close()
+    sourceRef.current?.abort()
     sourceRef.current = null
+    if (reconnectRef.current) clearTimeout(reconnectRef.current)
     setStatus('disconnected')
   }, [])
 

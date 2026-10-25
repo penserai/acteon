@@ -123,7 +123,7 @@ mod tests {
         let error = client
             .platform_request(
                 PlatformOperation::BusStagesControl,
-                &[("namespace", "n"), ("tenant", "t"), ("id", "a/b ?#%")],
+                &[("id", "a/b ?#%")],
                 &[("filter", "a b"), ("filter", "c&d")],
                 Some(&serde_json::json!({"request_id":"stable"})),
             )
@@ -131,14 +131,19 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, Error::Http { status: 409, .. }));
         let request = server.join().unwrap();
-        assert!(request.starts_with("POST /v1/bus/stages/n/t/a%2Fb%20%3F%23%25/control?filter=a+b&filter=c%26d HTTP/1.1\r\n"), "{request}");
+        assert!(
+            request.starts_with(
+                "POST /v1/bus/stages/a%2Fb%20%3F%23%25/control?filter=a+b&filter=c%26d HTTP/1.1\r\n"
+            ),
+            "{request}"
+        );
         assert!(request.contains("authorization: Bearer test-key\r\n"));
         assert!(request.ends_with("{\"request_id\":\"stable\"}"));
         assert!(
             client
                 .platform_request(
                     PlatformOperation::BusStagesStatus,
-                    &[("namespace", "n"), ("tenant", "t"), ("id", "..")],
+                    &[("id", "..")],
                     &[],
                     None
                 )

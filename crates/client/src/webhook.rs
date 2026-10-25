@@ -5,24 +5,22 @@
 //! ```no_run
 //! use acteon_client::webhook;
 //!
-//! let action = webhook::action("notifications", "tenant-1")
+//! let action = webhook::action()
 //!     .url("https://hooks.example.com/alert")
 //!     .body(serde_json::json!({"message": "Server is down", "severity": "critical"}))
 //!     .header("X-Custom-Header", "value")
 //!     .build();
 //! ```
 
-use acteon_core::Action;
+use acteon_core::ActionRequest;
 use std::collections::HashMap;
 
 /// Create a new webhook action builder.
 ///
 /// This is a convenience entry point for building actions targeted at the
 /// webhook provider.
-pub fn action(namespace: impl Into<String>, tenant: impl Into<String>) -> WebhookActionBuilder {
+pub fn action() -> WebhookActionBuilder {
     WebhookActionBuilder {
-        namespace: namespace.into(),
-        tenant: tenant.into(),
         url: String::new(),
         method: "POST".to_string(),
         action_type: "webhook".to_string(),
@@ -35,8 +33,6 @@ pub fn action(namespace: impl Into<String>, tenant: impl Into<String>) -> Webhoo
 /// Builder for constructing webhook-targeted Actions.
 #[derive(Debug)]
 pub struct WebhookActionBuilder {
-    namespace: String,
-    tenant: String,
     url: String,
     method: String,
     action_type: String,
@@ -88,12 +84,12 @@ impl WebhookActionBuilder {
         self
     }
 
-    /// Build the Action.
+    /// Build the `ActionRequest`.
     ///
     /// # Panics
     ///
     /// Panics if `url` has not been set.
-    pub fn build(self) -> Action {
+    pub fn build(self) -> ActionRequest {
         assert!(!self.url.is_empty(), "webhook URL must be set");
 
         let mut payload = serde_json::Map::new();
@@ -107,9 +103,7 @@ impl WebhookActionBuilder {
             payload.insert("headers".to_string(), headers_value);
         }
 
-        let mut action = Action::new(
-            self.namespace,
-            self.tenant,
+        let mut action = ActionRequest::new(
             "webhook",
             self.action_type,
             serde_json::Value::Object(payload),
@@ -129,13 +123,13 @@ mod tests {
 
     #[test]
     fn basic_webhook_action() {
-        let a = action("ns", "t1")
+        let a = action()
             .url("https://example.com/hook")
             .body(serde_json::json!({"msg": "hello"}))
             .build();
 
-        assert_eq!(a.namespace.as_str(), "ns");
-        assert_eq!(a.tenant.as_str(), "t1");
+        assert!(serde_json::to_value(&a).unwrap().get("namespace").is_none());
+        assert!(serde_json::to_value(&a).unwrap().get("tenant").is_none());
         assert_eq!(a.provider.as_str(), "webhook");
         assert_eq!(a.action_type, "webhook");
         assert_eq!(a.payload["url"], "https://example.com/hook");
@@ -146,7 +140,7 @@ mod tests {
 
     #[test]
     fn webhook_action_with_options() {
-        let a = action("ns", "t1")
+        let a = action()
             .url("https://example.com/hook")
             .method("PUT")
             .action_type("custom_hook")
@@ -166,6 +160,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "webhook URL must be set")]
     fn panics_without_url() {
-        action("ns", "t1").body(serde_json::json!({})).build();
+        action().body(serde_json::json!({})).build();
     }
 }

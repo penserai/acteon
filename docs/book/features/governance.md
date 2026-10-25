@@ -53,14 +53,14 @@ when the operator has qualified that target endpoint as replay-idempotent.
 
 The Rust host constructs `AgentPeerInvocation`; it has no wire deserializer.
 Agents call `POST
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/message:send`
+/a2a/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/message:send`
 with only `{"message": ...}`. The accepted source task is an opaque lookup
 handle, and current private authentication must match that task's recipient
 context. The server supplies source identity, permits, credential, endpoint and
 opaque context. Models never send those authority fields.
 
 For accepted submissions, `POST
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:refresh`
+/a2a/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:refresh`
 performs at most one guarded remote task read. Terminal snapshots return without
 network traffic. The submission ID is only a journal key.
 The runtime repeats all current source and target checks, derives the task URL
@@ -69,7 +69,7 @@ regressions, and persists the new snapshot with compare-and-swap. A failed read
 does not erase the last accepted snapshot or resend work.
 
 For an accepted remote task, `POST
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:cancel`
+/a2a/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:cancel`
 persists one cancellation intent before delivery and never automatically sends
 it twice. Every call repeats current authentication, source binding, permit,
 onward-agent grant, registry-card and target-binding checks. It calls the
@@ -105,6 +105,7 @@ empty when this credential should manage the scope without dispatching:
 
 ```toml
 [[api_keys]]
+scope = { namespace = "prod", tenant = "acme" }
 name = "operator"
 authority_id = "credential/operator"
 principal = { id = "operator", kind = "human" }
@@ -154,8 +155,8 @@ instead of attaching a fresh authority stamp to an old decision.
 
 | Operation | Endpoint |
 |---|---|
-| Inspect current bounded management view | `GET /v1/governance?namespace=prod&tenant=acme` |
-| Read verified provider history | `GET /v1/governance/executions/{execution_id}?namespace=prod&tenant=acme` |
+| Inspect current bounded management view | `GET /v1/governance` |
+| Read verified provider history | `GET /v1/governance/executions/{execution_id}` |
 | Issue or revise a qualified permit | `POST /v1/governance/permits` |
 | Close/reopen a resource or revoke authority | `POST /v1/governance/changes` |
 | Publish an exact configured federation trust | `POST /v1/governance/federation/trusts` |
@@ -405,7 +406,7 @@ sponsorship at child admission. The installed durable transport repeats current
 source, registry and binding checks before registering a send.
 
 Authenticated agent services expose a narrower model-facing view at `GET
-/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers?skill={skill}`.
+/a2a/agents/{agent}/v1/tasks/{source_task}/peers?skill={skill}`.
 The host's reviewed onward-agent allowlist bounds the candidates before the
 runtime reads current agent and card records. The caller's API grant filters the
 result again. The response contains only agent ID, exact skill, card version,

@@ -23,7 +23,7 @@ func ptr[T any](v T) *T { return &v }
 
 func TestCreateBusTopicSerde(t *testing.T) {
 	t.Run("minimal — drops every optional field", func(t *testing.T) {
-		req := CreateBusTopic{Name: "t", Namespace: "n", Tenant: "te"}
+		req := CreateBusTopic{Name: "t"}
 		raw, err := json.Marshal(req)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
@@ -47,9 +47,8 @@ func TestCreateBusTopicSerde(t *testing.T) {
 
 	t.Run("full — snake-cases all field names", func(t *testing.T) {
 		req := CreateBusTopic{
-			Name:              "t",
-			Namespace:         "n",
-			Tenant:            "te",
+			Name: "t",
+
 			Partitions:        ptr(4),
 			ReplicationFactor: ptr(2),
 			RetentionMs:       ptr[int64](86_400_000),
@@ -304,18 +303,18 @@ func TestBusStreamConsumeURL(t *testing.T) {
 	c := NewClient("http://localhost:3000")
 
 	t.Run("simple segments", func(t *testing.T) {
-		got := c.BusStreamConsumeURL("agents", "demo", "thread-1", "stream-1")
-		want := "http://localhost:3000/v1/bus/streams/agents/demo/thread-1/stream-1"
+		got := c.BusStreamConsumeURL("thread-1", "stream-1")
+		want := "http://localhost:3000/v1/bus/streams/thread-1/stream-1"
 		if got != want {
 			t.Errorf("simple URL mismatch:\n  want: %s\n   got: %s", want, got)
 		}
 	})
 
 	t.Run("encodes slashes and spaces", func(t *testing.T) {
-		got := c.BusStreamConsumeURL("agents/x", "demo", "thread/with/slashes", "story 1")
+		got := c.BusStreamConsumeURL("thread/with/slashes", "story 1")
 		// Embedded slashes inside segments must be percent-encoded
 		// so they don't escape into URL grammar; spaces become %20.
-		for _, want := range []string{"agents%2Fx", "thread%2Fwith%2Fslashes", "story%201"} {
+		for _, want := range []string{"thread%2Fwith%2Fslashes", "story%201"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("expected %s in URL; got %s", want, got)
 			}
@@ -382,7 +381,7 @@ func TestPostBusToolCallBranchesOn202(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("immediate produce → kind=Produced", func(t *testing.T) {
-		out, err := client.PostBusToolCall(ctx, "n", "te", "c1", &PostBusToolCall{
+		out, err := client.PostBusToolCall(ctx, "c1", &PostBusToolCall{
 			CallID: "call-1", Tool: "calendar.list",
 		})
 		if err != nil {
@@ -397,7 +396,7 @@ func TestPostBusToolCallBranchesOn202(t *testing.T) {
 	})
 
 	t.Run("require_approval → kind=Parked", func(t *testing.T) {
-		out, err := client.PostBusToolCall(ctx, "n", "te", "c1", &PostBusToolCall{
+		out, err := client.PostBusToolCall(ctx, "c1", &PostBusToolCall{
 			CallID:          "call-1",
 			Tool:            "billing.charge",
 			Arguments:       map[string]any{"usd": 42},
@@ -423,8 +422,7 @@ func TestApproveBusApprovalRoutesAndDecodes(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST; got %s", r.Method)
 		}
-		expected := "/v1/bus/approvals/" + url.PathEscape("agents") + "/" + url.PathEscape("demo") +
-			"/" + url.PathEscape("appr-1") + "/approve"
+		expected := "/v1/bus/approvals/" + url.PathEscape("appr-1") + "/approve"
 		if r.URL.Path != expected {
 			t.Errorf("path mismatch: want %s, got %s", expected, r.URL.Path)
 		}
@@ -452,7 +450,7 @@ func TestApproveBusApprovalRoutesAndDecodes(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL)
-	resp, err := client.ApproveBusApproval(context.Background(), "agents", "demo", "appr-1",
+	resp, err := client.ApproveBusApproval(context.Background(), "appr-1",
 		&BusApprovalDecision{DecidedBy: "ops-1"})
 	if err != nil {
 		t.Fatalf("approve: %v", err)
@@ -703,7 +701,7 @@ func TestBusErrorParsing(t *testing.T) {
 
 	client := NewClient(server.URL)
 	_, err := client.CreateBusTopic(context.Background(), &CreateBusTopic{
-		Name: "t", Namespace: "n", Tenant: "te",
+		Name: "t",
 	})
 	if err == nil {
 		t.Fatalf("expected error; got nil")

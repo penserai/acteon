@@ -10,7 +10,12 @@ type PrincipalIdentity struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 }
+type TenantContext struct {
+	Namespace string `json:"namespace"`
+	Tenant    string `json:"tenant"`
+}
 type CredentialIdentity struct {
+	Scope        TenantContext      `json:"scope"`
 	AuthorityID  *string            `json:"authority_id,omitempty"`
 	CredentialID string             `json:"credential_id"`
 	AuthMethod   string             `json:"auth_method"`
@@ -27,6 +32,9 @@ func (c *Client) Identity(ctx context.Context) (*CredentialIdentity, error) {
 	var identity CredentialIdentity
 	if err := json.Unmarshal(body, &identity); err != nil {
 		return nil, &ConnectionError{Message: err.Error()}
+	}
+	if identity.Scope.Namespace == "" || identity.Scope.Tenant == "" {
+		return nil, &ConnectionError{Message: "credential tenant context missing or malformed"}
 	}
 	return &identity, nil
 }

@@ -114,8 +114,6 @@ export function RecurringActions() {
   const { toast } = useToast()
 
   // Filter state
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [enabledFilter, setEnabledFilter] = useState('')
 
   // Create modal
@@ -130,14 +128,11 @@ export function RecurringActions() {
 
   // Data
   const { data, isLoading } = useRecurringActions({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     enabled: enabledFilter || undefined,
   })
 
   const { data: selectedAction } = useRecurringAction(
     selectedId ?? undefined,
-    { namespace: ns || undefined, tenant: tenant || undefined },
   )
 
   // Mutations
@@ -149,7 +144,7 @@ export function RecurringActions() {
   const handlePauseResume = (action: RecurringActionSummary) => {
     const mutation = action.enabled ? pauseMutation : resumeMutation
     mutation.mutate(
-      { id: action.id, namespace: action.namespace, tenant: action.tenant },
+      { id: action.id },
       {
         onSuccess: () => toast('success', action.enabled ? 'Recurring action paused' : 'Recurring action resumed'),
         onError: (e) => toast('error', 'Operation failed', (e as Error).message),
@@ -160,7 +155,7 @@ export function RecurringActions() {
   const handleDelete = () => {
     if (!deleteTarget) return
     deleteMutation.mutate(
-      { id: deleteTarget.id, namespace: deleteTarget.namespace, tenant: deleteTarget.tenant },
+      { id: deleteTarget.id },
       {
         onSuccess: () => {
           toast('success', 'Recurring action deleted')
@@ -274,16 +269,6 @@ export function RecurringActions() {
       />
 
       <div className={shared.filterBar}>
-        <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
         <Select
           options={[
             { value: '', label: 'All Statuses' },
@@ -365,8 +350,6 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
   onSubmit: (req: CreateRecurringActionRequest) => void
   loading: boolean
 }) {
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [cronExpr, setCronExpr] = useState('')
   const [timezone, setTimezone] = useState('UTC')
   const [provider, setProvider] = useState('')
@@ -395,8 +378,6 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
     }
 
     onSubmit({
-      namespace: ns,
-      tenant,
       cron_expression: cronExpr,
       timezone,
       provider,
@@ -408,7 +389,7 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
     })
   }
 
-  const isValid = ns && tenant && cronExpr && isCronValid && provider && actionType
+  const isValid = cronExpr && isCronValid && provider && actionType
 
   return (
     <Modal
@@ -432,8 +413,6 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
     >
       <div className={shared.formSection}>
         <div className={shared.formGrid}>
-          <Input label="Namespace *" value={ns} onChange={(e) => setNs(e.target.value)} placeholder="prod" />
-          <Input label="Tenant *" value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder="acme" />
         </div>
 
         <div className={styles.cronPresetRow}>

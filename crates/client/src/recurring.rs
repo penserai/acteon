@@ -6,10 +6,6 @@ use crate::{ActeonClient, Error};
 /// Request to create a recurring action.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CreateRecurringAction {
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
     /// Target provider.
     pub provider: String,
     /// Action type discriminator.
@@ -57,10 +53,6 @@ pub struct CreateRecurringResponse {
 /// Filter parameters for listing recurring actions.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct RecurringFilter {
-    /// Namespace (required).
-    pub namespace: String,
-    /// Tenant (required).
-    pub tenant: String,
     /// Optional status filter: "active" or "paused".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -158,10 +150,6 @@ pub struct RecurringDetail {
 /// Request to update a recurring action.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateRecurringAction {
-    /// Namespace (required for key lookup).
-    pub namespace: String,
-    /// Tenant (required for key lookup).
-    pub tenant: String,
     /// Updated name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -202,8 +190,6 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let req = CreateRecurringAction {
-    ///     namespace: "notifications".to_string(),
-    ///     tenant: "tenant-1".to_string(),
     ///     provider: "email".to_string(),
     ///     action_type: "send_digest".to_string(),
     ///     payload: serde_json::json!({"to": "user@example.com"}),
@@ -248,7 +234,7 @@ impl ActeonClient {
         }
     }
 
-    /// List recurring actions filtered by namespace, tenant, and optional status.
+    /// List recurring actions filtered by optional status within the credential context.
     ///
     /// # Example
     ///
@@ -258,8 +244,6 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let filter = RecurringFilter {
-    ///     namespace: "notifications".to_string(),
-    ///     tenant: "tenant-1".to_string(),
     ///     ..Default::default()
     /// };
     ///
@@ -300,17 +284,11 @@ impl ActeonClient {
     /// Get the full details of a recurring action by ID.
     ///
     /// Returns `None` if not found.
-    pub async fn get_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<Option<RecurringDetail>, Error> {
+    pub async fn get_recurring(&self, id: &str) -> Result<Option<RecurringDetail>, Error> {
         let url = format!("{}/v1/recurring/{}", self.base_url, id);
 
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -371,17 +349,11 @@ impl ActeonClient {
     }
 
     /// Delete a recurring action.
-    pub async fn delete_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<(), Error> {
+    pub async fn delete_recurring(&self, id: &str) -> Result<(), Error> {
         let url = format!("{}/v1/recurring/{}", self.base_url, id);
 
         let response = self
             .add_auth(self.client.delete(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -402,20 +374,12 @@ impl ActeonClient {
     }
 
     /// Pause a recurring action, removing it from the schedule.
-    pub async fn pause_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<RecurringDetail, Error> {
+    pub async fn pause_recurring(&self, id: &str) -> Result<RecurringDetail, Error> {
         let url = format!("{}/v1/recurring/{}/pause", self.base_url, id);
 
         let response = self
             .add_auth(self.client.post(&url))
-            .json(&serde_json::json!({
-                "namespace": namespace,
-                "tenant": tenant,
-            }))
+            .json(&serde_json::json!({}))
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -445,20 +409,12 @@ impl ActeonClient {
     }
 
     /// Resume a paused recurring action.
-    pub async fn resume_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<RecurringDetail, Error> {
+    pub async fn resume_recurring(&self, id: &str) -> Result<RecurringDetail, Error> {
         let url = format!("{}/v1/recurring/{}/resume", self.base_url, id);
 
         let response = self
             .add_auth(self.client.post(&url))
-            .json(&serde_json::json!({
-                "namespace": namespace,
-                "tenant": tenant,
-            }))
+            .json(&serde_json::json!({}))
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -521,8 +477,7 @@ impl ActeonClient {
     pub async fn backfill_recurring(
         &self,
         id: &str,
-        namespace: &str,
-        tenant: &str,
+
         start: &str,
         end: &str,
         limit: Option<usize>,
@@ -532,8 +487,7 @@ impl ActeonClient {
         let response = self
             .add_auth(self.client.post(&url))
             .json(&serde_json::json!({
-                "namespace": namespace,
-                "tenant": tenant,
+
                 "start": start,
                 "end": end,
                 "limit": limit,

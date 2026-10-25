@@ -36,16 +36,13 @@ public class WebhookAction {
     /**
      * Create a simple webhook action with default settings (POST, no extra headers).
      *
-     * @param namespace the action namespace
-     * @param tenant    the tenant identifier
      * @param url       the webhook target URL
      * @param body      the JSON body to send
      * @return a configured Action
      */
-    public static Action create(String namespace, String tenant, String url, Map<String, Object> body) {
+    public static Action create(String url, Map<String, Object> body) {
         return builder()
-                .namespace(namespace)
-                .tenant(tenant)
+
                 .url(url)
                 .body(body)
                 .build();
@@ -55,8 +52,7 @@ public class WebhookAction {
      * Builder for constructing webhook Actions.
      */
     public static class Builder {
-        private String namespace;
-        private String tenant;
+
         private String url;
         private String method = "POST";
         private String actionType = "webhook";
@@ -64,16 +60,6 @@ public class WebhookAction {
         private Map<String, String> headers = new HashMap<>();
         private String dedupKey;
         private Map<String, String> labels;
-
-        public Builder namespace(String namespace) {
-            this.namespace = namespace;
-            return this;
-        }
-
-        public Builder tenant(String tenant) {
-            this.tenant = tenant;
-            return this;
-        }
 
         public Builder url(String url) {
             this.url = url;
@@ -122,12 +108,6 @@ public class WebhookAction {
          * @throws IllegalArgumentException if required fields are missing
          */
         public Action build() {
-            if (namespace == null || namespace.isEmpty()) {
-                throw new IllegalArgumentException("namespace is required");
-            }
-            if (tenant == null || tenant.isEmpty()) {
-                throw new IllegalArgumentException("tenant is required");
-            }
             if (url == null || url.isEmpty()) {
                 throw new IllegalArgumentException("url is required");
             }
@@ -141,8 +121,7 @@ public class WebhookAction {
             }
 
             Action.Builder actionBuilder = Action.builder()
-                    .namespace(namespace)
-                    .tenant(tenant)
+
                     .provider("webhook")
                     .actionType(actionType)
                     .payload(payload);

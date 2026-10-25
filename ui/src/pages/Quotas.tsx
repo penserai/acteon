@@ -59,7 +59,6 @@ function behaviorVariant(behavior: OverageBehavior): 'error' | 'warning' | 'info
   }
 }
 
-
 // ---- Progress bar component ----
 
 function UsageBar({ used, limit }: { used: number; limit: number }) {
@@ -99,8 +98,6 @@ export function Quotas() {
   const { toast } = useToast()
 
   // Filter state
-  const [ns, setNs] = useState('')
-  const [tenant, setTenant] = useState('')
   const [providerFilter, setProviderFilter] = useState('')
   const [principalFilter, setPrincipalFilter] = useState('')
 
@@ -119,8 +116,6 @@ export function Quotas() {
 
   // Data
   const { data, isLoading } = useQuotas({
-    namespace: ns || undefined,
-    tenant: tenant || undefined,
     provider: providerFilter.trim() || undefined,
     principal: principalFilter.trim() || undefined,
   })
@@ -245,16 +240,6 @@ export function Quotas() {
 
       <div className={shared.filterBar}>
         <Input
-          placeholder="Namespace"
-          value={ns}
-          onChange={(e) => setNs(e.target.value)}
-        />
-        <Input
-          placeholder="Tenant"
-          value={tenant}
-          onChange={(e) => setTenant(e.target.value)}
-        />
-        <Input
           placeholder="Provider (or `generic`)"
           value={providerFilter}
           onChange={(e) => setProviderFilter(e.target.value)}
@@ -368,8 +353,6 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
   title: string
   initial?: QuotaPolicy
 }) {
-  const [formNs, setFormNs] = useState(initial?.namespace ?? '')
-  const [formTenant, setFormTenant] = useState(initial?.tenant ?? '')
   const [formPrincipal, setFormPrincipal] = useState(initial?.principal ?? '')
   const [perPrincipal, setPerPrincipal] = useState(initial?.per_principal ?? false)
   const [maxActions, setMaxActions] = useState(initial?.max_actions?.toString() ?? '1000')
@@ -387,8 +370,6 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
   const handleSubmit = () => {
     const labels = parseLabels(labelsText)
     onSubmit({
-      namespace: formNs,
-      tenant: formTenant,
       principal: formPrincipal.trim() ? formPrincipal.trim() : undefined,
       per_principal: perPrincipal || undefined,
       max_actions: parseInt(maxActions, 10) || 0,
@@ -401,7 +382,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
   }
 
   const isEdit = !!initial
-  const isValid = formNs && formTenant && maxActions && parseInt(maxActions, 10) > 0
+  const isValid = maxActions && parseInt(maxActions, 10) > 0
 
   return (
     <Modal
@@ -425,22 +406,6 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
       }
     >
       <div className={shared.formSection}>
-        <div className={shared.formGrid}>
-          <Input
-            label="Namespace *"
-            value={formNs}
-            onChange={(e) => setFormNs(e.target.value)}
-            placeholder="prod"
-            disabled={isEdit}
-          />
-          <Input
-            label="Tenant *"
-            value={formTenant}
-            onChange={(e) => setFormTenant(e.target.value)}
-            placeholder="acme"
-            disabled={isEdit}
-          />
-        </div>
 
         <div className={shared.formGrid}>
           <Input

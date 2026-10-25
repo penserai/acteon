@@ -93,15 +93,11 @@ class _FakeClient:
         self.get_execution_error: Exception | None = None
         self._lock = threading.Lock()
 
-    def poll_tasks(
-        self, queue, namespace, tenant, *, max_tasks=None, lease_seconds=None, worker_id=None
-    ):
+    def poll_tasks(self, queue, *, max_tasks=None, lease_seconds=None, worker_id=None):
         with self._lock:
             self.poll_calls.append(
                 {
                     "queue": queue,
-                    "namespace": namespace,
-                    "tenant": tenant,
                     "max_tasks": max_tasks,
                     "lease_seconds": lease_seconds,
                     "worker_id": worker_id,
@@ -111,29 +107,29 @@ class _FakeClient:
                 return self.batches.pop(0)
             return []
 
-    def heartbeat_task(self, task_id, namespace, tenant, lease_token, *, extend_seconds=None):
+    def heartbeat_task(self, task_id, lease_token, *, extend_seconds=None):
         with self._lock:
             self.heartbeats.append(task_id)
         return _task(task_id=task_id)
 
-    def complete_task(self, task_id, namespace, tenant, lease_token, result):
+    def complete_task(self, task_id, lease_token, result):
         with self._lock:
             self.completes.append((task_id, result))
         return _task(task_id=task_id, status="completed", result=result)
 
-    def fail_task(self, task_id, namespace, tenant, lease_token, error, retryable):
+    def fail_task(self, task_id, lease_token, error, retryable):
         with self._lock:
             self.fails.append((task_id, error, retryable))
         return _task(task_id=task_id, status="failed", error=error)
 
-    def record_workflow_checkpoint(self, execution_id, namespace, tenant, name, data):
+    def record_workflow_checkpoint(self, execution_id, name, data):
         from acteon_client import WorkflowCheckpoint
 
         with self._lock:
             self.checkpoint_calls.append((name, data))
         return WorkflowCheckpoint(seq=len(self.checkpoint_calls), name=name, data=data)
 
-    def get_workflow_execution(self, execution_id, namespace, tenant):
+    def get_workflow_execution(self, execution_id):
         with self._lock:
             self.get_execution_calls.append(execution_id)
         if self.get_execution_error is not None:
@@ -152,7 +148,7 @@ def _worker(client: _FakeClient, **overrides: Any) -> Worker:
         "max_concurrent": 2,
     }
     kwargs.update(overrides)
-    return Worker(client, "ns", "te", "emails", **kwargs)
+    return Worker(client, "emails", **kwargs)
 
 
 class TestPlainHandlers(unittest.TestCase):
@@ -168,8 +164,8 @@ class TestPlainHandlers(unittest.TestCase):
         self.assertEqual(client.fails, [])
         poll = client.poll_calls[0]
         self.assertEqual(poll["queue"], "emails")
-        self.assertEqual(poll["namespace"], "ns")
-        self.assertEqual(poll["tenant"], "te")
+        self.assertNotIn("namespace", poll)
+        self.assertNotIn("tenant", poll)
         self.assertEqual(poll["lease_seconds"], 60)
         self.assertEqual(poll["worker_id"], "w-test")
 

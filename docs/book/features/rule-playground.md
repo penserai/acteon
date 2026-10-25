@@ -34,8 +34,6 @@ POST /v1/rules/evaluate
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | string | yes | Namespace for the test action |
-| `tenant` | string | yes | Tenant for the test action |
 | `provider` | string | yes | Provider for the test action |
 | `action_type` | string | yes | Action type for the test action |
 | `payload` | object | yes | JSON payload to evaluate against the rules |
@@ -87,13 +85,13 @@ rule set's behavior:
 curl -X POST http://localhost:8080/v1/rules/evaluate \
   -H 'Content-Type: application/json' \
   -d '{
-    "namespace": "default",
-    "tenant": "acme",
-    "provider": "email",
-    "action_type": "notification",
-    "payload": {"to": "user@example.com"},
-    "evaluate_all": true
-  }'
+  "provider": "email",
+  "action_type": "notification",
+  "payload": {
+    "to": "user@example.com"
+  },
+  "evaluate_all": true
+}'
 ```
 
 ### Time-Travel Debugging

@@ -20,7 +20,7 @@ the wire format or building a parallel pipeline.
 |---|---|
 | Core types | `acteon_core::BusApproval`, `acteon_core::BusApprovalEnvelope::ToolCall`, `acteon_core::BusApprovalStatus ∈ {Pending, Approving, Approved, Rejected, Expired}` |
 | State key | `KeyKind::BusApproval` keyed by server-generated UUID v7 |
-| HTTP | `POST /v1/bus/conversations/.../tool-calls` gains `require_approval` / `approval_reason` / `approval_ttl_ms`; `GET /v1/bus/approvals/{ns}/{t}`, `GET .../{id}`, `POST .../{id}/approve`, `POST .../{id}/reject` |
+| HTTP | `POST /v1/bus/conversations/.../tool-calls` gains `require_approval` / `approval_reason` / `approval_ttl_ms`; `GET /v1/bus/approvals`, `GET .../{id}`, `POST .../{id}/approve`, `POST .../{id}/reject` |
 | Headers | Approved records gain `acteon.approval.id` so audit pipelines can correlate the produced Kafka record back to the row that gated it |
 | Rust client | `post_bus_tool_call` returns `PostBusToolCallOutcome { Produced \| Parked }`; new `list_bus_approvals`, `get_bus_approval`, `approve_bus_approval`, `reject_bus_approval` |
 | Tests | 12 core unit tests covering validation + serde + status transitions |
@@ -30,7 +30,7 @@ the wire format or building a parallel pipeline.
 
 ### Park-then-produce
 
-`POST /v1/bus/conversations/{ns}/{t}/{id}/tool-calls` with
+`POST /v1/bus/conversations/{id}/tool-calls` with
 `require_approval: true`:
 
 1. Validates the envelope as it would for an immediate produce
@@ -41,7 +41,7 @@ the wire format or building a parallel pipeline.
 3. Returns `202 Accepted` with the approval id, `created_at`, and
    `expires_at`. **Nothing has been produced to Kafka.**
 
-`POST /v1/bus/approvals/{ns}/{t}/{approval_id}/approve`:
+`POST /v1/bus/approvals/{approval_id}/approve`:
 
 1. Loads the row. If terminal (`Approved` / `Rejected` / `Expired`)
    → `409 Conflict`.
@@ -58,7 +58,7 @@ the wire format or building a parallel pipeline.
    `decided_at`, `decision_note`, and the produced
    `partition`/`offset`/`produced_at`.
 
-`POST /v1/bus/approvals/{ns}/{t}/{approval_id}/reject`:
+`POST /v1/bus/approvals/{approval_id}/reject`:
 
 1. CAS-transitions the row from `Pending` to `Rejected` with the
    decision metadata. No Kafka record is ever produced for that
@@ -92,7 +92,7 @@ the reaper just keeps the listing tidy.
 ### Request approval
 
 ```http
-POST /v1/bus/conversations/agents/demo/planning-thread/tool-calls
+POST /v1/bus/conversations/planning-thread/tool-calls
 {
   "call_id": "call-pay-1",
   "tool": "billing.charge",
@@ -118,7 +118,7 @@ POST /v1/bus/conversations/agents/demo/planning-thread/tool-calls
 ### List pending approvals
 
 ```http
-GET /v1/bus/approvals/agents/demo?status=pending
+GET /v1/bus/approvals?status=pending
 → 200 OK
 {
   "approvals": [
@@ -131,7 +131,7 @@ GET /v1/bus/approvals/agents/demo?status=pending
 ### Approve
 
 ```http
-POST /v1/bus/approvals/agents/demo/{approval_id}/approve
+POST /v1/bus/approvals/{approval_id}/approve
 {
   "decided_by": "ops-1",
   "decision_note": "verified PO #4711"
@@ -157,7 +157,7 @@ the result scan starts strictly after the approved record landed.
 ### Reject
 
 ```http
-POST /v1/bus/approvals/agents/demo/{approval_id}/reject
+POST /v1/bus/approvals/{approval_id}/reject
 { "decided_by": "ops-1", "decision_note": "scope too broad" }
 → 200 OK
 { "approval": { "status": "rejected", ... }, "receipt": null }

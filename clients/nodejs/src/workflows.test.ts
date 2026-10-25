@@ -42,18 +42,13 @@ describe("workflow constants", () => {
 
 describe("startWorkflowBody", () => {
   it("minimal omits search_attributes", () => {
-    const body = startWorkflowBody("ns", "t1", "onboarding", "q", { u: 1 });
-    assert.deepEqual(body, {
-      namespace: "ns",
-      tenant: "t1",
-      workflow: "onboarding",
-      queue: "q",
-      input: { u: 1 },
+    const body = startWorkflowBody("onboarding", "q", { u: 1 });
+    assert.deepEqual(body, {workflow: "onboarding", queue: "q", input: { u: 1 }
     });
   });
 
   it("snake-cases search attributes", () => {
-    const body = startWorkflowBody("ns", "t1", "wf", "q", null, {
+    const body = startWorkflowBody("wf", "q", null, {
       searchAttributes: { region: "eu" },
     });
     assert.deepEqual(body.search_attributes, { region: "eu" });
@@ -254,18 +249,13 @@ describe("slim continuation payloads", () => {
     try {
       const c = new ActeonClient("http://x");
       const ran: string[] = [];
-      const directive = await runWorkflowTask(
-        c,
-        "ns",
-        "t1",
-        async (ctx, input) => {
+      const directive = await runWorkflowTask(c, async (ctx, input) => {
           const a = await ctx.step("a", () => {
             ran.push("a");
             return { v: 999 };
           });
           return { a, input };
-        },
-        { execution_id: "exec-1", workflow: "onboarding" },
+        }, { execution_id: "exec-1", workflow: "onboarding" }
       );
 
       // step:a#0 replays from the fetched execution record, and the
@@ -295,7 +285,7 @@ describe("slim continuation payloads", () => {
     try {
       const c = new ActeonClient("http://x");
       await expect(
-        runWorkflowTask(c, "ns", "t1", async () => "unreached", {
+        runWorkflowTask(c, async () => "unreached", {
           execution_id: "exec-9",
           workflow: "onboarding",
         }),
@@ -316,7 +306,7 @@ describe("WorkflowContext", () => {
     try {
       const c = new ActeonClient("http://x");
       const ran: string[] = [];
-      const directive = await runWorkflowTask(c, "ns", "t1", async (ctx) => {
+      const directive = await runWorkflowTask(c, async (ctx) => {
         const a = await ctx.step("a", () => {
           ran.push("a");
           return { v: 1 };
@@ -338,11 +328,7 @@ describe("WorkflowContext", () => {
       expect(recorded[0].url).toEqual(
         "http://x/v1/workflows/executions/exec-1/checkpoints",
       );
-      expect(recorded[0].body).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        name: "step:a#0",
-        data: { v: 1 },
+      expect(recorded[0].body).toEqual({name: "step:a#0", data: { v: 1 }
       });
       expect(recorded[1].body.name).toEqual("step:b#0");
     } finally {
@@ -355,7 +341,7 @@ describe("WorkflowContext", () => {
     try {
       const c = new ActeonClient("http://x");
       const ran: string[] = [];
-      const directive = await runWorkflowTask(c, "ns", "t1", async (ctx) => {
+      const directive = await runWorkflowTask(c, async (ctx) => {
         const a = await ctx.step("a", () => {
           ran.push("a");
           return { v: 999 };
@@ -392,7 +378,7 @@ describe("WorkflowContext", () => {
       };
 
       // First continuation: suspends at the timer.
-      const first = await runWorkflowTask(c, "ns", "t1", fn, taskPayload());
+      const first = await runWorkflowTask(c, fn, taskPayload());
       expect(first).toEqual({
         directive: "sleep",
         checkpoint: "sleep#0",
@@ -400,15 +386,10 @@ describe("WorkflowContext", () => {
       });
 
       // Second continuation: timer checkpoint recorded — runs to completion.
-      const second = await runWorkflowTask(
-        c,
-        "ns",
-        "t1",
-        fn,
-        taskPayload([
+      const second = await runWorkflowTask(c, fn, taskPayload([
           { name: "step:a#0", data: { v: 1 } },
           { name: "sleep#0", data: { fired: true } },
-        ]),
+        ])
       );
       expect(second).toEqual({ directive: "complete", result: "done" });
     } finally {
@@ -420,7 +401,7 @@ describe("WorkflowContext", () => {
     const { restore } = routeFetch(workflowRoute);
     try {
       const c = new ActeonClient("http://x");
-      const directive = await runWorkflowTask(c, "ns", "t1", async (ctx) => {
+      const directive = await runWorkflowTask(c, async (ctx) => {
         return ctx.waitForSignal("approved", 600);
       }, taskPayload());
       expect(directive).toEqual({
@@ -431,7 +412,7 @@ describe("WorkflowContext", () => {
       });
 
       // Without a timeout the field is omitted entirely.
-      const noTimeout = await runWorkflowTask(c, "ns", "t1", async (ctx) => {
+      const noTimeout = await runWorkflowTask(c, async (ctx) => {
         return ctx.waitForSignal("approved");
       }, taskPayload());
       expect(noTimeout).toEqual({
@@ -454,24 +435,14 @@ describe("WorkflowContext", () => {
         return { payload };
       };
 
-      const delivered = await runWorkflowTask(
-        c,
-        "ns",
-        "t1",
-        fn,
-        taskPayload([{ name: "signal:approved#0", data: { by: "renzo" } }]),
+      const delivered = await runWorkflowTask(c, fn, taskPayload([{ name: "signal:approved#0", data: { by: "renzo" } }])
       );
       expect(delivered).toEqual({
         directive: "complete",
         result: { payload: { by: "renzo" } },
       });
 
-      const timedOut = await runWorkflowTask(
-        c,
-        "ns",
-        "t1",
-        fn,
-        taskPayload([{ name: "signal:approved#0", data: { timed_out: true } }]),
+      const timedOut = await runWorkflowTask(c, fn, taskPayload([{ name: "signal:approved#0", data: { timed_out: true } }])
       );
       expect(timedOut).toEqual({
         directive: "complete",
@@ -506,8 +477,8 @@ describe("WorkflowContext", () => {
         { name: "step:x#1", data: "second" },
         { name: "step:y#0", data: "third" },
       ];
-      const first = await runWorkflowTask(c, "ns", "t1", fn, taskPayload());
-      const rerun = await runWorkflowTask(c, "ns", "t1", fn, taskPayload(recorded));
+      const first = await runWorkflowTask(c, fn, taskPayload());
+      const rerun = await runWorkflowTask(c, fn, taskPayload(recorded));
       expect(first).toEqual(rerun);
       expect(keysSeen[0]).toEqual(keysSeen[1]);
     } finally {
@@ -527,7 +498,7 @@ describe("WorkflowContext", () => {
         return { childId };
       };
 
-      const fresh = await runWorkflowTask(c, "ns", "t1", fn, taskPayload());
+      const fresh = await runWorkflowTask(c, fn, taskPayload());
       expect(fresh).toEqual({
         directive: "complete",
         result: { childId: "child-1" },
@@ -537,23 +508,11 @@ describe("WorkflowContext", () => {
       expect(started[0].url).toEqual(
         "http://x/v1/workflows/executions/exec-1/children",
       );
-      expect(started[0].body).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        checkpoint: "child:sub#0",
-        workflow: "sub",
-        input: { n: 1 },
-        queue: "sub-q",
-        parent_close_policy: "cancel",
+      expect(started[0].body).toEqual({checkpoint: "child:sub#0", workflow: "sub", input: { n: 1 }, queue: "sub-q", parent_close_policy: "cancel"
       });
 
       // Replay: the recorded checkpoint resolves without another POST.
-      const replayed = await runWorkflowTask(
-        c,
-        "ns",
-        "t1",
-        fn,
-        taskPayload([{ name: "child:sub#0", data: { child_id: "child-7" } }]),
+      const replayed = await runWorkflowTask(c, fn, taskPayload([{ name: "child:sub#0", data: { child_id: "child-7" } }])
       );
       expect(replayed).toEqual({
         directive: "complete",
@@ -569,7 +528,7 @@ describe("WorkflowContext", () => {
     const { restore } = routeFetch(workflowRoute);
     try {
       const c = new ActeonClient("http://x");
-      const directive = await runWorkflowTask(c, "ns", "t1", async (ctx) => {
+      const directive = await runWorkflowTask(c, async (ctx) => {
         return ctx.waitForChild("child-1", 60);
       }, taskPayload([{ name: "child:sub#0", data: { child_id: "child-1" } }]));
       expect(directive).toEqual({
@@ -587,7 +546,7 @@ describe("WorkflowContext", () => {
     const { restore } = routeFetch(workflowRoute);
     try {
       const c = new ActeonClient("http://x");
-      const directive = await runWorkflowTask(c, "ns", "t1", async () => {
+      const directive = await runWorkflowTask(c, async () => {
         throw new Error("payment rejected");
       }, taskPayload());
       expect(directive).toEqual({
@@ -600,13 +559,7 @@ describe("WorkflowContext", () => {
   });
 
   it("exposes executionId and input; WorkflowSuspend carries its directive", async () => {
-    const ctx = new WorkflowContext(
-      new ActeonClient("http://x"),
-      "ns",
-      "t1",
-      "exec-1",
-      { u: 1 },
-      [checkpoint("sleep#0", { fired: true })],
+    const ctx = new WorkflowContext(new ActeonClient("http://x"), "exec-1", { u: 1 }, [checkpoint("sleep#0", { fired: true })]
     );
     expect(ctx.executionId).toEqual("exec-1");
     expect(ctx.input).toEqual({ u: 1 });
@@ -639,7 +592,7 @@ describe("workflow client URLs and bodies", () => {
     }));
     try {
       const c = new ActeonClient("http://x");
-      const exec = await c.startWorkflow("ns", "t1", "onboarding", "q", { u: 1 }, {
+      const exec = await c.startWorkflow("onboarding", "q", { u: 1 }, {
         searchAttributes: { region: "eu" },
       });
       expect(calls[0].url).toEqual("http://x/v1/workflows/start");
@@ -654,13 +607,13 @@ describe("workflow client URLs and bodies", () => {
     const { calls, restore } = routeFetch(() => ({ body: { executions: [] } }));
     try {
       const c = new ActeonClient("http://x");
-      const executions = await c.listWorkflowExecutions("ns", "t1", {
+      const executions = await c.listWorkflowExecutions({
         workflow: "onboarding",
         status: "running",
         limit: 10,
       });
       expect(calls[0].url).toEqual(
-        "http://x/v1/workflows/executions?namespace=ns&tenant=t1&workflow=onboarding&status=running&limit=10",
+        "http://x/v1/workflows/executions?workflow=onboarding&status=running&limit=10",
       );
       expect(executions).toEqual([]);
     } finally {
@@ -675,9 +628,9 @@ describe("workflow client URLs and bodies", () => {
     }));
     try {
       const c = new ActeonClient("http://x");
-      const exec = await c.getWorkflowExecution("exec-9", "ns", "t1");
+      const exec = await c.getWorkflowExecution("exec-9");
       expect(calls[0].url).toEqual(
-        "http://x/v1/workflows/executions/exec-9?namespace=ns&tenant=t1",
+        "http://x/v1/workflows/executions/exec-9",
       );
       expect(exec).toBeNull();
     } finally {
@@ -689,15 +642,12 @@ describe("workflow client URLs and bodies", () => {
     const { calls, restore } = routeFetch(() => undefined);
     try {
       const c = new ActeonClient("http://x");
-      await c.signalWorkflow("exec-1", "approved", "ns", "t1", { by: "renzo" });
-      await c.cancelWorkflow("exec-1", "ns", "t1", "superseded");
+      await c.signalWorkflow("exec-1", "approved", { by: "renzo" });
+      await c.cancelWorkflow("exec-1", "superseded");
       expect(calls[0].url).toEqual(
         "http://x/v1/workflows/executions/exec-1/signal/approved",
       );
-      expect(calls[0].body).toEqual({
-        namespace: "ns",
-        tenant: "t1",
-        payload: { by: "renzo" },
+      expect(calls[0].body).toEqual({payload: { by: "renzo" }
       });
       expect(calls[1].url).toEqual(
         "http://x/v1/workflows/executions/exec-1/cancel",
@@ -714,9 +664,9 @@ describe("workflow client URLs and bodies", () => {
     }));
     try {
       const c = new ActeonClient("http://x");
-      const history = await c.getExecutionHistory("exec-1", "ns", "t1");
+      const history = await c.getExecutionHistory("exec-1");
       expect(calls[0].url).toEqual(
-        "http://x/v1/executions/exec-1/history?namespace=ns&tenant=t1",
+        "http://x/v1/executions/exec-1/history",
       );
       expect(history.executionId).toEqual("exec-1");
     } finally {

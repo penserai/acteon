@@ -83,14 +83,10 @@ class _LeaseHeartbeat:
         self,
         client: ActeonClient,
         task: WorkerTask,
-        namespace: str,
-        tenant: str,
         lease_seconds: int,
     ):
         self._client = client
         self._task = task
-        self._namespace = namespace
-        self._tenant = tenant
         self._lease_seconds = lease_seconds
         self._stopped = threading.Event()
         self._thread = threading.Thread(
@@ -112,8 +108,6 @@ class _LeaseHeartbeat:
             try:
                 self._client.heartbeat_task(
                     self._task.task_id,
-                    self._namespace,
-                    self._tenant,
                     self._task.lease_token or "",
                     extend_seconds=self._lease_seconds,
                 )
@@ -127,7 +121,7 @@ class Worker:
 
     Example:
         >>> client = ActeonClient("http://localhost:8080")
-        >>> worker = Worker(client, "jobs", "tenant-1", queue="emails")
+        >>> worker = Worker(client, queue="emails")
         >>> worker.register("send_email", lambda payload: do_send(payload))
         >>> worker.register_workflow("onboarding", onboarding_flow)
         >>> worker.run()  # blocks until worker.stop()
@@ -136,8 +130,6 @@ class Worker:
     def __init__(
         self,
         client: ActeonClient,
-        namespace: str,
-        tenant: str,
         queue: str,
         *,
         worker_id: str | None = None,
@@ -149,8 +141,6 @@ class Worker:
 
         Args:
             client: A sync :class:`~acteon_client.client.ActeonClient`.
-            namespace: The task namespace.
-            tenant: The task tenant.
             queue: The queue to poll.
             worker_id: Stable worker identity sent on poll; a random
                 one is generated when omitted.
@@ -160,8 +150,6 @@ class Worker:
             max_concurrent: Maximum tasks processed concurrently.
         """
         self._client = client
-        self._namespace = namespace
-        self._tenant = tenant
         self._queue = queue
         self._worker_id = worker_id or f"worker-{uuid.uuid4().hex[:12]}"
         self._poll_interval = poll_interval
@@ -237,8 +225,6 @@ class Worker:
                     try:
                         tasks = self._client.poll_tasks(
                             self._queue,
-                            self._namespace,
-                            self._tenant,
                             max_tasks=capacity,
                             lease_seconds=self._lease_seconds,
                             worker_id=self._worker_id,
@@ -264,8 +250,6 @@ class Worker:
         """
         tasks = self._client.poll_tasks(
             self._queue,
-            self._namespace,
-            self._tenant,
             max_tasks=max_tasks if max_tasks is not None else self._max_concurrent,
             lease_seconds=self._lease_seconds,
             worker_id=self._worker_id,
@@ -294,9 +278,7 @@ class Worker:
         logged rather than raised — the lease will lapse and the
         server re-delivers retryable work.
         """
-        heartbeat = _LeaseHeartbeat(
-            self._client, task, self._namespace, self._tenant, self._lease_seconds
-        )
+        heartbeat = _LeaseHeartbeat(self._client, task, self._lease_seconds)
         heartbeat.start()
         try:
             if task.action_type == WORKFLOW_ACTION_TYPE:
@@ -343,9 +325,7 @@ class Worker:
             # Slim payload: resolve the execution's input and recorded
             # checkpoints from the server.
             try:
-                execution = self._client.get_workflow_execution(
-                    execution_id, self._namespace, self._tenant
-                )
+                execution = self._client.get_workflow_execution(execution_id)
             except Exception as e:
                 # Transient fetch failure: release for re-delivery.
                 self._fail(
@@ -362,12 +342,7 @@ class Worker:
             input = execution.input
             checkpoints = {c.name: c.data for c in execution.checkpoints}
         ctx = WorkflowContext(
-            self._client,
-            self._namespace,
-            self._tenant,
-            execution_id=execution_id,
-            input=input,
-            checkpoints=checkpoints,
+            self._client, execution_id=execution_id, input=input, checkpoints=checkpoints
         )
         try:
             result = _run_maybe_async(fn(ctx, ctx.input))
@@ -380,20 +355,7 @@ class Worker:
         self._complete(task, directive)
 
     def _complete(self, task: WorkerTask, result: Any) -> None:
-        self._client.complete_task(
-            task.task_id,
-            self._namespace,
-            self._tenant,
-            task.lease_token or "",
-            result,
-        )
+        self._client.complete_task(task.task_id, task.lease_token or "", result)
 
     def _fail(self, task: WorkerTask, error: str, retryable: bool) -> None:
-        self._client.fail_task(
-            task.task_id,
-            self._namespace,
-            self._tenant,
-            task.lease_token or "",
-            error,
-            retryable,
-        )
+        self._client.fail_task(task.task_id, task.lease_token or "", error, retryable)

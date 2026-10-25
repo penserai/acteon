@@ -91,12 +91,7 @@ func (c *Client) ListBusTopics(ctx context.Context, filter *ListBusTopicsFilter)
 	path := "/v1/bus/topics"
 	if filter != nil {
 		params := url.Values{}
-		if filter.Namespace != "" {
-			params.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			params.Set("tenant", filter.Tenant)
-		}
+
 		if len(params) > 0 {
 			path += "?" + params.Encode()
 		}
@@ -108,8 +103,14 @@ func (c *Client) ListBusTopics(ctx context.Context, filter *ListBusTopicsFilter)
 	return out.Topics, nil
 }
 
-func (c *Client) GetBusTopic(ctx context.Context, namespace, tenant, name string) (*BusTopic, error) {
-	topics, err := c.ListBusTopics(ctx, &ListBusTopicsFilter{Namespace: namespace, Tenant: tenant})
+func (c *Client) GetBusTopic(ctx context.Context, name string) (*BusTopic, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
+	topics, err := c.ListBusTopics(ctx, &ListBusTopicsFilter{})
 	if err != nil {
 		return nil, err
 	}
@@ -121,8 +122,8 @@ func (c *Client) GetBusTopic(ctx context.Context, namespace, tenant, name string
 	return nil, &HTTPError{Status: 404, Message: "Bus topic not found"}
 }
 
-func (c *Client) DeleteBusTopic(ctx context.Context, namespace, tenant, name string) error {
-	topic, err := c.GetBusTopic(ctx, namespace, tenant, name)
+func (c *Client) DeleteBusTopic(ctx context.Context, name string) error {
+	topic, err := c.GetBusTopic(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -154,12 +155,7 @@ func (c *Client) ListBusSubscriptions(ctx context.Context, filter *ListBusSubscr
 	path := "/v1/bus/subscriptions"
 	if filter != nil {
 		params := url.Values{}
-		if filter.Namespace != "" {
-			params.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			params.Set("tenant", filter.Tenant)
-		}
+
 		if filter.Topic != "" {
 			params.Set("topic", filter.Topic)
 		}
@@ -174,8 +170,14 @@ func (c *Client) ListBusSubscriptions(ctx context.Context, filter *ListBusSubscr
 	return out.Subscriptions, nil
 }
 
-func (c *Client) GetBusSubscription(ctx context.Context, namespace, tenant, subID string) (*BusSubscription, error) {
-	subscriptions, err := c.ListBusSubscriptions(ctx, &ListBusSubscriptionsFilter{Namespace: namespace, Tenant: tenant})
+func (c *Client) GetBusSubscription(ctx context.Context, subID string) (*BusSubscription, error) {
+	identity, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	namespace, tenant := identity.Scope.Namespace, identity.Scope.Tenant
+
+	subscriptions, err := c.ListBusSubscriptions(ctx, &ListBusSubscriptionsFilter{})
 	if err != nil {
 		return nil, err
 	}
@@ -187,14 +189,14 @@ func (c *Client) GetBusSubscription(ctx context.Context, namespace, tenant, subI
 	return nil, &HTTPError{Status: 404, Message: "Bus subscription not found"}
 }
 
-func (c *Client) DeleteBusSubscription(ctx context.Context, namespace, tenant, subID string) error {
-	path := fmt.Sprintf("/v1/bus/subscriptions/%s/%s/%s", busSeg(namespace), busSeg(tenant), busSeg(subID))
+func (c *Client) DeleteBusSubscription(ctx context.Context, subID string) error {
+	path := fmt.Sprintf("/v1/bus/subscriptions/%s", busSeg(subID))
 	_, err := c.busDoJSON(ctx, http.MethodDelete, path, nil, nil)
 	return err
 }
 
-func (c *Client) GetBusSubscriptionLag(ctx context.Context, namespace, tenant, subID string) (*BusLag, error) {
-	path := fmt.Sprintf("/v1/bus/subscriptions/%s/%s/%s/lag", busSeg(namespace), busSeg(tenant), busSeg(subID))
+func (c *Client) GetBusSubscriptionLag(ctx context.Context, subID string) (*BusLag, error) {
+	path := fmt.Sprintf("/v1/bus/subscriptions/%s/lag", busSeg(subID))
 	var out BusLag
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -218,12 +220,7 @@ func (c *Client) ListBusSchemas(ctx context.Context, filter *ListBusSchemasFilte
 	path := "/v1/bus/schemas"
 	if filter != nil {
 		params := url.Values{}
-		if filter.Namespace != "" {
-			params.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			params.Set("tenant", filter.Tenant)
-		}
+
 		if filter.Subject != "" {
 			params.Set("subject", filter.Subject)
 		}
@@ -241,9 +238,9 @@ func (c *Client) ListBusSchemas(ctx context.Context, filter *ListBusSchemasFilte
 	return out.Schemas, nil
 }
 
-func (c *Client) GetBusSchema(ctx context.Context, namespace, tenant, subject string, version int) (*BusSchema, error) {
-	path := fmt.Sprintf("/v1/bus/schemas/%s/%s/%s/%d",
-		busSeg(namespace), busSeg(tenant), busSeg(subject), version)
+func (c *Client) GetBusSchema(ctx context.Context, subject string, version int) (*BusSchema, error) {
+	path := fmt.Sprintf("/v1/bus/schemas/%s/%d",
+		busSeg(subject), version)
 	var out BusSchema
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -251,9 +248,9 @@ func (c *Client) GetBusSchema(ctx context.Context, namespace, tenant, subject st
 	return &out, nil
 }
 
-func (c *Client) DeleteBusSchema(ctx context.Context, namespace, tenant, subject string, version int) error {
-	path := fmt.Sprintf("/v1/bus/schemas/%s/%s/%s/%d",
-		busSeg(namespace), busSeg(tenant), busSeg(subject), version)
+func (c *Client) DeleteBusSchema(ctx context.Context, subject string, version int) error {
+	path := fmt.Sprintf("/v1/bus/schemas/%s/%d",
+		busSeg(subject), version)
 	_, err := c.busDoJSON(ctx, http.MethodDelete, path, nil, nil)
 	return err
 }
@@ -274,12 +271,7 @@ func (c *Client) ListBusAgents(ctx context.Context, filter *ListBusAgentsFilter)
 	path := "/v1/bus/agents"
 	if filter != nil {
 		params := url.Values{}
-		if filter.Namespace != "" {
-			params.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			params.Set("tenant", filter.Tenant)
-		}
+
 		if len(params) > 0 {
 			path += "?" + params.Encode()
 		}
@@ -291,9 +283,9 @@ func (c *Client) ListBusAgents(ctx context.Context, filter *ListBusAgentsFilter)
 	return out.Agents, nil
 }
 
-func (c *Client) GetBusAgent(ctx context.Context, namespace, tenant, agentID string) (*BusAgent, error) {
-	path := fmt.Sprintf("/v1/bus/agents/%s/%s/%s",
-		busSeg(namespace), busSeg(tenant), busSeg(agentID))
+func (c *Client) GetBusAgent(ctx context.Context, agentID string) (*BusAgent, error) {
+	path := fmt.Sprintf("/v1/bus/agents/%s",
+		busSeg(agentID))
 	var out BusAgent
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -301,16 +293,16 @@ func (c *Client) GetBusAgent(ctx context.Context, namespace, tenant, agentID str
 	return &out, nil
 }
 
-func (c *Client) DeleteBusAgent(ctx context.Context, namespace, tenant, agentID string) error {
-	path := fmt.Sprintf("/v1/bus/agents/%s/%s/%s",
-		busSeg(namespace), busSeg(tenant), busSeg(agentID))
+func (c *Client) DeleteBusAgent(ctx context.Context, agentID string) error {
+	path := fmt.Sprintf("/v1/bus/agents/%s",
+		busSeg(agentID))
 	_, err := c.busDoJSON(ctx, http.MethodDelete, path, nil, nil)
 	return err
 }
 
-func (c *Client) HeartbeatBusAgent(ctx context.Context, namespace, tenant, agentID string) (*BusAgent, error) {
-	path := fmt.Sprintf("/v1/bus/agents/%s/%s/%s/heartbeat",
-		busSeg(namespace), busSeg(tenant), busSeg(agentID))
+func (c *Client) HeartbeatBusAgent(ctx context.Context, agentID string) (*BusAgent, error) {
+	path := fmt.Sprintf("/v1/bus/agents/%s/heartbeat",
+		busSeg(agentID))
 	var out BusAgent
 	if _, err := c.busDoJSON(ctx, http.MethodPatch, path, nil, &out); err != nil {
 		return nil, err
@@ -324,11 +316,11 @@ func (c *Client) HeartbeatBusAgent(ctx context.Context, namespace, tenant, agent
 // anything other than "suspended".
 func (c *Client) SetBusAgentAdminState(
 	ctx context.Context,
-	namespace, tenant, agentID string,
+	agentID string,
 	req *SetBusAgentAdminState,
 ) (*BusAgent, error) {
-	path := fmt.Sprintf("/v1/bus/agents/%s/%s/%s/admin-state",
-		busSeg(namespace), busSeg(tenant), busSeg(agentID))
+	path := fmt.Sprintf("/v1/bus/agents/%s/admin-state",
+		busSeg(agentID))
 	var out BusAgent
 	if _, err := c.busDoJSON(ctx, http.MethodPut, path, req, &out); err != nil {
 		return nil, err
@@ -352,12 +344,7 @@ func (c *Client) ListBusConversations(ctx context.Context, filter *ListBusConver
 	path := "/v1/bus/conversations"
 	if filter != nil {
 		params := url.Values{}
-		if filter.Namespace != "" {
-			params.Set("namespace", filter.Namespace)
-		}
-		if filter.Tenant != "" {
-			params.Set("tenant", filter.Tenant)
-		}
+
 		if filter.State != "" {
 			params.Set("state", filter.State)
 		}
@@ -375,9 +362,9 @@ func (c *Client) ListBusConversations(ctx context.Context, filter *ListBusConver
 	return out.Conversations, nil
 }
 
-func (c *Client) GetBusConversation(ctx context.Context, namespace, tenant, conversationID string) (*BusConversation, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+func (c *Client) GetBusConversation(ctx context.Context, conversationID string) (*BusConversation, error) {
+	path := fmt.Sprintf("/v1/bus/conversations/%s",
+		busSeg(conversationID))
 	var out BusConversation
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -385,18 +372,18 @@ func (c *Client) GetBusConversation(ctx context.Context, namespace, tenant, conv
 	return &out, nil
 }
 
-func (c *Client) DeleteBusConversation(ctx context.Context, namespace, tenant, conversationID string) error {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+func (c *Client) DeleteBusConversation(ctx context.Context, conversationID string) error {
+	path := fmt.Sprintf("/v1/bus/conversations/%s",
+		busSeg(conversationID))
 	_, err := c.busDoJSON(ctx, http.MethodDelete, path, nil, nil)
 	return err
 }
 
 func (c *Client) TransitionBusConversation(
-	ctx context.Context, namespace, tenant, conversationID, targetState string,
+	ctx context.Context, conversationID, targetState string,
 ) (*BusConversation, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/transition",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/transition",
+		busSeg(conversationID))
 	body := TransitionBusConversationRequest{TargetState: targetState}
 	var out BusConversation
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, body, &out); err != nil {
@@ -407,11 +394,11 @@ func (c *Client) TransitionBusConversation(
 
 func (c *Client) AppendBusConversationMessage(
 	ctx context.Context,
-	namespace, tenant, conversationID string,
+	conversationID string,
 	req *AppendBusConversationMessage,
 ) (map[string]any, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/messages",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/messages",
+		busSeg(conversationID))
 	out := make(map[string]any)
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, req, &out); err != nil {
 		return nil, err
@@ -421,11 +408,11 @@ func (c *Client) AppendBusConversationMessage(
 
 func (c *Client) ReplayBusConversationMessages(
 	ctx context.Context,
-	namespace, tenant, conversationID string,
+	conversationID string,
 	params *ReplayBusConversationParams,
 ) (*BusReplayResponse, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/messages",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/messages",
+		busSeg(conversationID))
 	if params != nil {
 		q := url.Values{}
 		if params.Limit > 0 {
@@ -455,11 +442,11 @@ func (c *Client) ReplayBusConversationMessages(
 // approval (driven by `req.RequireApproval`).
 func (c *Client) PostBusToolCall(
 	ctx context.Context,
-	namespace, tenant, conversationID string,
+	conversationID string,
 	req *PostBusToolCall,
 ) (*PostBusToolCallOutcome, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/tool-calls",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/tool-calls",
+		busSeg(conversationID))
 	resp, err := c.doRequest(ctx, http.MethodPost, path, req)
 	if err != nil {
 		return nil, err
@@ -488,11 +475,11 @@ func (c *Client) PostBusToolCall(
 
 func (c *Client) PostBusToolResult(
 	ctx context.Context,
-	namespace, tenant, conversationID string,
+	conversationID string,
 	req *PostBusToolResult,
 ) (*BusToolEnvelopeReceipt, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/tool-results",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/tool-results",
+		busSeg(conversationID))
 	var out BusToolEnvelopeReceipt
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, req, &out); err != nil {
 		return nil, err
@@ -502,11 +489,11 @@ func (c *Client) PostBusToolResult(
 
 func (c *Client) LookupBusToolResult(
 	ctx context.Context,
-	namespace, tenant, callID string,
+	callID string,
 	params *BusToolResultLookupParams,
 ) (*BusToolResultLookup, error) {
-	path := fmt.Sprintf("/v1/bus/tool-calls/%s/%s/%s/result",
-		busSeg(namespace), busSeg(tenant), busSeg(callID))
+	path := fmt.Sprintf("/v1/bus/tool-calls/%s/result",
+		busSeg(callID))
 	if params != nil {
 		q := url.Values{}
 		q.Set("conversation_id", params.ConversationID)
@@ -531,11 +518,11 @@ func (c *Client) LookupBusToolResult(
 
 func (c *Client) PostBusStreamChunk(
 	ctx context.Context,
-	namespace, tenant, conversationID string,
+	conversationID string,
 	req *PostBusStreamChunk,
 ) (*BusStreamEnvelopeReceipt, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/stream-chunks",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/stream-chunks",
+		busSeg(conversationID))
 	var out BusStreamEnvelopeReceipt
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, req, &out); err != nil {
 		return nil, err
@@ -545,11 +532,11 @@ func (c *Client) PostBusStreamChunk(
 
 func (c *Client) PostBusStreamEnd(
 	ctx context.Context,
-	namespace, tenant, conversationID string,
+	conversationID string,
 	req *PostBusStreamEnd,
 ) (*BusStreamEnvelopeReceipt, error) {
-	path := fmt.Sprintf("/v1/bus/conversations/%s/%s/%s/stream-end",
-		busSeg(namespace), busSeg(tenant), busSeg(conversationID))
+	path := fmt.Sprintf("/v1/bus/conversations/%s/stream-end",
+		busSeg(conversationID))
 	var out BusStreamEnvelopeReceipt
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, req, &out); err != nil {
 		return nil, err
@@ -562,11 +549,11 @@ func (c *Client) PostBusStreamEnd(
 // streaming reader, etc.). Path segments are encoded the same way
 // the Rust + Python + Node SDKs encode them.
 func (c *Client) BusStreamConsumeURL(
-	namespace, tenant, conversationID, streamID string,
+	conversationID, streamID string,
 ) string {
-	return fmt.Sprintf("%s/v1/bus/streams/%s/%s/%s/%s",
+	return fmt.Sprintf("%s/v1/bus/streams/%s/%s",
 		c.baseURL,
-		busSeg(namespace), busSeg(tenant),
+
 		busSeg(conversationID), busSeg(streamID))
 }
 
@@ -750,10 +737,10 @@ func reconnectBackoffMs(attempt uint32, cfg *ReconnectConfig) int64 {
 // after the terminal `end` envelope is observed.
 func (c *Client) ConsumeBusStream(
 	ctx context.Context,
-	namespace, tenant, conversationID, streamID string,
+	conversationID, streamID string,
 ) (<-chan *BusStreamItem, error) {
-	path := fmt.Sprintf("/v1/bus/streams/%s/%s/%s/%s",
-		busSeg(namespace), busSeg(tenant),
+	path := fmt.Sprintf("/v1/bus/streams/%s/%s",
+
 		busSeg(conversationID), busSeg(streamID))
 	envCh, err := c.openBusSSE(ctx, path)
 	if err != nil {
@@ -974,10 +961,10 @@ func (c *Client) openBusSSE(ctx context.Context, path string) (<-chan *busSseEnv
 
 func (c *Client) ListBusApprovals(
 	ctx context.Context,
-	namespace, tenant string,
+
 	filter *ListBusApprovalsFilter,
 ) ([]BusApprovalView, error) {
-	path := fmt.Sprintf("/v1/bus/approvals/%s/%s", busSeg(namespace), busSeg(tenant))
+	path := fmt.Sprintf("/v1/bus/approvals")
 	if filter != nil {
 		q := url.Values{}
 		if filter.Status != "" {
@@ -998,10 +985,10 @@ func (c *Client) ListBusApprovals(
 }
 
 func (c *Client) GetBusApproval(
-	ctx context.Context, namespace, tenant, approvalID string,
+	ctx context.Context, approvalID string,
 ) (*BusApprovalView, error) {
-	path := fmt.Sprintf("/v1/bus/approvals/%s/%s/%s",
-		busSeg(namespace), busSeg(tenant), busSeg(approvalID))
+	path := fmt.Sprintf("/v1/bus/approvals/%s",
+		busSeg(approvalID))
 	var out BusApprovalView
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -1011,11 +998,11 @@ func (c *Client) GetBusApproval(
 
 func (c *Client) ApproveBusApproval(
 	ctx context.Context,
-	namespace, tenant, approvalID string,
+	approvalID string,
 	decision *BusApprovalDecision,
 ) (*BusApprovalDecisionResponse, error) {
-	path := fmt.Sprintf("/v1/bus/approvals/%s/%s/%s/approve",
-		busSeg(namespace), busSeg(tenant), busSeg(approvalID))
+	path := fmt.Sprintf("/v1/bus/approvals/%s/approve",
+		busSeg(approvalID))
 	var out BusApprovalDecisionResponse
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, decision, &out); err != nil {
 		return nil, err
@@ -1025,11 +1012,11 @@ func (c *Client) ApproveBusApproval(
 
 func (c *Client) RejectBusApproval(
 	ctx context.Context,
-	namespace, tenant, approvalID string,
+	approvalID string,
 	decision *BusApprovalDecision,
 ) (*BusApprovalDecisionResponse, error) {
-	path := fmt.Sprintf("/v1/bus/approvals/%s/%s/%s/reject",
-		busSeg(namespace), busSeg(tenant), busSeg(approvalID))
+	path := fmt.Sprintf("/v1/bus/approvals/%s/reject",
+		busSeg(approvalID))
 	var out BusApprovalDecisionResponse
 	if _, err := c.busDoJSON(ctx, http.MethodPost, path, decision, &out); err != nil {
 		return nil, err

@@ -23,8 +23,6 @@ Query parameters:
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `metric` | string | Yes | -- | One of: `volume`, `outcome_breakdown`, `top_action_types`, `latency`, `error_rate` |
-| `namespace` | string | No | -- | Filter by namespace |
-| `tenant` | string | No | -- | Filter by tenant |
 | `provider` | string | No | -- | Filter by provider |
 | `action_type` | string | No | -- | Filter by action type |
 | `outcome` | string | No | -- | Filter by outcome |
@@ -91,7 +89,7 @@ curl "http://localhost:8080/v1/analytics?metric=error_rate&interval=daily&group_
 ### Filtered by tenant and namespace
 
 ```bash
-curl "http://localhost:8080/v1/analytics?metric=volume&namespace=notifications&tenant=acme-corp&interval=hourly"
+curl "http://localhost:8080/v1/analytics?metric=volume&interval=hourly"
 ```
 
 ## Backends

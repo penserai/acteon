@@ -40,7 +40,7 @@ test.describe('Responsive Design', () => {
     await page.goto('/dispatch')
     await expect(page.getByRole('heading', { name: 'Dispatch Action' })).toBeVisible()
     // Form fields should be usable
-    await expect(page.getByLabel('Namespace *')).toBeVisible()
+    await expect(page.getByLabel('Namespace *')).toHaveCount(0)
   })
 
   test('approvals page renders at mobile viewport', async ({ page }) => {

@@ -5,8 +5,7 @@ package com.acteon.client.models;
  */
 public class AnalyticsQuery {
     private String metric;
-    private String namespace;
-    private String tenant;
+
     private String provider;
     private String actionType;
     private String outcome;
@@ -22,12 +21,6 @@ public class AnalyticsQuery {
 
     public String getMetric() { return metric; }
     public void setMetric(String metric) { this.metric = metric; }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
@@ -55,8 +48,7 @@ public class AnalyticsQuery {
 
     public static class Builder {
         private String metric;
-        private String namespace;
-        private String tenant;
+
         private String provider;
         private String actionType;
         private String outcome;
@@ -67,8 +59,7 @@ public class AnalyticsQuery {
         private Integer topN;
 
         public Builder metric(String metric) { this.metric = metric; return this; }
-        public Builder namespace(String namespace) { this.namespace = namespace; return this; }
-        public Builder tenant(String tenant) { this.tenant = tenant; return this; }
+
         public Builder provider(String provider) { this.provider = provider; return this; }
         public Builder actionType(String actionType) { this.actionType = actionType; return this; }
         public Builder outcome(String outcome) { this.outcome = outcome; return this; }
@@ -81,8 +72,7 @@ public class AnalyticsQuery {
         public AnalyticsQuery build() {
             AnalyticsQuery query = new AnalyticsQuery();
             query.metric = this.metric;
-            query.namespace = this.namespace;
-            query.tenant = this.tenant;
+
             query.provider = this.provider;
             query.actionType = this.actionType;
             query.outcome = this.outcome;

@@ -74,8 +74,6 @@
     "revoked_subjects": []
   },
   "publication": {
-    "namespace": "prod",
-    "tenant": "acme",
     "change_id": "issue-online",
     "expected_revision": 0,
     "permit": {
@@ -101,8 +99,6 @@
     "reason": "incident response"
   },
   "intervention": {
-    "namespace": "prod",
-    "tenant": "acme",
     "change_id": "road-closure",
     "reason": "maintenance",
     "change": {

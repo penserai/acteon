@@ -10,11 +10,6 @@ import java.util.Map;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CreateQuotaRequest {
-    @JsonProperty("namespace")
-    private String namespace;
-
-    @JsonProperty("tenant")
-    private String tenant;
 
     /**
      * Optional provider scope. Null (the default) creates a generic
@@ -59,19 +54,12 @@ public class CreateQuotaRequest {
 
     public CreateQuotaRequest() {}
 
-    public CreateQuotaRequest(String namespace, String tenant, long maxActions, String window, String overageBehavior) {
-        this.namespace = namespace;
-        this.tenant = tenant;
+    public CreateQuotaRequest(long maxActions, String window, String overageBehavior) {
+
         this.maxActions = maxActions;
         this.window = window;
         this.overageBehavior = overageBehavior;
     }
-
-    public String getNamespace() { return namespace; }
-    public void setNamespace(String namespace) { this.namespace = namespace; }
-
-    public String getTenant() { return tenant; }
-    public void setTenant(String tenant) { this.tenant = tenant; }
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }

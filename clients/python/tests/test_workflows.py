@@ -103,12 +103,7 @@ class TestWorkflowEndpoints(unittest.TestCase):
     def test_start_workflow(self):
         c = _StubClient(body=_execution_body())
         execution = c.start_workflow(
-            "ns",
-            "te",
-            "onboarding",
-            "wf-queue",
-            {"user": "u-1"},
-            search_attributes={"team": "growth"},
+            "onboarding", "wf-queue", {"user": "u-1"}, search_attributes={"team": "growth"}
         )
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
@@ -116,8 +111,6 @@ class TestWorkflowEndpoints(unittest.TestCase):
         self.assertEqual(
             call.json,
             {
-                "namespace": "ns",
-                "tenant": "te",
                 "workflow": "onboarding",
                 "queue": "wf-queue",
                 "input": {"user": "u-1"},
@@ -129,26 +122,18 @@ class TestWorkflowEndpoints(unittest.TestCase):
 
     def test_start_workflow_omits_absent_search_attributes(self):
         c = _StubClient(body=_execution_body())
-        c.start_workflow("ns", "te", "onboarding", "wf-queue", {})
+        c.start_workflow("onboarding", "wf-queue", {})
         self.assertNotIn("search_attributes", c.calls[0].json)
 
     def test_list_workflow_executions(self):
         c = _StubClient(body={"executions": [_execution_body()]})
-        executions = c.list_workflow_executions(
-            "ns", "te", workflow="onboarding", status="running", limit=10
-        )
+        executions = c.list_workflow_executions(workflow="onboarding", status="running", limit=10)
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
         self.assertEqual(call.path, "/v1/workflows/executions")
         self.assertEqual(
             call.params,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "workflow": "onboarding",
-                "status": "running",
-                "limit": 10,
-            },
+            {"workflow": "onboarding", "status": "running", "limit": 10},
         )
         self.assertEqual(len(executions), 1)
 
@@ -160,47 +145,42 @@ class TestWorkflowEndpoints(unittest.TestCase):
             "recorded_at": "2026-06-10T00:00:30Z",
         }
         c = _StubClient(body=_execution_body(checkpoints=[checkpoint]))
-        execution = c.get_workflow_execution("ex-1", "ns", "te")
+        execution = c.get_workflow_execution("ex-1")
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1")
-        self.assertEqual(call.params, {"namespace": "ns", "tenant": "te"})
+        self.assertEqual(call.params, {})
         self.assertEqual(len(execution.checkpoints), 1)
         self.assertEqual(execution.checkpoints[0].name, "step:fetch#0")
         self.assertEqual(execution.checkpoints[0].data, {"rows": 3})
 
     def test_get_workflow_execution_404_returns_none(self):
         c = _StubClient(status_code=404)
-        self.assertIsNone(c.get_workflow_execution("missing", "ns", "te"))
+        self.assertIsNone(c.get_workflow_execution("missing"))
 
     def test_signal_workflow(self):
         c = _StubClient()
-        c.signal_workflow("ex-1", "approved", "ns", "te", payload={"by": "ops"})
+        c.signal_workflow("ex-1", "approved", payload={"by": "ops"})
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/signal/approved")
-        self.assertEqual(call.json, {"namespace": "ns", "tenant": "te", "payload": {"by": "ops"}})
+        self.assertEqual(call.json, {"payload": {"by": "ops"}})
 
     def test_cancel_workflow(self):
         c = _StubClient()
-        c.cancel_workflow("ex-1", "ns", "te", reason="superseded")
+        c.cancel_workflow("ex-1", reason="superseded")
         call = c.calls[0]
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/cancel")
-        self.assertEqual(call.json, {"namespace": "ns", "tenant": "te", "reason": "superseded"})
+        self.assertEqual(call.json, {"reason": "superseded"})
 
     def test_record_workflow_checkpoint(self):
         c = _StubClient(body={"name": "step:fetch#0", "seq": 1, "data": {"rows": 3}})
-        checkpoint = c.record_workflow_checkpoint("ex-1", "ns", "te", "step:fetch#0", {"rows": 3})
+        checkpoint = c.record_workflow_checkpoint("ex-1", "step:fetch#0", {"rows": 3})
         call = c.calls[0]
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/checkpoints")
         self.assertEqual(
             call.json,
-            {
-                "namespace": "ns",
-                "tenant": "te",
-                "name": "step:fetch#0",
-                "data": {"rows": 3},
-            },
+            {"name": "step:fetch#0", "data": {"rows": 3}},
         )
         self.assertIsInstance(checkpoint, WorkflowCheckpoint)
         self.assertEqual(checkpoint.seq, 1)
@@ -209,22 +189,13 @@ class TestWorkflowEndpoints(unittest.TestCase):
     def test_start_child_workflow(self):
         c = _StubClient(body={"child_execution_id": "ex-child"})
         child_id = c.start_child_workflow(
-            "ex-1",
-            "ns",
-            "te",
-            "child:sub#0",
-            "sub",
-            {"n": 1},
-            queue="other",
-            parent_close_policy="cancel",
+            "ex-1", "child:sub#0", "sub", {"n": 1}, queue="other", parent_close_policy="cancel"
         )
         call = c.calls[0]
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/children")
         self.assertEqual(
             call.json,
             {
-                "namespace": "ns",
-                "tenant": "te",
                 "checkpoint": "child:sub#0",
                 "workflow": "sub",
                 "input": {"n": 1},
@@ -236,23 +207,23 @@ class TestWorkflowEndpoints(unittest.TestCase):
 
     def test_get_execution_history(self):
         c = _StubClient(body={"execution_id": "ex-1", "events": [{"type": "started"}]})
-        history = c.get_execution_history("ex-1", "ns", "te")
+        history = c.get_execution_history("ex-1")
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
         self.assertEqual(call.path, "/v1/executions/ex-1/history")
-        self.assertEqual(call.params, {"namespace": "ns", "tenant": "te"})
+        self.assertEqual(call.params, {})
         self.assertIsInstance(history, ExecutionHistory)
         self.assertEqual(history.events, [{"type": "started"}])
 
     def test_path_segments_are_escaped(self):
         c = _StubClient()
-        c.signal_workflow("ex/1", "go/now", "ns", "te")
+        c.signal_workflow("ex/1", "go/now")
         self.assertEqual(c.calls[0].path, "/v1/workflows/executions/ex%2F1/signal/go%2Fnow")
 
     def test_error_body_raises_api_error(self):
         c = _StubClient(status_code=409, body={"error": "already cancelled"})
         with self.assertRaises(ApiError):
-            c.cancel_workflow("ex-1", "ns", "te")
+            c.cancel_workflow("ex-1")
 
     def test_execution_model_parses_optionals(self):
         execution = WorkflowExecution.from_dict(
@@ -288,7 +259,7 @@ class _FakeWorkflowClient:
         self.child_calls: list[dict[str, Any]] = []
         self._next_child = 0
 
-    def record_workflow_checkpoint(self, execution_id, namespace, tenant, name, data):
+    def record_workflow_checkpoint(self, execution_id, name, data):
         self.checkpoint_calls.append((name, data))
         if name not in self.checkpoints:
             self.checkpoints[name] = data
@@ -297,8 +268,6 @@ class _FakeWorkflowClient:
     def start_child_workflow(
         self,
         execution_id,
-        namespace,
-        tenant,
         checkpoint,
         workflow,
         input,
@@ -322,8 +291,6 @@ class _FakeWorkflowClient:
 def _ctx(checkpoints: dict | None = None, client=None) -> WorkflowContext:
     return WorkflowContext(
         client if client is not None else _FakeWorkflowClient(),
-        "ns",
-        "te",
         execution_id="ex-1",
         input={"user": "u-1"},
         checkpoints=checkpoints if checkpoints is not None else {},

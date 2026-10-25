@@ -18,6 +18,10 @@ import (
 type agentRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (roundTrip agentRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	if response := testIdentityResponse(request); response != nil {
+		return response, nil
+	}
+
 	return roundTrip(request)
 }
 
@@ -37,7 +41,7 @@ func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
 	var calls atomic.Int32
 	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)
-		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get("Accept") != "text/event-stream" || r.Header.Get(A2AVersionHeader) != A2AProtocolVersion {
+		if r.URL.Path != "/a2a/agents/notifier" || r.Header.Get("Accept") != "text/event-stream" || r.Header.Get(A2AVersionHeader) != A2AProtocolVersion {
 			t.Errorf("unexpected stream request: %s %#v", r.URL.Path, r.Header)
 		}
 		var request struct {
@@ -66,7 +70,7 @@ func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})
 	client := NewClient("http://acteon", WithAPIKey("caller-key"), WithHTTPClient(&http.Client{Transport: transport}))
-	sent, err := client.AgentServiceSendStreamingMessage(context.Background(), "prod", "acme", "notifier", map[string]any{"messageId": "m1"})
+	sent, err := client.AgentServiceSendStreamingMessage(context.Background(), "notifier", map[string]any{"messageId": "m1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +94,7 @@ func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
 func TestOfficialAgentServiceCancelPreservesIdentityAndSource(t *testing.T) {
 	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
 	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+		if r.URL.Path != "/a2a/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
 			t.Errorf("unexpected cancellation request: %s %#v", r.URL.Path, r.Header)
 		}
 		var request map[string]any
@@ -118,7 +122,7 @@ func TestOfficialAgentServiceCancelPreservesIdentityAndSource(t *testing.T) {
 func TestOfficialAgentServiceListReturnsTypedPage(t *testing.T) {
 	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
 	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+		if r.URL.Path != "/a2a/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
 			t.Errorf("unexpected list request: %s %#v", r.URL.Path, r.Header)
 		}
 		var request map[string]any
@@ -135,7 +139,7 @@ func TestOfficialAgentServiceListReturnsTypedPage(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})
 	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
-	page, err := client.AgentServiceListTasks(context.Background(), "prod", "acme", "notifier", AgentServiceListOptions{
+	page, err := client.AgentServiceListTasks(context.Background(), "notifier", AgentServiceListOptions{
 		Source: receipt, Status: "TASK_STATE_WORKING", PageSize: 1,
 	})
 	if err != nil {
@@ -150,7 +154,7 @@ func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
 	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
 	methods := []string{}
 	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+		if r.URL.Path != "/a2a/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
 			t.Errorf("unexpected push request: %s %#v", r.URL.Path, r.Header)
 		}
 		var request map[string]any
@@ -175,18 +179,18 @@ func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 	})
 	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
-	created, err := client.AgentServiceCreatePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigInput{ID: "push-1", URL: "https://hooks.example/a2a", TokenRef: &SecretRef{Provider: "vault", Key: "callbacks/token", Version: "v2"}, Authentication: &AgentServicePushAuthentication{Scheme: "Bearer", CredentialsRef: &SecretRef{Provider: "vault", Key: "callbacks/auth", Version: "v2"}}}, receipt)
+	created, err := client.AgentServiceCreatePushConfig(context.Background(), "notifier", "job-1", AgentServicePushConfigInput{ID: "push-1", URL: "https://hooks.example/a2a", TokenRef: &SecretRef{Provider: "vault", Key: "callbacks/token", Version: "v2"}, Authentication: &AgentServicePushAuthentication{Scheme: "Bearer", CredentialsRef: &SecretRef{Provider: "vault", Key: "callbacks/auth", Version: "v2"}}}, receipt)
 	if err != nil || created.Authentication == nil || created.Authentication.CredentialsRef == nil || created.Authentication.CredentialsRef.Key != "callbacks/auth" || created.TokenRef == nil || created.TokenRef.Version != "v2" {
 		t.Fatalf("unexpected created config: %#v %v", created, err)
 	}
-	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {
+	if _, err := client.AgentServiceGetPushConfig(context.Background(), "notifier", "job-1", "push-1", receipt); err != nil {
 		t.Fatal(err)
 	}
-	page, err := client.AgentServiceListPushConfigs(context.Background(), "prod", "acme", "notifier", "job-1", AgentServicePushConfigListOptions{PageSize: 1, Source: receipt})
+	page, err := client.AgentServiceListPushConfigs(context.Background(), "notifier", "job-1", AgentServicePushConfigListOptions{PageSize: 1, Source: receipt})
 	if err != nil || page.NextPageToken != "next" || len(page.Configs) != 1 {
 		t.Fatalf("unexpected page: %#v %v", page, err)
 	}
-	if err := client.AgentServiceDeletePushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", receipt); err != nil {
+	if err := client.AgentServiceDeletePushConfig(context.Background(), "notifier", "job-1", "push-1", receipt); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig", "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig"}
@@ -195,7 +199,7 @@ func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
 	}
 	foreign := *receipt
 	foreign.TaskID = "job-2"
-	if _, err := client.AgentServiceGetPushConfig(context.Background(), "prod", "acme", "notifier", "job-1", "push-1", &foreign); err == nil {
+	if _, err := client.AgentServiceGetPushConfig(context.Background(), "notifier", "job-1", "push-1", &foreign); err == nil {
 		t.Fatal("expected source/task mismatch")
 	}
 }
@@ -203,7 +207,7 @@ func TestOfficialAgentServicePushConfigCRUDIsTaskBound(t *testing.T) {
 func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
 	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "auth_required"}}
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -221,7 +225,7 @@ func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
 	}))
 	defer server.Close()
 	client := NewClient(server.URL)
-	if _, err := client.AgentServiceRequestAuthorization(context.Background(), "prod", "acme", "notifier", "job-1", "opaque-flow-42"); err != nil {
+	if _, err := client.AgentServiceRequestAuthorization(context.Background(), "notifier", "job-1", "opaque-flow-42"); err != nil {
 		t.Fatal(err)
 	}
 	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only", Task: task}
@@ -246,7 +250,7 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/peers") {
 			if r.URL.Query().Get("skill") != "diagnose" {
@@ -300,7 +304,7 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 	receipts := make([]*AgentServiceReceipt, 2)
 	for i, id := range []string{"m1", "m2"} {
 		var err error
-		receipts[i], err = client.AgentServiceSendMessage(context.Background(), "prod", "acme", "notifier", map[string]any{"messageId": id})
+		receipts[i], err = client.AgentServiceSendMessage(context.Background(), "notifier", map[string]any{"messageId": id})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -361,7 +365,7 @@ func TestAgentServiceParentCarriesContextAndPermits(t *testing.T) {
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(AgentExecutionContextHeader) != fixture.Parent.ExecutionContext {
 			t.Error("parent context missing")
 		}
@@ -381,7 +385,7 @@ func TestAgentServiceParentCarriesContextAndPermits(t *testing.T) {
 	}))
 	defer server.Close()
 	parent := &AgentServiceParent{ExecutionContext: fixture.Parent.ExecutionContext, Permits: fixture.Parent.Permits}
-	if _, err := NewClient(server.URL).AgentServiceSendMessageWithParent(context.Background(), "prod", "acme", "notifier", map[string]any{}, parent); err != nil {
+	if _, err := NewClient(server.URL).AgentServiceSendMessageWithParent(context.Background(), "notifier", map[string]any{}, parent); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -389,7 +393,7 @@ func TestAgentServiceParentCarriesContextAndPermits(t *testing.T) {
 func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 	source := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/peers") {
 			if r.URL.Query().Get("skill") != "diagnose" {
@@ -492,7 +496,7 @@ func TestAgentServiceErrorsMissingHeaderAndRedirectsDoNotRetry(t *testing.T) {
 	for _, status := range []int{200, 403, 404, 409, 429, 503, 307} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				w.Header().Set(A2AVersionHeader, "1.0")
 				w.Header().Set("Location", "/redirected")
@@ -500,7 +504,7 @@ func TestAgentServiceErrorsMissingHeaderAndRedirectsDoNotRetry(t *testing.T) {
 				w.Write([]byte(`{"id":"job-1","namespace":"prod","tenant":"acme","metadata":{"source_context":"forged"}}`))
 			}))
 			defer server.Close()
-			_, err := NewClient(server.URL).AgentServiceSendMessage(context.Background(), "prod", "acme", "notifier", map[string]any{})
+			_, err := NewClient(server.URL).AgentServiceSendMessage(context.Background(), "notifier", map[string]any{})
 			if err == nil {
 				t.Fatal("missing header or failed response accepted")
 			}
@@ -522,7 +526,7 @@ func TestAgentServiceStopRejectsFalseAcknowledgementsAndFailuresWithoutRetry(t *
 	payloads := []any{nil, map[string]any{}, map[string]any{"task": task, "future_starts_blocked": false}, map[string]any{"task": task, "future_starts_blocked": "true"}, map[string]any{"task": map[string]any{"id": "foreign", "namespace": "prod", "tenant": "acme"}, "future_starts_blocked": true}, map[string]any{"task": task, "future_starts_blocked": true, "provider_abort": map[string]any{"state": "uncertain", "attempt_id": "bad"}}}
 	for _, payload := range payloads {
 		var calls atomic.Int32
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 			calls.Add(1)
 			w.Header().Set(A2AVersionHeader, "1.0")
 			json.NewEncoder(w).Encode(payload)
@@ -535,7 +539,7 @@ func TestAgentServiceStopRejectsFalseAcknowledgementsAndFailuresWithoutRetry(t *
 	}
 	for _, status := range []int{403, 404, 409, 429, 503, 307} {
 		var calls atomic.Int32
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(withTestIdentity(func(w http.ResponseWriter, r *http.Request) {
 			calls.Add(1)
 			w.Header().Set("Location", "/redirected")
 			w.WriteHeader(status)

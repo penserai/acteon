@@ -2,10 +2,11 @@
 //!
 //! CRUD operations for payload templates, template profiles, and preview rendering.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
@@ -35,9 +36,11 @@ pub struct CreateTemplateRequest {
     pub name: String,
     /// Namespace this template belongs to.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant this template belongs to.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Raw `MiniJinja` template content.
     pub content: String,
@@ -105,9 +108,11 @@ pub struct CreateProfileRequest {
     pub name: String,
     /// Namespace this profile belongs to.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant this profile belongs to.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
     /// Field-to-template mappings.
     pub fields: HashMap<String, TemplateProfileField>,
@@ -173,8 +178,10 @@ pub struct RenderPreviewRequest {
     /// Profile name to render.
     pub profile: String,
     /// Namespace of the profile.
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant of the profile.
+    #[schema(ignore)]
     pub tenant: String,
     /// Test payload variables.
     pub payload: serde_json::Value,
@@ -196,9 +203,11 @@ pub struct RenderPreviewResponse {
 pub struct ListTemplatesParams {
     /// Filter by namespace (optional).
     #[serde(default)]
+    #[param(ignore)]
     pub namespace: Option<String>,
     /// Filter by tenant (optional).
     #[serde(default)]
+    #[param(ignore)]
     pub tenant: Option<String>,
     /// Maximum number of results (default: 100).
     #[serde(default = "default_limit")]
@@ -388,7 +397,7 @@ fn manage_forbidden() -> axum::response::Response {
 pub async fn create_template(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateTemplateRequest>,
+    ScopedJson(req): ScopedJson<CreateTemplateRequest>,
 ) -> impl IntoResponse {
     if !identity.role.has_permission(Permission::TemplatesManage) {
         return manage_forbidden();
@@ -486,7 +495,7 @@ pub async fn create_template(
 pub async fn list_templates(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListTemplatesParams>,
+    ScopedQuery(params): ScopedQuery<ListTemplatesParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -766,7 +775,7 @@ pub async fn delete_template(
 pub async fn create_profile(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<CreateProfileRequest>,
+    ScopedJson(req): ScopedJson<CreateProfileRequest>,
 ) -> impl IntoResponse {
     if !identity.role.has_permission(Permission::TemplatesManage) {
         return manage_forbidden();
@@ -868,7 +877,7 @@ pub async fn create_profile(
 pub async fn list_profiles(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<ListTemplatesParams>,
+    ScopedQuery(params): ScopedQuery<ListTemplatesParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -1127,7 +1136,7 @@ pub async fn delete_profile(
 pub async fn render_preview(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Json(req): Json<RenderPreviewRequest>,
+    ScopedJson(req): ScopedJson<RenderPreviewRequest>,
 ) -> impl IntoResponse {
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
@@ -1204,3 +1213,9 @@ pub async fn reload_static_templates(
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
+
+crate::auth::context::scoped_body!(
+    CreateProfileRequest,
+    CreateTemplateRequest,
+    RenderPreviewRequest
+);

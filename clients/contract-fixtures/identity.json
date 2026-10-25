@@ -7,7 +7,11 @@
       "id": "diagnostic-agent",
       "kind": "agent"
     },
-    "authority_id": "credential/diagnostic-runtime-v1"
+    "authority_id": "credential/diagnostic-runtime-v1",
+    "scope": {
+      "namespace": "prod",
+      "tenant": "acme"
+    }
   },
   {
     "credential_id": "renzo",
@@ -17,13 +21,21 @@
       "id": "person-1",
       "kind": "human"
     },
-    "authority_id": "credential/person-session-v1"
+    "authority_id": "credential/person-session-v1",
+    "scope": {
+      "namespace": "prod",
+      "tenant": "acme"
+    }
   },
   {
     "credential_id": "legacy-key",
     "auth_method": "api_key",
     "role": "viewer",
-    "principal": null
+    "principal": null,
+    "scope": {
+      "namespace": "prod",
+      "tenant": "acme"
+    }
   },
   {
     "credential_id": "bound-without-enrollment",
@@ -33,6 +45,10 @@
       "id": "service-1",
       "kind": "service"
     },
-    "authority_id": null
+    "authority_id": null,
+    "scope": {
+      "namespace": "prod",
+      "tenant": "acme"
+    }
   }
 ]

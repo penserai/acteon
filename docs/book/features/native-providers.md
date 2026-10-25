@@ -521,66 +521,60 @@ curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "alerts",
-    "tenant": "acme-corp",
-    "provider": "sms",
-    "action_type": "send_sms",
-    "payload": {
-      "to": "+15559876543",
-      "body": "Server alert: disk usage at 90%"
-    }
-  }'
+  "provider": "sms",
+  "action_type": "send_sms",
+  "payload": {
+    "to": "+15559876543",
+    "body": "Server alert: disk usage at 90%"
+  }
+}'
 
 # Send Teams notification
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "alerts",
-    "tenant": "acme-corp",
-    "provider": "teams-alerts",
-    "action_type": "notify",
-    "payload": {
-      "text": "Deployment complete",
-      "title": "CI/CD",
-      "theme_color": "00FF00"
-    }
-  }'
+  "provider": "teams-alerts",
+  "action_type": "notify",
+  "payload": {
+    "text": "Deployment complete",
+    "title": "CI/CD",
+    "theme_color": "00FF00"
+  }
+}'
 
 # Send Discord notification with embed
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "alerts",
-    "tenant": "acme-corp",
-    "provider": "discord-alerts",
-    "action_type": "notify",
-    "payload": {
-      "content": "Build passed!",
-      "embeds": [{
+  "provider": "discord-alerts",
+  "action_type": "notify",
+  "payload": {
+    "content": "Build passed!",
+    "embeds": [
+      {
         "title": "Build #42",
         "description": "All tests passed",
         "color": 65280
-      }]
-    }
-  }'
+      }
+    ]
+  }
+}'
 
 # Send Email notification
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "alerts",
-    "tenant": "acme-corp",
-    "provider": "corp-email",
-    "action_type": "send_email",
-    "payload": {
-      "to": "oncall@example.com",
-      "subject": "Critical: Shard Failover",
-      "body": "Database shard 4 failed over to replica."
-    }
-  }'
+  "provider": "corp-email",
+  "action_type": "send_email",
+  "payload": {
+    "to": "oncall@example.com",
+    "subject": "Critical: Shard Failover",
+    "body": "Database shard 4 failed over to replica."
+  }
+}'
 ```
 
 ## Example: Rust Client

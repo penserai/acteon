@@ -27,7 +27,7 @@ use acteon_client::{
     UpdateTemplateRequest, VerifyHashChainRequest,
 };
 use acteon_core::{
-    Action, ActionOutcome, CircuitBreakerActionResponse, ListCircuitBreakersResponse,
+    ActionOutcome, ActionRequest, CircuitBreakerActionResponse, ListCircuitBreakersResponse,
     ListProviderHealthResponse,
 };
 use serde_json::Value;
@@ -92,14 +92,12 @@ impl OpsClient {
     /// Dispatch an action with optional metadata and dry-run mode.
     pub async fn dispatch(
         &self,
-        namespace: String,
-        tenant: String,
         provider: String,
         action_type: String,
         payload: serde_json::Value,
         options: DispatchOptions,
     ) -> Result<ActionOutcome, OpsError> {
-        let mut action = Action::new(namespace, tenant, provider, &action_type, payload);
+        let mut action = ActionRequest::new(provider, &action_type, payload);
         if !options.metadata.is_empty() {
             action.metadata.labels = options.metadata;
         }
@@ -170,14 +168,12 @@ impl OpsClient {
     /// Evaluate rules against a test action.
     pub async fn evaluate_rules(
         &self,
-        namespace: String,
-        tenant: String,
         provider: String,
         action_type: String,
         payload: serde_json::Value,
         include_disabled: bool,
     ) -> Result<RuleEvaluationTrace, OpsError> {
-        let action = Action::new(namespace, tenant, provider, &action_type, payload);
+        let action = ActionRequest::new(provider, &action_type, payload);
         let options = EvaluateRulesOptions {
             include_disabled,
             ..EvaluateRulesOptions::default()
@@ -191,13 +187,8 @@ impl OpsClient {
         &self,
         fingerprint: String,
         to_state: String,
-        namespace: String,
-        tenant: String,
     ) -> Result<TransitionResponse, OpsError> {
-        Ok(self
-            .inner
-            .transition_event(&fingerprint, &to_state, &namespace, &tenant)
-            .await?)
+        Ok(self.inner.transition_event(&fingerprint, &to_state).await?)
     }
 
     /// List stateful events.
@@ -208,14 +199,9 @@ impl OpsClient {
     /// List action chains.
     pub async fn list_chains(
         &self,
-        namespace: String,
-        tenant: String,
         status: Option<String>,
     ) -> Result<ListChainsResponse, OpsError> {
-        Ok(self
-            .inner
-            .list_chains(&namespace, &tenant, status.as_deref())
-            .await?)
+        Ok(self.inner.list_chains(status.as_deref()).await?)
     }
 
     /// Enable or disable a rule.
@@ -247,15 +233,8 @@ impl OpsClient {
     }
 
     /// List retention policies, optionally filtered by namespace and tenant.
-    pub async fn list_retention(
-        &self,
-        namespace: Option<String>,
-        tenant: Option<String>,
-    ) -> Result<acteon_client::ListRetentionResponse, OpsError> {
-        Ok(self
-            .inner
-            .list_retention(namespace.as_deref(), tenant.as_deref())
-            .await?)
+    pub async fn list_retention(&self) -> Result<acteon_client::ListRetentionResponse, OpsError> {
+        Ok(self.inner.list_retention().await?)
     }
 
     /// Query aggregated action analytics.
@@ -281,7 +260,7 @@ impl OpsClient {
     /// Dispatch a batch of actions.
     pub async fn dispatch_batch(
         &self,
-        actions: &[Action],
+        actions: &[ActionRequest],
         dry_run: bool,
     ) -> Result<Vec<BatchResult>, OpsError> {
         let result = if dry_run {
@@ -325,13 +304,8 @@ impl OpsClient {
     // =========================================================================
 
     /// Get a single event by fingerprint.
-    pub async fn get_event(
-        &self,
-        fingerprint: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<Option<EventState>, OpsError> {
-        Ok(self.inner.get_event(fingerprint, namespace, tenant).await?)
+    pub async fn get_event(&self, fingerprint: &str) -> Result<Option<EventState>, OpsError> {
+        Ok(self.inner.get_event(fingerprint).await?)
     }
 
     // =========================================================================
@@ -339,54 +313,34 @@ impl OpsClient {
     // =========================================================================
 
     /// Get the full details of a chain by ID.
-    pub async fn get_chain(
-        &self,
-        chain_id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<ChainDetailResponse, OpsError> {
-        Ok(self.inner.get_chain(chain_id, namespace, tenant).await?)
+    pub async fn get_chain(&self, chain_id: &str) -> Result<ChainDetailResponse, OpsError> {
+        Ok(self.inner.get_chain(chain_id).await?)
     }
 
     /// Get per-step execution history with retry attempts for a chain.
     pub async fn get_chain_history(
         &self,
         chain_id: &str,
-        namespace: &str,
-        tenant: &str,
     ) -> Result<ChainHistoryResponse, OpsError> {
-        Ok(self
-            .inner
-            .get_chain_history(chain_id, namespace, tenant)
-            .await?)
+        Ok(self.inner.get_chain_history(chain_id).await?)
     }
 
     /// Cancel a running chain.
     pub async fn cancel_chain(
         &self,
         chain_id: &str,
-        namespace: &str,
-        tenant: &str,
         reason: Option<&str>,
         cancelled_by: Option<&str>,
     ) -> Result<ChainDetailResponse, OpsError> {
         Ok(self
             .inner
-            .cancel_chain(chain_id, namespace, tenant, reason, cancelled_by)
+            .cancel_chain(chain_id, reason, cancelled_by)
             .await?)
     }
 
     /// Get the DAG for a chain instance.
-    pub async fn get_chain_dag(
-        &self,
-        chain_id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<DagResponse, OpsError> {
-        Ok(self
-            .inner
-            .get_chain_dag(chain_id, namespace, tenant)
-            .await?)
+    pub async fn get_chain_dag(&self, chain_id: &str) -> Result<DagResponse, OpsError> {
+        Ok(self.inner.get_chain_dag(chain_id).await?)
     }
 
     /// Get the DAG for a chain definition.
@@ -439,13 +393,8 @@ impl OpsClient {
     }
 
     /// Get a recurring action by ID.
-    pub async fn get_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<Option<RecurringDetail>, OpsError> {
-        Ok(self.inner.get_recurring(id, namespace, tenant).await?)
+    pub async fn get_recurring(&self, id: &str) -> Result<Option<RecurringDetail>, OpsError> {
+        Ok(self.inner.get_recurring(id).await?)
     }
 
     /// Update a recurring action.
@@ -458,33 +407,18 @@ impl OpsClient {
     }
 
     /// Delete a recurring action.
-    pub async fn delete_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<(), OpsError> {
-        Ok(self.inner.delete_recurring(id, namespace, tenant).await?)
+    pub async fn delete_recurring(&self, id: &str) -> Result<(), OpsError> {
+        Ok(self.inner.delete_recurring(id).await?)
     }
 
     /// Pause a recurring action.
-    pub async fn pause_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<RecurringDetail, OpsError> {
-        Ok(self.inner.pause_recurring(id, namespace, tenant).await?)
+    pub async fn pause_recurring(&self, id: &str) -> Result<RecurringDetail, OpsError> {
+        Ok(self.inner.pause_recurring(id).await?)
     }
 
     /// Resume a recurring action.
-    pub async fn resume_recurring(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<RecurringDetail, OpsError> {
-        Ok(self.inner.resume_recurring(id, namespace, tenant).await?)
+    pub async fn resume_recurring(&self, id: &str) -> Result<RecurringDetail, OpsError> {
+        Ok(self.inner.resume_recurring(id).await?)
     }
 
     // =========================================================================
@@ -504,15 +438,10 @@ impl OpsClient {
     /// or a caller id for that exact scope.
     pub async fn list_quotas(
         &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
         provider: Option<&str>,
         principal: Option<&str>,
     ) -> Result<ListQuotasResponse, OpsError> {
-        Ok(self
-            .inner
-            .list_quotas(namespace, tenant, provider, principal)
-            .await?)
+        Ok(self.inner.list_quotas(provider, principal).await?)
     }
 
     /// Get a quota policy by ID.
@@ -530,13 +459,8 @@ impl OpsClient {
     }
 
     /// Delete a quota policy.
-    pub async fn delete_quota(
-        &self,
-        id: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<(), OpsError> {
-        Ok(self.inner.delete_quota(id, namespace, tenant).await?)
+    pub async fn delete_quota(&self, id: &str) -> Result<(), OpsError> {
+        Ok(self.inner.delete_quota(id).await?)
     }
 
     /// Get quota usage.
@@ -588,12 +512,8 @@ impl OpsClient {
     }
 
     /// List templates.
-    pub async fn list_templates(
-        &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
-    ) -> Result<ListTemplatesResponse, OpsError> {
-        Ok(self.inner.list_templates(namespace, tenant).await?)
+    pub async fn list_templates(&self) -> Result<ListTemplatesResponse, OpsError> {
+        Ok(self.inner.list_templates().await?)
     }
 
     /// Get a template by ID.
@@ -624,12 +544,8 @@ impl OpsClient {
     }
 
     /// List template profiles.
-    pub async fn list_profiles(
-        &self,
-        namespace: Option<&str>,
-        tenant: Option<&str>,
-    ) -> Result<ListProfilesResponse, OpsError> {
-        Ok(self.inner.list_profiles(namespace, tenant).await?)
+    pub async fn list_profiles(&self) -> Result<ListProfilesResponse, OpsError> {
+        Ok(self.inner.list_profiles().await?)
     }
 
     /// Get a template profile by ID.
@@ -737,11 +653,7 @@ impl OpsClient {
     // =========================================================================
 
     /// List pending approvals.
-    pub async fn list_approvals(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<ApprovalListResponse, OpsError> {
-        Ok(self.inner.list_approvals(namespace, tenant).await?)
+    pub async fn list_approvals(&self) -> Result<ApprovalListResponse, OpsError> {
+        Ok(self.inner.list_approvals().await?)
     }
 }

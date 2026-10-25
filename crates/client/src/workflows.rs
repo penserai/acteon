@@ -82,8 +82,6 @@ impl ActeonClient {
     /// polling `queue`.
     pub async fn start_workflow(
         &self,
-        namespace: &str,
-        tenant: &str,
         workflow: &str,
         queue: &str,
         input: Value,
@@ -91,8 +89,7 @@ impl ActeonClient {
     ) -> Result<WorkflowExecution, Error> {
         let url = format!("{}/v1/workflows/start", self.base_url);
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "workflow": workflow,
             "queue": queue,
             "input": input,
@@ -104,13 +101,11 @@ impl ActeonClient {
     /// List workflow executions.
     pub async fn list_workflows(
         &self,
-        namespace: &str,
-        tenant: &str,
         workflow: Option<&str>,
         status: Option<&str>,
     ) -> Result<ListWorkflowsResponse, Error> {
         let url = format!("{}/v1/workflows/executions", self.base_url);
-        let mut query: Vec<(&str, &str)> = vec![("namespace", namespace), ("tenant", tenant)];
+        let mut query: Vec<(&str, &str)> = vec![];
         if let Some(w) = workflow {
             query.push(("workflow", w));
         }
@@ -138,16 +133,10 @@ impl ActeonClient {
     }
 
     /// Get a workflow execution.
-    pub async fn get_workflow(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        execution_id: &str,
-    ) -> Result<WorkflowExecution, Error> {
+    pub async fn get_workflow(&self, execution_id: &str) -> Result<WorkflowExecution, Error> {
         let url = format!("{}/v1/workflows/executions/{execution_id}", self.base_url);
         let response = self
             .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
@@ -168,8 +157,6 @@ impl ActeonClient {
     /// Deliver a signal to a workflow execution.
     pub async fn signal_workflow(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         signal_name: &str,
         payload: Option<Value>,
@@ -179,8 +166,7 @@ impl ActeonClient {
             self.base_url
         );
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "payload": payload,
         });
         let _: Value = self.workflow_post(&url, &body, "signal workflow").await?;
@@ -190,8 +176,6 @@ impl ActeonClient {
     /// Cancel a workflow execution.
     pub async fn cancel_workflow(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         reason: Option<&str>,
     ) -> Result<WorkflowExecution, Error> {
@@ -200,8 +184,7 @@ impl ActeonClient {
             self.base_url
         );
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "reason": reason,
         });
         self.workflow_post(&url, &body, "cancel workflow").await
@@ -211,8 +194,6 @@ impl ActeonClient {
     /// Used by worker SDKs after each completed workflow step.
     pub async fn record_workflow_checkpoint(
         &self,
-        namespace: &str,
-        tenant: &str,
         execution_id: &str,
         name: &str,
         data: Value,
@@ -222,8 +203,7 @@ impl ActeonClient {
             self.base_url
         );
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "name": name,
             "data": data,
         });
@@ -236,8 +216,6 @@ impl ActeonClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn start_child_workflow(
         &self,
-        namespace: &str,
-        tenant: &str,
         parent_execution_id: &str,
         checkpoint: &str,
         workflow: &str,
@@ -250,8 +228,7 @@ impl ActeonClient {
             self.base_url
         );
         let body = serde_json::json!({
-            "namespace": namespace,
-            "tenant": tenant,
+
             "checkpoint": checkpoint,
             "workflow": workflow,
             "queue": queue,

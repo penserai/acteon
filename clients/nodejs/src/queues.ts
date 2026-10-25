@@ -105,12 +105,9 @@ export interface PollTasksOptions {
 }
 
 /** Build the `POST /v1/queues/{queue}/poll` request body. */
-export function pollTasksBody(
-  namespace: string,
-  tenant: string,
-  options: PollTasksOptions = {},
+export function pollTasksBody(options: PollTasksOptions = {}
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = { namespace, tenant };
+  const body: Record<string, unknown> = { };
   if (options.maxTasks !== undefined) body.max_tasks = options.maxTasks;
   if (options.leaseSeconds !== undefined) {
     body.lease_seconds = options.leaseSeconds;
@@ -126,18 +123,9 @@ export interface EnqueueTaskOptions {
 }
 
 /** Build the `POST /v1/queues/{queue}/tasks` request body. */
-export function enqueueTaskBody(
-  namespace: string,
-  tenant: string,
-  actionType: string,
-  payload: unknown,
-  options: EnqueueTaskOptions = {},
+export function enqueueTaskBody(actionType: string, payload: unknown, options: EnqueueTaskOptions = {}
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    namespace,
-    tenant,
-    action_type: actionType,
-    payload,
+  const body: Record<string, unknown> = {action_type: actionType, payload
   };
   if (options.maxAttempts !== undefined) {
     body.max_attempts = options.maxAttempts;
@@ -146,38 +134,22 @@ export function enqueueTaskBody(
 }
 
 /** Build the `POST /v1/queues/tasks/{task_id}/heartbeat` request body. */
-export function heartbeatTaskBody(
-  namespace: string,
-  tenant: string,
-  leaseToken: string,
-  extendSeconds?: number,
+export function heartbeatTaskBody(leaseToken: string, extendSeconds?: number
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    namespace,
-    tenant,
-    lease_token: leaseToken,
+  const body: Record<string, unknown> = {lease_token: leaseToken
   };
   if (extendSeconds !== undefined) body.extend_seconds = extendSeconds;
   return body;
 }
 
 /** Build the `POST /v1/queues/tasks/{task_id}/complete` request body. */
-export function completeTaskBody(
-  namespace: string,
-  tenant: string,
-  leaseToken: string,
-  result: unknown,
+export function completeTaskBody(leaseToken: string, result: unknown
 ): Record<string, unknown> {
-  return { namespace, tenant, lease_token: leaseToken, result };
+  return {lease_token: leaseToken, result };
 }
 
 /** Build the `POST /v1/queues/tasks/{task_id}/fail` request body. */
-export function failTaskBody(
-  namespace: string,
-  tenant: string,
-  leaseToken: string,
-  error: string,
-  retryable: boolean,
+export function failTaskBody(leaseToken: string, error: string, retryable: boolean
 ): Record<string, unknown> {
-  return { namespace, tenant, lease_token: leaseToken, error, retryable };
+  return {lease_token: leaseToken, error, retryable };
 }

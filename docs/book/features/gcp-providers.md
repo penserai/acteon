@@ -317,71 +317,65 @@ GCP SDK errors are classified into the standard `ProviderError` enum:
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "storage",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "upload_object",
-    "payload": {
-      "object_name": "reports/2026/02/daily.json",
-      "body": "{\"total\": 42}",
-      "content_type": "application/json"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "upload_object",
+  "payload": {
+    "object_name": "reports/2026/02/daily.json",
+    "body": "{\"total\": 42}",
+    "content_type": "application/json"
+  }
+}'
 
 # Download an object
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "storage",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "download_object",
-    "payload": {
-      "object_name": "reports/2026/02/daily.json"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "download_object",
+  "payload": {
+    "object_name": "reports/2026/02/daily.json"
+  }
+}'
 
 # Delete an object
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "storage",
-    "tenant": "acme-corp",
-    "provider": "archive",
-    "action_type": "delete_object",
-    "payload": {
-      "object_name": "old/data.csv"
-    }
-  }'
+  "provider": "archive",
+  "action_type": "delete_object",
+  "payload": {
+    "object_name": "old/data.csv"
+  }
+}'
 
 # Publish a message to Pub/Sub
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "events",
-    "tenant": "acme-corp",
-    "provider": "telemetry-topic",
-    "action_type": "publish",
-    "payload": {
-      "data": "{\"device_id\": \"sensor-001\", \"temperature\": 72.5}"
-    }
-  }'
+  "provider": "telemetry-topic",
+  "action_type": "publish",
+  "payload": {
+    "data": "{\"device_id\": \"sensor-001\", \"temperature\": 72.5}"
+  }
+}'
 
 # Publish a batch of messages
 curl -X POST http://localhost:8080/v1/dispatch \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "events",
-    "tenant": "acme-corp",
-    "provider": "telemetry-topic",
-    "action_type": "publish_batch",
-    "payload": {
-      "messages": [
-        {"data": "{\"device_id\": \"sensor-001\", \"temperature\": 72.5}"},
-        {"data": "{\"device_id\": \"sensor-002\", \"temperature\": 68.1}"}
-      ]
-    }
-  }'
+  "provider": "telemetry-topic",
+  "action_type": "publish_batch",
+  "payload": {
+    "messages": [
+      {
+        "data": "{\"device_id\": \"sensor-001\", \"temperature\": 72.5}"
+      },
+      {
+        "data": "{\"device_id\": \"sensor-002\", \"temperature\": 68.1}"
+      }
+    ]
+  }
+}'
 ```
 
 ## Example: Rust Client

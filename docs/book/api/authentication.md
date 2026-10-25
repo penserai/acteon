@@ -1,6 +1,12 @@
 # Authentication
 
 Acteon supports API key and JWT-based authentication with role-based access control.
+Each user and service key has one required, exact tenant context. The server
+extracts that context from the signed JWT or the provisioned API-key entry.
+HTTP requests do not choose a namespace or tenant.
+
+See [credential-derived tenant context](tenant-context.md) for the request
+contract, provisioning examples, and the breaking API changes.
 
 ## Enabling Authentication
 
@@ -69,7 +75,7 @@ watch = true
 ```
 
 Existing JWT sessions use the current user's role and grants after reload.
-Removing a user rejects that user's existing sessions. API-key changes also
+Removing a user or changing that user's scope rejects existing sessions; a scope change requires a new login. API-key changes also
 apply on subsequent requests. Reload does not stop a provider call already
 in flight or establish authorization for each step of an existing chain.
 
@@ -139,7 +145,7 @@ restart use a persistent backend.
 Startup constructs providers and validates the gateway before publishing auth
 configuration. A failed runtime configuration therefore leaves shared authority
 unchanged. A reload publishes the whole source version before installing its local tables.
-Increment `authority_revision` for changes to roles, grants, principal bindings,
+Increment `authority_revision` for changes to roles, grants, scopes, principal bindings,
 credentials or JWT settings. Equivalent reordered definitions can reuse the
 current version. Different content at that version conflicts, and an older
 version is refused. A replica using old tables denies authenticated requests
@@ -229,6 +235,7 @@ For example, add a hashed API key to `auth.toml`:
 
 ```toml
 [[api_keys]]
+scope = { namespace = "operations", tenant = "acme" }
 name = "diagnostic-runtime"
 key_hash = "REPLACE_WITH_SHA256_OF_YOUR_KEY"
 role = "executor"
@@ -277,6 +284,7 @@ identifies the person, agent, or service using them.
 
 ```toml
 [[api_keys]]
+scope = { namespace = "observability", tenant = "production" }
 name = "diagnostic-key-2026-10"
 key_hash = "<sha256-of-your-key>"
 role = "executor"

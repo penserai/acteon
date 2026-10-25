@@ -2,8 +2,9 @@
 //!
 //! Provides endpoints for querying and managing event lifecycle states.
 
+use crate::auth::context::{ScopedJson, ScopedQuery};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
@@ -43,9 +44,11 @@ pub struct TransitionRequest {
     pub to: String,
     /// Namespace for the event.
     #[schema(example = "notifications")]
+    #[schema(ignore)]
     pub namespace: String,
     /// Tenant for the event.
     #[schema(example = "tenant-1")]
+    #[schema(ignore)]
     pub tenant: String,
 }
 
@@ -70,8 +73,10 @@ pub struct TransitionResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct EventQueryParams {
     /// Filter by namespace.
+    #[schema(ignore)]
     pub namespace: String,
     /// Filter by tenant.
+    #[schema(ignore)]
     pub tenant: String,
     /// Filter by state (e.g., "open", "closed").
     #[allow(dead_code)]
@@ -104,10 +109,8 @@ pub struct ListEventsResponse {
     summary = "List events",
     description = "Lists events filtered by namespace, tenant, and optionally status.",
     params(
-        ("namespace" = String, Query, description = "Event namespace"),
-        ("tenant" = String, Query, description = "Event tenant"),
-        ("status" = Option<String>, Query, description = "Filter by status (e.g., 'open', 'closed')"),
-        ("limit" = Option<usize>, Query, description = "Maximum results to return (default: 100)"),
+        ("status" = Option<String>, description = "Filter by status (e.g., 'open', 'closed')"),
+        ("limit" = Option<usize>, description = "Maximum results to return (default: 100)"),
     ),
     responses(
         (status = 200, description = "List of events", body = ListEventsResponse),
@@ -118,7 +121,7 @@ pub struct ListEventsResponse {
 pub async fn list_events(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Query(params): Query<EventQueryParams>,
+    ScopedQuery(params): ScopedQuery<EventQueryParams>,
 ) -> Result<impl IntoResponse, ServerError> {
     // Check role permission.
     if !identity.role.has_permission(Permission::AuditRead) {
@@ -224,8 +227,6 @@ pub async fn list_events(
     description = "Retrieves the current lifecycle state of an event by its fingerprint.",
     params(
         ("fingerprint" = String, Path, description = "Event fingerprint"),
-        ("namespace" = String, Query, description = "Event namespace"),
-        ("tenant" = String, Query, description = "Event tenant"),
     ),
     responses(
         (status = 200, description = "Event state retrieved", body = EventStateResponse),
@@ -238,7 +239,7 @@ pub async fn get_event(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(fingerprint): Path<String>,
-    Query(params): Query<EventQueryParams>,
+    ScopedQuery(params): ScopedQuery<EventQueryParams>,
 ) -> Result<impl IntoResponse, ServerError> {
     // Check role permission.
     if !identity.role.has_permission(Permission::AuditRead) {
@@ -333,7 +334,7 @@ pub async fn transition_event(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(fingerprint): Path<String>,
-    Json(request): Json<TransitionRequest>,
+    ScopedJson(request): ScopedJson<TransitionRequest>,
 ) -> Result<impl IntoResponse, ServerError> {
     // Check role permission.
     if !identity.role.has_permission(Permission::Dispatch) {
@@ -423,3 +424,5 @@ pub async fn transition_event(
 
     Ok((StatusCode::OK, Json(serde_json::json!(response))))
 }
+
+crate::auth::context::scoped_body!(TransitionRequest);

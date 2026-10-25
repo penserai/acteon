@@ -116,21 +116,19 @@ Create a new retention policy. Only one policy per namespace:tenant pair is allo
 
 ```json
 {
-  "namespace": "notifications",
-  "tenant": "acme",
   "audit_ttl_seconds": 2592000,
   "state_ttl_seconds": 604800,
   "event_ttl_seconds": 259200,
   "compliance_hold": false,
   "description": "Acme 30-day retention",
-  "labels": {"tier": "premium"}
+  "labels": {
+    "tier": "premium"
+  }
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `namespace` | string | Yes | Namespace scope |
-| `tenant` | string | Yes | Tenant scope |
 | `audit_ttl_seconds` | integer | No | Override for the global audit TTL (seconds) |
 | `state_ttl_seconds` | integer | No | TTL for completed chain state records (seconds) |
 | `event_ttl_seconds` | integer | No | TTL for resolved event records (seconds) |
@@ -167,8 +165,6 @@ List all retention policies, optionally filtered by namespace and tenant.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `namespace` | string | No | Filter by namespace |
-| `tenant` | string | No | Filter by tenant |
 | `limit` | integer | No | Maximum number of results (default: 100) |
 | `offset` | integer | No | Number of results to skip (default: 0) |
 
@@ -232,13 +228,11 @@ Permanently delete a retention policy. The tenant reverts to the gateway default
 curl -X POST http://localhost:8080/v1/retention \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "notifications",
-    "tenant": "acme",
-    "audit_ttl_seconds": 2592000,
-    "state_ttl_seconds": 604800,
-    "event_ttl_seconds": 259200,
-    "description": "Acme 30-day audit retention"
-  }'
+  "audit_ttl_seconds": 2592000,
+  "state_ttl_seconds": 604800,
+  "event_ttl_seconds": 259200,
+  "description": "Acme 30-day audit retention"
+}'
 ```
 
 ### Set compliance hold
@@ -247,11 +241,9 @@ curl -X POST http://localhost:8080/v1/retention \
 curl -X POST http://localhost:8080/v1/retention \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "notifications",
-    "tenant": "healthcare-corp",
-    "compliance_hold": true,
-    "description": "HIPAA compliance hold"
-  }'
+  "compliance_hold": true,
+  "description": "HIPAA compliance hold"
+}'
 ```
 
 ### Update TTL (extend retention)

@@ -214,8 +214,6 @@
   },
   "changes": [
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-0",
       "change": {
         "kind": "put_team",
@@ -232,8 +230,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-1",
       "change": {
         "kind": "disband_team",
@@ -247,8 +243,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-2",
       "change": {
         "kind": "put_membership",
@@ -274,8 +268,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-3",
       "change": {
         "kind": "remove_membership",
@@ -285,8 +277,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-4",
       "change": {
         "kind": "put_ownership",
@@ -308,8 +298,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-5",
       "change": {
         "kind": "put_assignment",
@@ -335,8 +323,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-6",
       "change": {
         "kind": "remove_assignment",
@@ -346,8 +332,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-7",
       "change": {
         "kind": "put_mandate",
@@ -410,8 +394,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-8",
       "change": {
         "kind": "revoke_mandate",
@@ -421,8 +403,6 @@
       "reason": "reviewed"
     },
     {
-      "namespace": "prod",
-      "tenant": "acme",
       "change_id": "wire-9",
       "change": {
         "kind": "publish_represented_permit",

@@ -6,6 +6,8 @@ use super::role::Role;
 /// Rich server-side caller identity extracted from authentication.
 #[derive(Debug, Clone)]
 pub struct CallerIdentity {
+    /// Exact context established by authentication, independent of grant breadth.
+    pub scope: acteon_core::TenantContext,
     /// Caller identifier (username or API key name).
     pub id: String,
     /// Trusted credential-to-actor binding, independent of its display name.
@@ -22,6 +24,7 @@ impl CallerIdentity {
     /// Build an anonymous identity with full admin access (used when auth is disabled).
     pub fn anonymous() -> Self {
         Self {
+            scope: acteon_core::TenantContext::new("default", "default"),
             id: String::new(),
             principal: None,
             role: Role::Admin,
@@ -44,8 +47,7 @@ impl CallerIdentity {
     /// Check if this caller is authorized for a specific
     /// `(tenant, namespace, provider, action_type)` tuple.
     ///
-    /// Tenant matching is hierarchical: a grant on `"acme"` also covers
-    /// `"acme.us-east"`. See [`Grant::matches`] for details.
+    /// Grants authorize operations only inside the credential's exact context.
     pub fn is_authorized(
         &self,
         tenant: &str,
@@ -53,54 +55,35 @@ impl CallerIdentity {
         provider: &str,
         action_type: &str,
     ) -> bool {
-        self.grants
-            .iter()
-            .any(|g| g.matches(tenant, namespace, provider, action_type))
+        self.scope.matches(namespace, tenant)
+            && self
+                .grants
+                .iter()
+                .any(|g| g.matches(tenant, namespace, provider, action_type))
     }
 
-    /// Return the set of tenant patterns this caller has access to, for
-    /// filtering audit queries. Returns `None` if the caller has wildcard
-    /// tenant access.
-    ///
-    /// Note: the returned strings are grant *patterns*, not resolved
-    /// tenants. Because tenant grants are hierarchical, a returned value of
-    /// `"acme"` means the caller can read any tenant matching `acme` or
-    /// `acme.*`. Query-filter consumers should treat them as prefixes.
+    /// Exact tenant context used to bound data reads, even for wildcard grants.
     pub fn allowed_tenants(&self) -> Option<Vec<&str>> {
-        let mut tenants = Vec::new();
-        for g in &self.grants {
-            if g.tenants.iter().any(|t| t == "*") {
-                return None; // wildcard — no filtering needed
-            }
-            for t in &g.tenants {
-                if !tenants.contains(&t.as_str()) {
-                    tenants.push(t.as_str());
-                }
-            }
-        }
-        Some(tenants)
+        Some(vec![self.scope.tenant.as_str()])
     }
 
-    /// Return allowed namespaces, or `None` if the caller has wildcard namespace access.
+    /// Exact namespace context used to bound data reads.
     pub fn allowed_namespaces(&self) -> Option<Vec<&str>> {
-        let mut namespaces = Vec::new();
-        for g in &self.grants {
-            if g.namespaces.iter().any(|n| n == "*") {
-                return None;
-            }
-            for n in &g.namespaces {
-                if !namespaces.contains(&n.as_str()) {
-                    namespaces.push(n.as_str());
-                }
-            }
-        }
-        Some(namespaces)
+        Some(vec![self.scope.namespace.as_str()])
     }
 
     /// Return allowed providers, or `None` if the caller has wildcard provider access.
     pub fn allowed_providers(&self) -> Option<Vec<&str>> {
         let mut providers = Vec::new();
         for g in &self.grants {
+            if !super::config::tenant_matches(&g.tenants, &self.scope.tenant)
+                || !g
+                    .namespaces
+                    .iter()
+                    .any(|n| n == "*" || n == &self.scope.namespace)
+            {
+                continue;
+            }
             if g.providers.iter().any(|p| p == "*") {
                 return None;
             }
@@ -118,14 +101,14 @@ impl CallerIdentity {
     ///
     /// Used by tenant-scoped CRUD endpoints (silences, quotas, retention)
     /// where provider and action-type scoping don't apply to the
-    /// resource itself. Hierarchical tenant matching applies — a grant
-    /// on `"acme"` covers `"acme.us-east"`.
+    /// resource itself. The credential's exact context always bounds access.
     pub fn can_manage_scope(&self, tenant: &str, namespace: &str) -> bool {
-        self.grants.iter().any(|g| {
-            super::config::tenant_matches(&g.tenants, tenant)
-                && (g.namespaces.iter().any(|n| n == "*")
-                    || g.namespaces.iter().any(|n| n == namespace))
-        })
+        self.scope.matches(namespace, tenant)
+            && self.grants.iter().any(|g| {
+                super::config::tenant_matches(&g.tenants, tenant)
+                    && (g.namespaces.iter().any(|n| n == "*")
+                        || g.namespaces.iter().any(|n| n == namespace))
+            })
     }
 
     /// Convert to the minimal `Caller` for audit threading.
@@ -160,6 +143,9 @@ impl CallerIdentity {
         tenant: &str,
         namespace: &str,
     ) -> Result<Option<&str>, BusAgentIdResolutionError> {
+        if !self.scope.matches(namespace, tenant) {
+            return Ok(None);
+        }
         let mut found: Option<&str> = None;
         for g in &self.grants {
             if !super::config::tenant_matches(&g.tenants, tenant) {
@@ -187,67 +173,21 @@ impl CallerIdentity {
         Ok(found)
     }
 
-    /// Resolve the tenant filter **and** authorization scope to apply for a
-    /// query endpoint whose backend delegates filtering to the store/aggregator
-    /// (audit, analytics, rule-coverage). Such a query must never run unscoped
-    /// for a caller restricted to specific tenants, or it would return records
-    /// from every tenant.
-    ///
-    /// The returned [`TenantQueryScope`] carries two complementary pieces:
-    /// - `tenant`: an explicit single-tenant filter the caller requested
-    ///   (validated to be within their grants), or `None`.
-    /// - `scope`: the caller's hierarchical grant patterns. The backend
-    ///   restricts results to tenants covered by one of these (`p` covers `p`
-    ///   and `p.*`). Empty = unrestricted.
-    ///
-    /// Behavior:
-    /// - Caller names a tenant → it must be covered by a grant
-    ///   (hierarchically, via [`tenant_matches`], so a grant on `acme`
-    ///   authorizes `acme.prod`). The exact filter fully bounds the query, so
-    ///   `scope` is left empty — this keeps key-addressed backends (`DynamoDB`)
-    ///   on their efficient exact-match path. `Err(NotGranted)` (→ 403) if not
-    ///   covered.
-    /// - Caller names nothing, wildcard tenant access → unrestricted
-    ///   (`tenant = None`, empty `scope`).
-    /// - Caller names nothing, scoped → `tenant = None` with `scope` set to the
-    ///   caller's grant patterns. The backend returns the **union of the
-    ///   granted subtrees** — multi-tenant callers aggregate across their
-    ///   tenants without having to name one.
-    ///
-    /// [`tenant_matches`]: super::config::tenant_matches
+    /// Always pin queries to the authenticated tenant. Hierarchical grants
+    /// authorize permissions; they never widen a credential's data context.
     pub fn resolve_tenant_query_scope(
         &self,
         requested: Option<&str>,
     ) -> Result<TenantQueryScope, TenantFilterError> {
-        match requested {
-            // Named tenant: a grant must cover it hierarchically. `tenant_matches`
-            // also returns true for a `*` grant, so wildcard callers are
-            // authorized here. The exact equality filter fully bounds the query.
-            Some(requested) => {
-                if self
-                    .grants
-                    .iter()
-                    .any(|g| super::config::tenant_matches(&g.tenants, requested))
-                {
-                    Ok(TenantQueryScope {
-                        tenant: Some(requested.to_owned()),
-                        scope: Vec::new(),
-                    })
-                } else {
-                    Err(TenantFilterError::NotGranted(requested.to_owned()))
-                }
-            }
-            // No tenant named: wildcard callers run unrestricted; a scoped
-            // caller's grant patterns become the authorization scope so the
-            // backend returns the union of their granted subtrees.
-            None => match self.allowed_tenants() {
-                None => Ok(TenantQueryScope::default()),
-                Some(allowed) => Ok(TenantQueryScope {
-                    tenant: None,
-                    scope: allowed.into_iter().map(str::to_owned).collect(),
-                }),
-            },
+        if let Some(requested) = requested
+            && requested != self.scope.tenant
+        {
+            return Err(TenantFilterError::NotGranted(requested.to_owned()));
         }
+        Ok(TenantQueryScope {
+            tenant: Some(self.scope.tenant.clone()),
+            scope: Vec::new(),
+        })
     }
 }
 
@@ -268,12 +208,9 @@ pub enum BusAgentIdResolutionError {
 /// [`CallerIdentity::resolve_tenant_query_scope`] for a query endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TenantQueryScope {
-    /// Explicit single-tenant filter the caller requested, validated to be
-    /// within their grants. `None` = no explicit narrowing.
+    /// The credential's exact tenant, always populated by the HTTP boundary.
     pub tenant: Option<String>,
-    /// Hierarchical grant patterns bounding which tenants the caller may read.
-    /// Empty = unrestricted (wildcard caller, or an explicit in-grant `tenant`
-    /// already bounds the query). Fed into the backend query's `tenant_scope`.
+    /// Additional backend patterns; empty because `tenant` pins the query exactly.
     pub scope: Vec<String>,
 }
 
@@ -290,18 +227,24 @@ pub enum TenantFilterError {
 mod tests {
     use super::*;
 
-    fn grant(tenants: &[&str], namespaces: &[&str], providers: &[&str], actions: &[&str]) -> Grant {
+    fn grant(
+        tenant: &str,
+        namespace: &str,
+        provider: &str,
+        action: &str,
+        agent: Option<&str>,
+    ) -> Grant {
         Grant {
-            tenants: tenants.iter().map(|s| (*s).to_string()).collect(),
-            namespaces: namespaces.iter().map(|s| (*s).to_string()).collect(),
-            providers: providers.iter().map(|s| (*s).to_string()).collect(),
-            actions: actions.iter().map(|s| (*s).to_string()).collect(),
-            agent_id: None,
+            tenants: vec![tenant.into()],
+            namespaces: vec![namespace.into()],
+            providers: vec![provider.into()],
+            actions: vec![action.into()],
+            agent_id: agent.map(str::to_owned),
         }
     }
-
-    fn identity_with(grants: Vec<Grant>) -> CallerIdentity {
+    fn identity(grants: Vec<Grant>) -> CallerIdentity {
         CallerIdentity {
+            scope: acteon_core::TenantContext::new("prod", "acme"),
             id: "test".into(),
             principal: None,
             role: Role::Admin,
@@ -311,264 +254,107 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_is_authorized_for_everything() {
-        let id = CallerIdentity::anonymous();
-        assert!(id.is_authorized("any", "any", "any", "any"));
+    fn anonymous_access_is_fixed_to_the_development_context() {
+        let caller = CallerIdentity::anonymous();
+        assert!(caller.is_authorized("default", "default", "any", "any"));
+        assert!(!caller.is_authorized("other", "default", "any", "any"));
+        assert!(!caller.is_authorized("default", "other", "any", "any"));
     }
 
     #[test]
-    fn is_authorized_enforces_provider_dimension() {
-        let id = identity_with(vec![grant(&["acme"], &["prod"], &["email"], &["send"])]);
-        assert!(id.is_authorized("acme", "prod", "email", "send"));
-        // Provider mismatch → deny, even if everything else matches.
-        assert!(!id.is_authorized("acme", "prod", "sms", "send"));
-    }
-
-    #[test]
-    fn is_authorized_matches_hierarchical_tenants() {
-        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
-        assert!(id.is_authorized("acme", "x", "y", "z"));
-        assert!(id.is_authorized("acme.us-east", "x", "y", "z"));
-        assert!(id.is_authorized("acme.us-east.prod", "x", "y", "z"));
-        assert!(!id.is_authorized("acme-corp", "x", "y", "z"));
-        assert!(!id.is_authorized("other", "x", "y", "z"));
-    }
-
-    #[test]
-    fn multiple_grants_union() {
-        let id = identity_with(vec![
-            grant(&["acme"], &["prod"], &["email"], &["*"]),
-            grant(&["beta"], &["*"], &["*"], &["*"]),
-        ]);
-        assert!(id.is_authorized("acme", "prod", "email", "send"));
-        assert!(!id.is_authorized("acme", "prod", "sms", "send"));
-        assert!(id.is_authorized("beta", "anything", "anything", "anything"));
-    }
-
-    #[test]
-    fn allowed_providers_returns_none_for_wildcard() {
-        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
-        assert_eq!(id.allowed_providers(), None);
-    }
-
-    #[test]
-    fn allowed_providers_returns_sorted_unique_list() {
-        let id = identity_with(vec![
-            grant(&["*"], &["*"], &["email", "sms"], &["*"]),
-            grant(&["*"], &["*"], &["email", "slack"], &["*"]),
-        ]);
-        let providers = id.allowed_providers().expect("non-wildcard");
-        assert!(providers.contains(&"email"));
-        assert!(providers.contains(&"sms"));
-        assert!(providers.contains(&"slack"));
-        assert_eq!(providers.len(), 3); // deduplicated
-    }
-
-    #[test]
-    fn allowed_tenants_wildcard_returns_none() {
-        let id = identity_with(vec![grant(&["*"], &["*"], &["*"], &["*"])]);
-        assert_eq!(id.allowed_tenants(), None);
-    }
-
-    fn grant_with_agent(tenants: &[&str], namespaces: &[&str], agent_id: Option<&str>) -> Grant {
-        Grant {
-            tenants: tenants.iter().map(|s| (*s).to_string()).collect(),
-            namespaces: namespaces.iter().map(|s| (*s).to_string()).collect(),
-            providers: vec!["*".into()],
-            actions: vec!["*".into()],
-            agent_id: agent_id.map(str::to_string),
+    fn wildcard_and_hierarchical_grants_do_not_expand_context() {
+        for tenant in ["*", "acme"] {
+            let caller = identity(vec![grant(tenant, "*", "*", "*", None)]);
+            assert!(caller.is_authorized("acme", "prod", "email", "send"));
+            for (t, n) in [("acme.child", "prod"), ("other", "prod"), ("acme", "stage")] {
+                assert!(!caller.is_authorized(t, n, "email", "send"));
+                assert!(!caller.can_manage_scope(t, n));
+            }
+            assert_eq!(caller.allowed_tenants(), Some(vec!["acme"]));
+            assert_eq!(caller.allowed_namespaces(), Some(vec!["prod"]));
         }
     }
 
     #[test]
-    fn bus_agent_id_none_when_no_grant_has_one() {
-        let id = identity_with(vec![grant(&["acme"], &["agents"], &["*"], &["*"])]);
-        assert_eq!(id.bus_agent_id_for_scope("acme", "agents"), Ok(None));
+    fn operation_grants_remain_correlated_inside_context() {
+        let caller = identity(vec![
+            grant("acme", "prod", "email", "send", None),
+            grant("acme", "prod", "sms", "receive", None),
+            grant("other", "*", "*", "*", None),
+        ]);
+        assert!(caller.is_authorized("acme", "prod", "email", "send"));
+        assert!(caller.is_authorized("acme", "prod", "sms", "receive"));
+        assert!(!caller.is_authorized("acme", "prod", "sms", "send"));
+        assert!(!caller.is_authorized("acme", "prod", "email", "receive"));
+        assert!(!caller.is_authorized("other", "prod", "email", "send"));
+        assert_eq!(caller.allowed_providers(), Some(vec!["email", "sms"]));
     }
 
     #[test]
-    fn bus_agent_id_resolved_from_matching_scope() {
-        let id = identity_with(vec![grant_with_agent(
-            &["acme"],
-            &["agents"],
-            Some("planner-1"),
-        )]);
-        assert_eq!(
-            id.bus_agent_id_for_scope("acme", "agents"),
-            Ok(Some("planner-1")),
-        );
+    fn wildcard_provider_in_context_is_unrestricted_only_for_providers() {
+        let caller = identity(vec![grant("acme", "prod", "*", "send", None)]);
+        assert_eq!(caller.allowed_providers(), None);
+        assert!(!caller.is_authorized("acme", "prod", "email", "delete"));
     }
 
     #[test]
-    fn bus_agent_id_does_not_bleed_across_scopes() {
-        // Grant binds the caller to `planner-1` only under the
-        // `agents` namespace. A bus call under a different namespace
-        // should not get this identity.
-        let id = identity_with(vec![grant_with_agent(
-            &["acme"],
-            &["agents"],
-            Some("planner-1"),
-        )]);
-        assert_eq!(id.bus_agent_id_for_scope("acme", "ops"), Ok(None));
+    fn query_is_pinned_even_for_multi_tenant_grants() {
+        let caller = identity(vec![
+            grant("*", "*", "*", "*", None),
+            grant("globex", "*", "*", "*", None),
+        ]);
+        for requested in [None, Some("acme")] {
+            assert_eq!(
+                caller.resolve_tenant_query_scope(requested),
+                Ok(TenantQueryScope {
+                    tenant: Some("acme".into()),
+                    scope: vec![]
+                })
+            );
+        }
+        for requested in ["globex", "acme.prod", "acmecorp", "*"] {
+            assert_eq!(
+                caller.resolve_tenant_query_scope(Some(requested)),
+                Err(TenantFilterError::NotGranted(requested.into()))
+            );
+        }
     }
 
     #[test]
-    fn bus_agent_id_walks_multiple_grants() {
-        // Same caller acts as `planner-1` under `agents` and as
-        // `ops-bot` under `ops`. Each scope resolves to its own
-        // identity; no cross-contamination.
-        let id = identity_with(vec![
-            grant_with_agent(&["acme"], &["agents"], Some("planner-1")),
-            grant_with_agent(&["acme"], &["ops"], Some("ops-bot")),
+    fn agent_binding_uses_only_the_authenticated_context() {
+        let caller = identity(vec![
+            grant("acme", "prod", "*", "*", Some("planner")),
+            grant("acme", "stage", "*", "*", Some("test-agent")),
         ]);
         assert_eq!(
-            id.bus_agent_id_for_scope("acme", "agents"),
-            Ok(Some("planner-1")),
+            caller.bus_agent_id_for_scope("acme", "prod"),
+            Ok(Some("planner"))
+        );
+        assert_eq!(caller.bus_agent_id_for_scope("acme", "stage"), Ok(None));
+        assert_eq!(
+            caller.bus_agent_id_for_scope("acme.child", "prod"),
+            Ok(None)
         );
         assert_eq!(
-            id.bus_agent_id_for_scope("acme", "ops"),
-            Ok(Some("ops-bot")),
+            identity(vec![grant("*", "*", "*", "*", None)]).bus_agent_id_for_scope("acme", "prod"),
+            Ok(None)
         );
     }
 
     #[test]
-    fn bus_agent_id_duplicate_across_grants_resolves_cleanly() {
-        // Two grants both bind to the same agent_id under the same
-        // scope. That's redundant but not ambiguous — accept it
-        // rather than reject.
-        let id = identity_with(vec![
-            grant_with_agent(&["acme"], &["agents"], Some("planner-1")),
-            grant_with_agent(&["acme"], &["*"], Some("planner-1")),
+    fn duplicate_agent_bindings_are_allowed_but_conflicts_are_rejected() {
+        let mut caller = identity(vec![
+            grant("acme", "prod", "*", "*", Some("planner")),
+            grant("*", "*", "*", "*", Some("planner")),
         ]);
         assert_eq!(
-            id.bus_agent_id_for_scope("acme", "agents"),
-            Ok(Some("planner-1")),
+            caller.bus_agent_id_for_scope("acme", "prod"),
+            Ok(Some("planner"))
         );
-    }
-
-    #[test]
-    fn bus_agent_id_conflicting_grants_rejected() {
-        // Two grants match the same scope but bind to *different*
-        // agent ids. We refuse to guess which one to stamp.
-        let id = identity_with(vec![
-            grant_with_agent(&["acme"], &["agents"], Some("planner-1")),
-            grant_with_agent(&["acme"], &["*"], Some("ops-bot")),
-        ]);
+        caller.grants[1].agent_id = Some("different".into());
         assert!(matches!(
-            id.bus_agent_id_for_scope("acme", "agents"),
+            caller.bus_agent_id_for_scope("acme", "prod"),
             Err(BusAgentIdResolutionError::ConflictingGrants { .. })
         ));
-    }
-
-    #[test]
-    fn bus_agent_id_hierarchical_tenant_match() {
-        // Tenant matching is hierarchical (a grant on `acme`
-        // covers `acme.us-east`). The agent-id resolver should
-        // honor that.
-        let id = identity_with(vec![grant_with_agent(
-            &["acme"],
-            &["agents"],
-            Some("planner-1"),
-        )]);
-        assert_eq!(
-            id.bus_agent_id_for_scope("acme.us-east", "agents"),
-            Ok(Some("planner-1")),
-        );
-    }
-
-    // ---- resolve_tenant_query_scope --------------------------------------
-
-    fn scope(tenant: Option<&str>, patterns: &[&str]) -> TenantQueryScope {
-        TenantQueryScope {
-            tenant: tenant.map(str::to_owned),
-            scope: patterns.iter().map(|s| (*s).to_owned()).collect(),
-        }
-    }
-
-    #[test]
-    fn tenant_scope_wildcard_caller_is_unrestricted() {
-        let id = identity_with(vec![grant(&["*"], &["*"], &["*"], &["*"])]);
-        // No tenant named: unrestricted (no filter, empty scope → sees all).
-        assert_eq!(id.resolve_tenant_query_scope(None), Ok(scope(None, &[])));
-        // Named tenant: honored as an exact filter, no extra scope.
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("acme")),
-            Ok(scope(Some("acme"), &[])),
-        );
-    }
-
-    #[test]
-    fn tenant_scope_single_tenant_caller_gets_subtree_scope() {
-        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
-        // No tenant named: scope to the granted pattern so the backend returns
-        // the whole `acme` subtree (acme, acme.prod, …), not just exact `acme`.
-        assert_eq!(
-            id.resolve_tenant_query_scope(None),
-            Ok(scope(None, &["acme"])),
-        );
-        // Naming the granted tenant pins it exactly (no extra scope needed).
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("acme")),
-            Ok(scope(Some("acme"), &[])),
-        );
-    }
-
-    #[test]
-    fn tenant_scope_rejects_uncovered_named_tenant() {
-        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("globex")),
-            Err(TenantFilterError::NotGranted("globex".to_owned())),
-        );
-    }
-
-    #[test]
-    fn tenant_scope_allows_named_hierarchical_subtenant() {
-        // A grant on `acme` authorizes naming a sub-tenant (a regional admin
-        // querying `?tenant=acme.prod`), matching the hierarchical model.
-        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("acme.prod")),
-            Ok(scope(Some("acme.prod"), &[])),
-        );
-        // Segment boundary: `acme` must NOT cover the sibling `acmecorp`.
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("acmecorp")),
-            Err(TenantFilterError::NotGranted("acmecorp".to_owned())),
-        );
-    }
-
-    #[test]
-    fn tenant_scope_multi_tenant_caller_without_filter_unions_grants() {
-        // The former `Ambiguous` 400 case: a caller scoped to two tenants who
-        // names none now aggregates across both granted subtrees via `scope`.
-        let id = identity_with(vec![
-            grant(&["acme"], &["*"], &["*"], &["*"]),
-            grant(&["globex"], &["*"], &["*"], &["*"]),
-        ]);
-        let resolved = id
-            .resolve_tenant_query_scope(None)
-            .expect("multi-tenant caller is no longer rejected");
-        assert_eq!(resolved.tenant, None);
-        assert!(resolved.scope.contains(&"acme".to_owned()));
-        assert!(resolved.scope.contains(&"globex".to_owned()));
-    }
-
-    #[test]
-    fn tenant_scope_multi_tenant_caller_naming_a_tenant_pins_it() {
-        let id = identity_with(vec![
-            grant(&["acme"], &["*"], &["*"], &["*"]),
-            grant(&["globex"], &["*"], &["*"], &["*"]),
-        ]);
-        // Naming a covered tenant pins the query to it (exact filter).
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("globex")),
-            Ok(scope(Some("globex"), &[])),
-        );
-        // Naming an uncovered tenant is still forbidden.
-        assert_eq!(
-            id.resolve_tenant_query_scope(Some("initech")),
-            Err(TenantFilterError::NotGranted("initech".to_owned())),
-        );
     }
 }

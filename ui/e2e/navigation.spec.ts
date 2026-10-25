@@ -153,6 +153,7 @@ test('governance preserves scoped authority and reviewed recovery', async ({ pag
   scope.closed_resources = []
   scope.routes[0].closed = false
   await page.addInitScript(() => localStorage.setItem('acteon-token', 'operator-key'))
+  await page.route('**/v1/auth/identity', route => route.fulfill({ json: { credential_id: 'operator', auth_method: 'api_key', role: 'operator', scope: { namespace: 'prod', tenant: 'acme' }, principal: null } }))
   const changes: Record<string, unknown>[] = []
   const publications: Record<string, unknown>[] = []
   const registryChanges: Record<string, unknown>[] = []
@@ -167,7 +168,7 @@ test('governance preserves scoped authority and reviewed recovery', async ({ pag
       if (request.method() === 'GET') {
         registryReads++
         expect(url.pathname).toBe('/v1/governance/registry/maya')
-        expect(Object.fromEntries(url.searchParams)).toEqual({ namespace: 'prod', tenant: 'acme', projection: 'card' })
+        expect(Object.fromEntries(url.searchParams)).toEqual({ projection: 'card' })
         if (registryReads === 1) {
           await route.fulfill({ status: 307, headers: { location: '/redirected-registry' } })
         } else if (registryReads === 2) {
@@ -193,14 +194,14 @@ test('governance preserves scoped authority and reviewed recovery', async ({ pag
       return
     }
     if (request.method() === 'GET') {
-      expect(url.searchParams.get('namespace')).toBe('prod')
-      expect(url.searchParams.get('tenant')).toBe('acme')
+      expect(url.searchParams.has('namespace')).toBe(false)
+      expect(url.searchParams.has('tenant')).toBe(false)
       await route.fulfill({ json: scope })
       return
     }
     const body = request.postDataJSON()
-    expect(body.namespace).toBe('prod')
-    expect(body.tenant).toBe('acme')
+    expect(body).not.toHaveProperty('namespace')
+    expect(body).not.toHaveProperty('tenant')
     expect(body.reason).toBe('Scheduled maintenance')
     if (request.url().endsWith('/permits')) {
       publications.push(body)
@@ -224,9 +225,7 @@ test('governance preserves scoped authority and reviewed recovery', async ({ pag
     await route.fulfill({ json: { ...fixture.receipt, change_id: body.change_id, reason: body.reason } })
   })
   await page.goto('/governance')
-  await page.getByLabel('Namespace', { exact: true }).fill('prod')
-  await page.getByLabel('Tenant', { exact: true }).fill('acme')
-  await page.getByRole('button', { name: 'Inspect scope', exact: true }).click()
+
   await expect(page.getByRole('heading', { name: 'Governed routes' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Issue a permit' })).toBeVisible()
   const registry = page.getByRole('region', { name: 'Registry metadata' })
@@ -246,17 +245,15 @@ test('governance preserves scoped authority and reviewed recovery', async ({ pag
   await expect(registry.getByRole('alert')).toBeVisible()
   expect(redirectedReads).toBe(0)
   expect(registryChanges).toHaveLength(1)
-  await expect(page.getByRole('button', { name: 'Inspect scope', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Inspect scope', exact: true })).toHaveCount(0)
   await registry.getByRole('button', { name: 'Retry same registry change' }).click()
   await expect(registry.getByRole('alert')).toContainText('503')
   expect(registryChanges).toHaveLength(2)
   expect(await page.evaluate(() => localStorage.getItem('acteon-registry-intent:prod:acme'))).not.toBeNull()
   await page.reload()
-  await page.getByLabel('Namespace', { exact: true }).fill('prod')
-  await page.getByLabel('Tenant', { exact: true }).fill('acme')
-  await page.getByRole('button', { name: 'Inspect scope', exact: true }).click()
+
   await expect(registry.getByRole('status').filter({ hasText: 'Recovered the exact reviewed request' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Inspect scope', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Inspect scope', exact: true })).toHaveCount(0)
   await expect(registry.getByRole('button', { name: 'Discard and inspect again' })).toBeVisible()
   await registry.getByRole('button', { name: 'Retry same registry change' }).click()
   await expect(registry.getByRole('alert')).toContainText('Unmatched or incomplete')
@@ -267,7 +264,7 @@ test('governance preserves scoped authority and reviewed recovery', async ({ pag
   expect(registryChanges[2]).toEqual(registryChanges[0])
   expect(registryChanges[3]).toEqual(registryChanges[0])
   expect(await page.evaluate(() => localStorage.getItem('acteon-registry-intent:prod:acme'))).toBeNull()
-  expect(registryChanges[0]).toMatchObject({ namespace: 'prod', tenant: 'acme', agent_id: 'maya', projection: 'card',
+  expect(registryChanges[0]).toMatchObject({ agent_id: 'maya', projection: 'card',
     expected_registry_revision: 7, expected_projection_version: 3, reason: 'Publish reviewed responder card',
     value: { name: 'Maya responder' } })
   await registry.getByRole('button', { name: 'Inspect registry record' }).click()
@@ -324,12 +321,13 @@ test('workforce preserves a reviewed request through manual retry and offboardin
   const changes: Record<string, unknown>[] = []
   let failOnce = true
   await page.addInitScript(() => localStorage.setItem('acteon-token', 'workforce-ui-key'))
+  await page.route('**/v1/auth/identity', route => route.fulfill({ json: { credential_id: 'workforce', auth_method: 'api_key', role: 'operator', scope: { namespace: 'prod', tenant: 'acme' }, principal: null } }))
   await page.route('**/v1/workforce**', async route => {
     expect(route.request().headers()['authorization']).toBe('Bearer workforce-ui-key')
     if (route.request().method() === 'GET') {
       const url = new URL(route.request().url())
-      expect(url.searchParams.get('namespace')).toBe('prod')
-      expect(url.searchParams.get('tenant')).toBe('acme')
+      expect(url.searchParams.has('namespace')).toBe(false)
+      expect(url.searchParams.has('tenant')).toBe(false)
       await route.fulfill({ json: view }); return
     }
     const body = route.request().postDataJSON()
@@ -340,9 +338,7 @@ test('workforce preserves a reviewed request through manual retry and offboardin
     await route.fulfill({ json: { ...fixture.receipt, change_id: body.change_id, reason: body.reason, generation: 20 } })
   })
   await page.goto('/workforce')
-  await page.getByLabel('Namespace', { exact: true }).fill('prod')
-  await page.getByLabel('Tenant', { exact: true }).fill('acme')
-  await page.getByRole('button', { name: 'Inspect workforce' }).click()
+
   await expect(page.getByRole('heading', { name: 'Teams', exact: true })).toBeVisible()
   await page.getByLabel('Team', { exact: true }).selectOption(JSON.stringify(fixture.scope.management.teams[0]))
   await page.getByLabel('Team name', { exact: true }).fill('Reliability Operations')
@@ -356,7 +352,7 @@ test('workforce preserves a reviewed request through manual retry and offboardin
   await expect(page.getByRole('status').filter({ hasText: 'Workforce change recorded' })).toBeVisible()
   expect(changes).toHaveLength(2)
   expect(changes[1]).toEqual(changes[0])
-  expect(changes[0]).toMatchObject({ namespace: 'prod', tenant: 'acme', change: {
+  expect(changes[0]).toMatchObject({ change: {
     kind: 'put_team', team: { team: fixture.scope.management.teams[0], revision: 2, name: 'Reliability Operations' } } })
   await page.getByLabel('Mandate', { exact: true }).selectOption('maya-team')
   await page.getByLabel('Permit ID', { exact: true }).fill('bounded-permit')

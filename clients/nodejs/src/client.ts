@@ -332,8 +332,6 @@ export interface ActeonClientOptions {
  *
  * if (await client.health()) {
  *   const action = createAction(
- *     "notifications",
- *     "tenant-1",
  *     "email",
  *     "send_notification",
  *     { to: "user@example.com", subject: "Hello" }
@@ -389,15 +387,15 @@ function extractErrorMessage(data: string): string {
 
 export class ActeonClient {
   /** Persist a CDC change. Preserve changeId and revision across retries. */
-  async ingestTimelineChange(namespace: string, tenant: string, change: Record<string, unknown>): Promise<unknown> {
-    return this.platformRequest("timeline_ingest", { body: { scope: { namespace, tenant }, change } });
+  async ingestTimelineChange(change: Record<string, unknown>): Promise<unknown> {
+    return this.platformRequest("timeline_ingest", { body: { change } });
   }
   /** Search current event versions; query.filter accepts the timeline CEL subset. */
-  async queryTimeline(namespace: string, tenant: string, query: Record<string, unknown> = {}): Promise<unknown> {
-    return this.platformRequest("timeline_query", { body: { scope: { namespace, tenant }, query } });
+  async queryTimeline(query: Record<string, unknown> = {}): Promise<unknown> {
+    return this.platformRequest("timeline_query", { body: { query } });
   }
-  async getTimelineEvent(namespace: string, tenant: string, source: string, eventId: string): Promise<unknown> {
-    return this.platformRequest("timeline_get", { path: { source, eventId }, query: { namespace, tenant } });
+  async getTimelineEvent(source: string, eventId: string): Promise<unknown> {
+    return this.platformRequest("timeline_get", { path: { source, eventId } });
   }
 
   /** Complete finite HTTP API, using wire field names. Never automatically retries. */
@@ -410,23 +408,24 @@ export class ActeonClient {
   }
 
   /** Submit once. Persist the receipt in host state; preserve message ID on response loss. */
-  async agentServiceSendMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): Promise<AgentServiceReceipt> {
+  async agentServiceSendMessage(agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): Promise<AgentServiceReceipt> {
+    const { namespace, tenant } = (await this.identity()).scope;
     const parentHeaders = parent === undefined ? undefined : permitHeaders(parent.permits);
     if (parent !== undefined && (!parentHeaders || parent.permits.length === 0)) throw new Error("delegated agent service invocation requires permits");
-    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/message:send", { body: { message }, extraHeaders: { ...A2A_HEADERS, ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) }, redirect: "error" });
+    const response = await this.request("POST", agentServiceBase(agent) + "/message:send", { body: { message }, extraHeaders: { ...A2A_HEADERS, ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     const task = agentTask(await response.json(), namespace, tenant);
     return Object.freeze({ namespace, tenant, agent, taskId: task.id as string, sourceContext: agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)), task });
   }
   /** Invoke one exact governed agent through official A2A streaming. */
-  async *agentServiceSendStreamingMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+  async *agentServiceSendStreamingMessage(agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
     if (typeof message.messageId !== "string" || message.messageId.length === 0) throw new Error("streaming message requires messageId");
     const parentHeaders = parent === undefined ? undefined : permitHeaders(parent.permits);
     if (parent !== undefined && (!parentHeaders || parent.permits.length === 0)) throw new Error("delegated agent service invocation requires permits");
     const requestId = `stream:${message.messageId}`;
     yield* this.connectAgentA2aSse(
-      agentServiceRpcBase(namespace, tenant, agent),
+      agentServiceRpcBase(agent),
       { jsonrpc: "2.0", id: requestId, method: "SendStreamingMessage", params: { message } },
       requestId,
       { ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) },
@@ -437,7 +436,7 @@ export class ActeonClient {
   async *agentServiceSubscribeTask(receipt: AgentServiceReceipt): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
     const requestId = `subscribe:${receipt.taskId}`;
     yield* this.connectAgentA2aSse(
-      agentServiceRpcBase(receipt.namespace, receipt.tenant, receipt.agent),
+      agentServiceRpcBase(receipt.agent),
       { jsonrpc: "2.0", id: requestId, method: "SubscribeToTask", params: { id: receipt.taskId } },
       requestId,
       { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) },
@@ -447,7 +446,7 @@ export class ActeonClient {
   /** Request official A2A cancellation; nonterminal results retain pending finality metadata. */
   async agentServiceCancelTask(receipt: AgentServiceReceipt): Promise<Record<string, unknown>> {
     const requestId = `cancel:${receipt.taskId}`;
-    const response = await this.request("POST", agentServiceRpcBase(receipt.namespace, receipt.tenant, receipt.agent), {
+    const response = await this.request("POST", agentServiceRpcBase(receipt.agent), {
       body: { jsonrpc: "2.0", id: requestId, method: "CancelTask", params: { id: receipt.taskId } },
       extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) },
       redirect: "error",
@@ -468,7 +467,8 @@ export class ActeonClient {
     return task;
   }
   /** List only Tasks visible to the current source through one exact governed agent. */
-  async agentServiceListTasks(namespace: string, tenant: string, agent: string, options: AgentServiceListOptions = {}): Promise<AgentServiceTaskPage> {
+  async agentServiceListTasks(agent: string, options: AgentServiceListOptions = {}): Promise<AgentServiceTaskPage> {
+    const { namespace, tenant } = (await this.identity()).scope;
     if (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)) throw new Error("pageSize must be between 1 and 100");
     if (options.historyLength !== undefined && (!Number.isSafeInteger(options.historyLength) || options.historyLength < 0 || options.historyLength > 2147483647)) throw new Error("historyLength must fit a signed 32-bit integer");
     if (options.pageToken !== undefined && options.pageToken.length > 8192) throw new Error("pageToken is too large");
@@ -483,7 +483,7 @@ export class ActeonClient {
     if (options.statusTimestampAfter !== undefined) params.statusTimestampAfter = options.statusTimestampAfter;
     if (options.includeArtifacts === true) params.includeArtifacts = true;
     const requestId = `list:${agent}`;
-    const response = await this.request("POST", agentServiceRpcBase(namespace, tenant, agent), {
+    const response = await this.request("POST", agentServiceRpcBase(agent), {
       body: { jsonrpc: "2.0", id: requestId, method: "ListTasks", params },
       extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) },
       redirect: "error",
@@ -501,26 +501,26 @@ export class ActeonClient {
     return agentServiceTaskPage(rpc.result);
   }
   /** Create or update one official A2A push configuration under task authority. */
-  async agentServiceCreatePushConfig(namespace: string, tenant: string, agent: string, taskId: string, config: AgentServicePushConfigInput, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
+  async agentServiceCreatePushConfig(agent: string, taskId: string, config: AgentServicePushConfigInput, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
     const params = this.agentServicePushInput(taskId, config);
-    return agentServicePushConfig(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "CreateTaskPushNotificationConfig", params, source), taskId, config.id);
+    return agentServicePushConfig(await this.agentServicePushRpc(agent, taskId, "CreateTaskPushNotificationConfig", params, source), taskId, config.id);
   }
   /** Read one exact-agent push configuration, including management-only secrets. */
-  async agentServiceGetPushConfig(namespace: string, tenant: string, agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
-    return agentServicePushConfig(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "GetTaskPushNotificationConfig", { taskId, id: configId }, source), taskId, configId);
+  async agentServiceGetPushConfig(agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<AgentServicePushConfig> {
+    return agentServicePushConfig(await this.agentServicePushRpc(agent, taskId, "GetTaskPushNotificationConfig", { taskId, id: configId }, source), taskId, configId);
   }
   /** List exact-agent push configurations under the original task authority. */
-  async agentServiceListPushConfigs(namespace: string, tenant: string, agent: string, taskId: string, options: { readonly pageSize?: number; readonly pageToken?: string; readonly source?: AgentServiceReceipt } = {}): Promise<AgentServicePushConfigPage> {
+  async agentServiceListPushConfigs(agent: string, taskId: string, options: { readonly pageSize?: number; readonly pageToken?: string; readonly source?: AgentServiceReceipt } = {}): Promise<AgentServicePushConfigPage> {
     if (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)) throw new Error("pageSize must be between 1 and 100");
     if (options.pageToken !== undefined && options.pageToken.length > 8192) throw new Error("pageToken is too large");
     const params: Record<string, unknown> = { taskId };
     if (options.pageSize !== undefined) params.pageSize = options.pageSize;
     if (options.pageToken !== undefined) params.pageToken = options.pageToken;
-    return agentServicePushConfigPage(await this.agentServicePushRpc(namespace, tenant, agent, taskId, "ListTaskPushNotificationConfigs", params, options.source), taskId);
+    return agentServicePushConfigPage(await this.agentServicePushRpc(agent, taskId, "ListTaskPushNotificationConfigs", params, options.source), taskId);
   }
   /** Delete one exact-agent push configuration. Repeating deletion is safe. */
-  async agentServiceDeletePushConfig(namespace: string, tenant: string, agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<void> {
-    const result = await this.agentServicePushRpc(namespace, tenant, agent, taskId, "DeleteTaskPushNotificationConfig", { taskId, id: configId }, source);
+  async agentServiceDeletePushConfig(agent: string, taskId: string, configId: string, source?: AgentServiceReceipt): Promise<void> {
+    const result = await this.agentServicePushRpc(agent, taskId, "DeleteTaskPushNotificationConfig", { taskId, id: configId }, source);
     if (Object.keys(result).length !== 0) throw new Error("agent service A2A delete result is invalid");
   }
   private agentServicePushInput(taskId: string, config: AgentServicePushConfigInput): Record<string, unknown> {
@@ -538,10 +538,11 @@ export class ActeonClient {
     }
     return params;
   }
-  private async agentServicePushRpc(namespace: string, tenant: string, agent: string, taskId: string, method: string, params: Record<string, unknown>, source?: AgentServiceReceipt): Promise<Record<string, unknown>> {
+  private async agentServicePushRpc(agent: string, taskId: string, method: string, params: Record<string, unknown>, source?: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    const { namespace, tenant } = (await this.identity()).scope;
     if (source !== undefined && (source.namespace !== namespace || source.tenant !== tenant || source.agent !== agent || source.taskId !== taskId)) throw new Error("agent service push receipt does not match the route or task");
     const requestId = `push:${method}:${taskId}`;
-    const response = await this.request("POST", agentServiceRpcBase(namespace, tenant, agent), { body: { jsonrpc: "2.0", id: requestId, method, params }, extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) }, redirect: "error" });
+    const response = await this.request("POST", agentServiceRpcBase(agent), { body: { jsonrpc: "2.0", id: requestId, method, params }, extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
     const value = await response.json() as unknown;
@@ -562,7 +563,7 @@ export class ActeonClient {
       if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
       return encodeURIComponent(value);
     };
-    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers";
+    const path = agentServiceBase(source.agent) + "/tasks/" + segment(source.taskId) + "/peers";
     const response = await this.request("GET", path, { params: new URLSearchParams({ skill }), extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer discovery response version missing or unsupported");
@@ -574,7 +575,7 @@ export class ActeonClient {
       if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
       return encodeURIComponent(value);
     };
-    const response = await this.request("POST", agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/message:send", { body: { message }, extraHeaders: A2A_HEADERS, redirect: "error" });
+    const response = await this.request("POST", agentServiceBase(source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/message:send", { body: { message }, extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer response version missing or unsupported");
     return agentPeerReceipt(await response.json(), source.namespace, source.tenant);
@@ -586,7 +587,7 @@ export class ActeonClient {
       return encodeURIComponent(value);
     };
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId)) throw new Error("invalid agent peer submission identity");
-    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":refresh";
+    const path = agentServiceBase(source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":refresh";
     const response = await this.request("POST", path, { extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer response version missing or unsupported");
@@ -607,7 +608,7 @@ export class ActeonClient {
     };
     if (peer.status.state !== "accepted" || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId)) throw new Error("agent peer cancellation requires an accepted peer receipt");
     agentTask(peer.status.task, source.namespace, source.tenant);
-    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":cancel";
+    const path = agentServiceBase(source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":cancel";
     const response = await this.request("POST", path, { extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer cancellation response version missing or unsupported");
@@ -622,7 +623,7 @@ export class ActeonClient {
     if (peer.status.state !== "accepted" || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId)) throw new Error("agent peer continuation requires an accepted peer receipt");
     agentTask(peer.status.task, source.namespace, source.tenant);
     assertUnboundPeerResponse(message);
-    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + "/message:send";
+    const path = agentServiceBase(source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + "/message:send";
     const response = await this.request("POST", path, { body: { message }, extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer continuation response version missing or unsupported");
@@ -636,7 +637,7 @@ export class ActeonClient {
     };
     if (peer.status.state !== "accepted" || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId) || !challengeId || challengeId.length > 1024 || challengeId.trim() !== challengeId || challengeId === "*" || /\p{Cc}/u.test(challengeId)) throw new Error("agent peer authorization requires an accepted peer and challenge");
     agentTask(peer.status.task, source.namespace, source.tenant);
-    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + "/authorization:resolve";
+    const path = agentServiceBase(source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + "/authorization:resolve";
     const response = await this.request("POST", path, { body: { challengeId }, extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer authorization response version missing or unsupported");
@@ -646,7 +647,7 @@ export class ActeonClient {
   async agentServiceStopTask(receipt: AgentServiceReceipt): Promise<AgentServiceStopReceipt> {
     const taskId = receipt.taskId;
     if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
-    const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/stop", { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    const response = await this.request("POST", agentServiceBase(receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/stop", { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; cancellation_confirmed?: unknown; provider_abort?: unknown } | null;
@@ -661,7 +662,7 @@ export class ActeonClient {
   async agentServiceGetTask(receipt: AgentServiceReceipt): Promise<Record<string, unknown>> {
     const taskId = receipt.taskId;
     if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
-    const response = await this.request("GET", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId), { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    const response = await this.request("GET", agentServiceBase(receipt.agent) + "/tasks/" + encodeURIComponent(taskId), { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
@@ -670,15 +671,16 @@ export class ActeonClient {
   async agentServiceContinueTask(receipt: AgentServiceReceipt, message: Record<string, unknown>): Promise<Record<string, unknown>> {
     const taskId = receipt.taskId;
     if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
-    const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/message:send", { body: { message }, extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    const response = await this.request("POST", agentServiceBase(receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/message:send", { body: { message }, extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
   }
   /** Open the configured authorization profile with an opaque verifier handle. */
-  async agentServiceRequestAuthorization(namespace: string, tenant: string, agent: string, taskId: string, authorizationRequestId: string): Promise<Record<string, unknown>> {
+  async agentServiceRequestAuthorization(agent: string, taskId: string, authorizationRequestId: string): Promise<Record<string, unknown>> {
+    const { namespace, tenant } = (await this.identity()).scope;
     if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
-    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/tasks/" + encodeURIComponent(taskId) + "/authorization:request", { body: { authorizationRequestId }, extraHeaders: A2A_HEADERS, redirect: "error" });
+    const response = await this.request("POST", agentServiceBase(agent) + "/tasks/" + encodeURIComponent(taskId) + "/authorization:request", { body: { authorizationRequestId }, extraHeaders: A2A_HEADERS, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     return agentTask(await response.json(), namespace, tenant, taskId);
@@ -687,49 +689,51 @@ export class ActeonClient {
   async agentServiceResolveAuthorization(receipt: AgentServiceReceipt, challengeId: string): Promise<Record<string, unknown>> {
     const taskId = receipt.taskId;
     if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
-    const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/authorization:resolve", { body: { challengeId }, extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    const response = await this.request("POST", agentServiceBase(receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/authorization:resolve", { body: { challengeId }, extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
   }
 
   /** Inspect only the routes and permits within current independent management policy. */
-  async workforce(namespace: string, tenant: string): Promise<WorkforceScopeView> {
-    return await this.platformRequest("workforce_inspect", { query: { namespace, tenant } }) as WorkforceScopeView;
+  async workforce(): Promise<WorkforceScopeView> {
+    return await this.platformRequest("workforce_inspect", { query: { } }) as WorkforceScopeView;
   }
   async changeWorkforce(request: WorkforceChangeRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("workforce_change", { body: request }) as GovernanceChangeReceipt;
   }
 
-  async registryProjection(namespace: string, tenant: string, agentId: string, projection: RegistryProjection): Promise<GovernanceRegistryProjectionView> {
-    const data = await this.platformRequest("governance_registry_projection", { path: { agent_id: agentId }, query: { namespace, tenant, projection } });
+  async registryProjection(agentId: string, projection: RegistryProjection): Promise<GovernanceRegistryProjectionView> {
+    const { namespace, tenant } = (await this.identity()).scope;
+    const data = await this.platformRequest("governance_registry_projection", { path: { agent_id: agentId }, query: {projection } });
     return parseRegistryProjection(data, namespace, tenant, agentId, projection);
   }
   /** Send once; retain the same request and change ID for explicit recovery. */
   async mutateRegistry(request: GovernanceRegistryMutationRequest): Promise<GovernanceRegistryMutationReceipt> {
+    const scope = (await this.identity()).scope;
     const sent = structuredClone(request);
     const data = await this.platformRequest("governance_mutate_registry", { body: sent });
-    return parseRegistryMutationReceipt(data, sent);
+    return parseRegistryMutationReceipt(data, sent, scope);
   }
-  async governance(namespace: string, tenant: string): Promise<GovernanceScopeView> {
-    return await this.platformRequest("governance_inspect", { query: { namespace, tenant } }) as GovernanceScopeView;
+  async governance(): Promise<GovernanceScopeView> {
+    return await this.platformRequest("governance_inspect", { query: { } }) as GovernanceScopeView;
   }
   /** Read retained evidence under independent history management authority. */
-  async providerExecutionHistory(namespace: string, tenant: string, executionId: string): Promise<ProviderExecutionHistory> {
+  async providerExecutionHistory(executionId: string): Promise<ProviderExecutionHistory> {
     const data = await this.platformRequest("governance_provider_history", {
-      path: { execution_id: executionId }, query: { namespace, tenant },
+      path: { execution_id: executionId }, query: { },
     });
     return parseProviderExecutionHistory(data as ProviderExecutionHistoryWire);
   }
-  async providerReconciliationCorrelation(namespace: string, tenant: string, executionId: string, ordinal: number): Promise<ProviderReconciliationCorrelation> {
+  async providerReconciliationCorrelation(executionId: string, ordinal: number): Promise<ProviderReconciliationCorrelation> {
     return await this.platformRequest("governance_reconciliation_correlation", {
-      path: { execution_id: executionId, ordinal: String(ordinal) }, query: { namespace, tenant },
+      path: { execution_id: executionId, ordinal: String(ordinal) }, query: { },
     }) as ProviderReconciliationCorrelation;
   }
   /** Accept independently qualified finality; never automatically retries. */
-  async acceptProviderReconciliation(namespace: string, tenant: string, executionId: string, ordinal: number, request: ProviderReconciliationRequest): Promise<ProviderHistoryReceipt> {
+  async acceptProviderReconciliation(executionId: string, ordinal: number, request: ProviderReconciliationRequest): Promise<ProviderHistoryReceipt> {
     const data = await this.platformRequest("governance_accept_reconciliation", {
-      path: { execution_id: executionId, ordinal: String(ordinal) }, query: { namespace, tenant }, body: request,
+      path: { execution_id: executionId, ordinal: String(ordinal) }, query: { }, body: request,
     });
     return parseProviderHistoryReceipt(data as ProviderExecutionHistoryWire["receipt"]);
   }
@@ -743,9 +747,9 @@ export class ActeonClient {
     return await this.platformRequest("governance_revoke_federation_trust", { body: request }) as GovernanceChangeReceipt;
   }
   /** List sanitized outbound delivery evidence under reconciliation authority. */
-  async federationDeliveryEvidence(namespace: string, tenant: string, after?: string, limit?: number): Promise<FederationDeliveryEvidencePage> {
+  async federationDeliveryEvidence(after?: string, limit?: number): Promise<FederationDeliveryEvidencePage> {
     const page = await this.platformRequest("governance_federation_delivery_evidence", {
-      query: { namespace, tenant, ...(after ? { after } : {}), ...(limit === undefined ? {} : { limit: String(limit) }) },
+      query: {...(after ? { after } : {}), ...(limit === undefined ? {} : { limit: String(limit) }) },
     }) as FederationDeliveryEvidencePage;
     if (!Array.isArray(page.deliveries) || page.deliveries.some((delivery) => !delivery.delivery_id || !delivery.parent_execution_id)) {
       throw new Error("federation delivery evidence identity mismatch");
@@ -759,9 +763,9 @@ export class ActeonClient {
     }) as FederationDeliveryEvidence;
   }
   /** Obtain immutable correlation for the currently ambiguous peer stage. */
-  async federationFinalityCorrelation(namespace: string, tenant: string, deliveryId: string): Promise<FederationFinalityCorrelation> {
+  async federationFinalityCorrelation(deliveryId: string): Promise<FederationFinalityCorrelation> {
     return await this.platformRequest("governance_federation_finality_correlation", {
-      path: { delivery_id: deliveryId }, query: { namespace, tenant },
+      path: { delivery_id: deliveryId }, query: { },
     }) as FederationFinalityCorrelation;
   }
   /** Accept qualified peer finality without sending or replaying the delivery. */
@@ -771,9 +775,9 @@ export class ActeonClient {
     }) as FederationDeliveryEvidence;
   }
   /** Authenticate as the configured peer and retain authority without starting execution. */
-  async federationCapabilities(namespace: string, tenant: string, agent: string): Promise<SignedFederationCapabilityCard> {
+  async federationCapabilities(agent: string): Promise<SignedFederationCapabilityCard> {
     const card = await this.platformRequest("federation_capabilities", {
-      path: { namespace, tenant, agent },
+      path: {agent },
     }) as SignedFederationCapabilityCard;
     if (!card.payload || card.signature.length !== 128) {
       throw new Error("invalid signed federation capability card");
@@ -782,9 +786,10 @@ export class ActeonClient {
   }
 
   /** Authenticate as the configured peer and retain authority without starting execution. */
-  async importFederationEnvelope(namespace: string, tenant: string, envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {
+  async importFederationEnvelope(envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {
+    const { namespace, tenant } = (await this.identity()).scope;
     const receipt = await this.platformRequest("federation_import_envelope", {
-      path: { namespace, tenant }, body: { envelope },
+      path: { }, body: { envelope },
     }) as FederationImportReceipt;
     if (receipt.namespace !== namespace || receipt.tenant !== tenant || receipt.execution_started !== false) {
       throw new Error("federation import receipt identity or execution state mismatch");
@@ -792,9 +797,10 @@ export class ActeonClient {
     return receipt;
   }
   /** Execute or replay one exact message under signed imported federation authority. */
-  async invokeFederatedAgent(namespace: string, tenant: string, agent: string, invocation: SignedFederationInvocationDeclaration, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async invokeFederatedAgent(agent: string, invocation: SignedFederationInvocationDeclaration, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const { namespace, tenant } = (await this.identity()).scope;
     const task = await this.platformRequest("federation_invoke_agent", {
-      path: { namespace, tenant, agent }, body: { invocation, message },
+      path: {agent }, body: { invocation, message },
     }) as Record<string, unknown>;
     if (task.namespace !== namespace || task.tenant !== tenant || typeof task.id !== "string" || task.id.length === 0) {
       throw new Error("federated task receipt identity mismatch");
@@ -802,20 +808,20 @@ export class ActeonClient {
     return task;
   }
   /** Submit one host-qualified cross-domain export from an accepted agent task. */
-  async exportFederatedMessage(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
-    return await this.federationExportRequest("federation_export_message", namespace, tenant, agent, taskId, profile, message);
+  async exportFederatedMessage(agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_export_message", agent, taskId, profile, message);
   }
   /** Observe retained delivery evidence without issuing network traffic. */
-  async observeFederatedExport(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
-    return await this.federationExportRequest("federation_observe_export_message", namespace, tenant, agent, taskId, profile, message);
+  async observeFederatedExport(agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_observe_export_message", agent, taskId, profile, message);
   }
   /** Explicitly replay the exact request through a qualified idempotent destination. */
-  async replayFederatedExport(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
-    return await this.federationExportRequest("federation_replay_export_message", namespace, tenant, agent, taskId, profile, message);
+  async replayFederatedExport(agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_replay_export_message", agent, taskId, profile, message);
   }
-  private async federationExportRequest(operation: "federation_export_message" | "federation_observe_export_message" | "federation_replay_export_message", namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+  private async federationExportRequest(operation: "federation_export_message" | "federation_observe_export_message" | "federation_replay_export_message", agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
     const receipt = await this.platformRequest(operation, {
-      path: { namespace, tenant, agent, task_id: taskId, profile }, body: { message },
+      path: {agent, task_id: taskId, profile }, body: { message },
     }) as FederationExportReceipt;
     if (!receipt.attempt_id || !receipt.delivery_id || !["in_flight", "settled", "uncertain"].includes(receipt.attempt_status) || !receipt.delivery || typeof receipt.delivery.status !== "string") {
       throw new Error("federation export receipt identity mismatch");
@@ -879,7 +885,7 @@ export class ActeonClient {
     }
   ): Promise<Response> {
     let url = `${this.baseUrl}${path}`;
-    if (options?.params) {
+    if (options?.params?.size) {
       url += `?${options.params.toString()}`;
     }
 
@@ -1205,7 +1211,7 @@ export class ActeonClient {
   // =========================================================================
 
   /**
-   * List events filtered by namespace, tenant, and optionally status.
+   * List events filtered by optional status within the credential context.
    */
   async listEvents(query: EventQuery): Promise<EventListResponse> {
     const params = eventQueryToParams(query);
@@ -1222,14 +1228,10 @@ export class ActeonClient {
   /**
    * Get the current state of an event by fingerprint.
    */
-  async getEvent(
-    fingerprint: string,
-    namespace: string,
-    tenant: string
+  async getEvent(fingerprint: string
   ): Promise<EventState | null> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("GET", `/v1/events/${fingerprint}`, { params });
 
     if (response.ok) {
@@ -1245,14 +1247,10 @@ export class ActeonClient {
   /**
    * Transition an event to a new state.
    */
-  async transitionEvent(
-    fingerprint: string,
-    toState: string,
-    namespace: string,
-    tenant: string
+  async transitionEvent(fingerprint: string, toState: string
   ): Promise<TransitionResponse> {
     const response = await this.request("PUT", `/v1/events/${fingerprint}/transition`, {
-      body: { to: toState, namespace, tenant },
+      body: {to: toState },
     });
 
     if (response.ok) {
@@ -1330,17 +1328,11 @@ export class ActeonClient {
   // =========================================================================
 
   /**
-   * Approve a pending action by namespace, tenant, ID, and HMAC signature.
-   * Does not require authentication -- the HMAC signature serves as proof of authorization.
+   * Approve a pending action by ID in the authenticated credential context.
+   * Requires an authenticated operator or admin credential.
    */
-  async approve(namespace: string, tenant: string, id: string, sig: string, expiresAt: number, kid?: string): Promise<ApprovalActionResponse> {
-    const params = new URLSearchParams();
-    params.set("sig", sig);
-    params.set("expires_at", expiresAt.toString());
-    if (kid !== undefined) {
-      params.set("kid", kid);
-    }
-    const response = await this.request("POST", `/v1/approvals/${namespace}/${tenant}/${id}/approve`, { params });
+  async approve(id: string): Promise<ApprovalActionResponse> {
+    const response = await this.request("POST", `/v1/approvals/${id}/approve`, {});
 
     if (response.ok) {
       const data = (await response.json()) as Record<string, unknown>;
@@ -1355,17 +1347,11 @@ export class ActeonClient {
   }
 
   /**
-   * Reject a pending action by namespace, tenant, ID, and HMAC signature.
-   * Does not require authentication -- the HMAC signature serves as proof of authorization.
+   * Reject a pending action by ID in the authenticated credential context.
+   * Requires an authenticated operator or admin credential.
    */
-  async reject(namespace: string, tenant: string, id: string, sig: string, expiresAt: number, kid?: string): Promise<ApprovalActionResponse> {
-    const params = new URLSearchParams();
-    params.set("sig", sig);
-    params.set("expires_at", expiresAt.toString());
-    if (kid !== undefined) {
-      params.set("kid", kid);
-    }
-    const response = await this.request("POST", `/v1/approvals/${namespace}/${tenant}/${id}/reject`, { params });
+  async reject(id: string): Promise<ApprovalActionResponse> {
+    const response = await this.request("POST", `/v1/approvals/${id}/reject`, {});
 
     if (response.ok) {
       const data = (await response.json()) as Record<string, unknown>;
@@ -1380,17 +1366,11 @@ export class ActeonClient {
   }
 
   /**
-   * Get the status of an approval by namespace, tenant, ID, and HMAC signature.
+   * Get the status of an approval by ID in the authenticated credential context.
    * Returns null if not found or expired.
    */
-  async getApproval(namespace: string, tenant: string, id: string, sig: string, expiresAt: number, kid?: string): Promise<ApprovalStatus | null> {
-    const params = new URLSearchParams();
-    params.set("sig", sig);
-    params.set("expires_at", expiresAt.toString());
-    if (kid !== undefined) {
-      params.set("kid", kid);
-    }
-    const response = await this.request("GET", `/v1/approvals/${namespace}/${tenant}/${id}`, { params });
+  async getApproval(id: string): Promise<ApprovalStatus | null> {
+    const response = await this.request("GET", `/v1/approvals/${id}`, {});
 
     if (response.ok) {
       const data = (await response.json()) as Record<string, unknown>;
@@ -1403,13 +1383,12 @@ export class ActeonClient {
   }
 
   /**
-   * List pending approvals filtered by namespace and tenant.
+   * List pending approvals within the credential context.
    * Requires authentication.
    */
-  async listApprovals(namespace: string, tenant: string): Promise<ApprovalListResponse> {
+  async listApprovals(): Promise<ApprovalListResponse> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("GET", "/v1/approvals", { params });
 
     if (response.ok) {
@@ -1463,10 +1442,9 @@ export class ActeonClient {
   /**
    * Get details of a specific recurring action.
    */
-  async getRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail | null> {
+  async getRecurring(recurringId: string): Promise<RecurringDetail | null> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("GET", `/v1/recurring/${recurringId}`, { params });
 
     if (response.ok) {
@@ -1505,10 +1483,9 @@ export class ActeonClient {
   /**
    * Delete a recurring action.
    */
-  async deleteRecurring(recurringId: string, namespace: string, tenant: string): Promise<void> {
+  async deleteRecurring(recurringId: string): Promise<void> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("DELETE", `/v1/recurring/${recurringId}`, { params });
 
     if (response.status === 204) {
@@ -1523,9 +1500,9 @@ export class ActeonClient {
   /**
    * Pause a recurring action.
    */
-  async pauseRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail> {
+  async pauseRecurring(recurringId: string): Promise<RecurringDetail> {
     const response = await this.request("POST", `/v1/recurring/${recurringId}/pause`, {
-      body: { namespace, tenant },
+      body: { },
     });
 
     if (response.ok) {
@@ -1543,9 +1520,9 @@ export class ActeonClient {
   /**
    * Resume a paused recurring action.
    */
-  async resumeRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail> {
+  async resumeRecurring(recurringId: string): Promise<RecurringDetail> {
     const response = await this.request("POST", `/v1/recurring/${recurringId}/resume`, {
-      body: { namespace, tenant },
+      body: { },
     });
 
     if (response.ok) {
@@ -1637,20 +1614,15 @@ export class ActeonClient {
   }
 
   /**
-   * List quota policies, optionally filtered by namespace, tenant,
+   * List quota policies, filtered within the credential context by
    * and provider scope. Pass ``"generic"`` for ``provider`` to match
    * only policies without a provider scope, or a provider name
    * (e.g. ``"slack"``) to match only per-provider policies.
    */
-  async listQuotas(
-    namespace?: string,
-    tenant?: string,
-    provider?: string,
-    principal?: string,
+  async listQuotas(provider?: string, principal?: string
   ): Promise<ListQuotasResponse> {
     const params = new URLSearchParams();
-    if (namespace !== undefined) params.set("namespace", namespace);
-    if (tenant !== undefined) params.set("tenant", tenant);
+
     if (provider !== undefined) params.set("provider", provider);
     if (principal !== undefined) params.set("principal", principal);
     const response = await this.request("GET", "/v1/quotas", { params: params.toString() ? params : undefined });
@@ -1705,10 +1677,9 @@ export class ActeonClient {
   /**
    * Delete a quota policy.
    */
-  async deleteQuota(quotaId: string, namespace: string, tenant: string): Promise<void> {
+  async deleteQuota(quotaId: string): Promise<void> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("DELETE", `/v1/quotas/${quotaId}`, { params });
 
     if (response.status === 204) {
@@ -1762,16 +1733,12 @@ export class ActeonClient {
   }
 
   /**
-   * List silences, optionally filtered by namespace, tenant, or expiry.
+   * List silences, filtered within the credential context by or expiry.
    */
-  async listSilences(
-    namespace?: string,
-    tenant?: string,
-    includeExpired = false,
+  async listSilences(includeExpired = false
   ): Promise<ListSilencesResponse> {
     const params = new URLSearchParams();
-    if (namespace !== undefined) params.set("namespace", namespace);
-    if (tenant !== undefined) params.set("tenant", tenant);
+
     if (includeExpired) params.set("include_expired", "true");
     const response = await this.request("GET", "/v1/silences", {
       params: params.toString() ? params : undefined,
@@ -1875,12 +1842,9 @@ export class ActeonClient {
   }
 
   async listTimeIntervals(
-    namespace?: string,
-    tenant?: string,
   ): Promise<ListTimeIntervalsResponse> {
     const params = new URLSearchParams();
-    if (namespace !== undefined) params.set("namespace", namespace);
-    if (tenant !== undefined) params.set("tenant", tenant);
+
     const response = await this.request("GET", "/v1/time-intervals", {
       params: params.toString() ? params : undefined,
     });
@@ -1891,16 +1855,11 @@ export class ActeonClient {
     throw new HttpError(response.status, "Failed to list time intervals");
   }
 
-  async getTimeInterval(
-    namespace: string,
-    tenant: string,
-    name: string,
+  async getTimeInterval(name: string
   ): Promise<TimeInterval | null> {
     const response = await this.request(
       "GET",
-      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
-        tenant,
-      )}/${encodeURIComponent(name)}`,
+      `/v1/time-intervals/${encodeURIComponent(name)}`,
     );
     if (response.ok) {
       const data = (await response.json()) as Record<string, unknown>;
@@ -1912,17 +1871,11 @@ export class ActeonClient {
     }
   }
 
-  async updateTimeInterval(
-    namespace: string,
-    tenant: string,
-    name: string,
-    update: UpdateTimeIntervalRequest,
+  async updateTimeInterval(name: string, update: UpdateTimeIntervalRequest
   ): Promise<TimeInterval> {
     const response = await this.request(
       "PUT",
-      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
-        tenant,
-      )}/${encodeURIComponent(name)}`,
+      `/v1/time-intervals/${encodeURIComponent(name)}`,
       { body: updateTimeIntervalRequestToApi(update) },
     );
     if (response.ok) {
@@ -1940,16 +1893,11 @@ export class ActeonClient {
     }
   }
 
-  async deleteTimeInterval(
-    namespace: string,
-    tenant: string,
-    name: string,
+  async deleteTimeInterval(name: string
   ): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
-        tenant,
-      )}/${encodeURIComponent(name)}`,
+      `/v1/time-intervals/${encodeURIComponent(name)}`,
     );
     if (response.status === 204) {
       return;
@@ -1988,10 +1936,9 @@ export class ActeonClient {
   /**
    * List retention policies.
    */
-  async listRetention(namespace?: string, tenant?: string, limit?: number, offset?: number): Promise<ListRetentionResponse> {
+  async listRetention(limit?: number, offset?: number): Promise<ListRetentionResponse> {
     const params = new URLSearchParams();
-    if (namespace !== undefined) params.set("namespace", namespace);
-    if (tenant !== undefined) params.set("tenant", tenant);
+
     if (limit !== undefined) params.set("limit", limit.toString());
     if (offset !== undefined) params.set("offset", offset.toString());
     const response = await this.request("GET", "/v1/retention", { params: params.toString() ? params : undefined });
@@ -2086,10 +2033,9 @@ export class ActeonClient {
   /**
    * List payload templates.
    */
-  async listTemplates(namespace?: string, tenant?: string): Promise<ListTemplatesResponse> {
+  async listTemplates(): Promise<ListTemplatesResponse> {
     const params = new URLSearchParams();
-    if (namespace !== undefined) params.set("namespace", namespace);
-    if (tenant !== undefined) params.set("tenant", tenant);
+
     const response = await this.request("GET", "/v1/templates", { params: params.toString() ? params : undefined });
 
     if (response.ok) {
@@ -2178,10 +2124,9 @@ export class ActeonClient {
   /**
    * List template profiles.
    */
-  async listProfiles(namespace?: string, tenant?: string): Promise<ListProfilesResponse> {
+  async listProfiles(): Promise<ListProfilesResponse> {
     const params = new URLSearchParams();
-    if (namespace !== undefined) params.set("namespace", namespace);
-    if (tenant !== undefined) params.set("tenant", tenant);
+
     const response = await this.request("GET", "/v1/templates/profiles", { params: params.toString() ? params : undefined });
 
     if (response.ok) {
@@ -2395,8 +2340,6 @@ export class ActeonClient {
    */
   async verifyAuditChain(req: VerifyHashChainRequest): Promise<HashChainVerification> {
     const body: Record<string, unknown> = {
-      namespace: req.namespace,
-      tenant: req.tenant,
     };
     if (req.from !== undefined) body.from = req.from;
     if (req.to !== undefined) body.to = req.to;
@@ -2414,12 +2357,11 @@ export class ActeonClient {
   // =========================================================================
 
   /**
-   * List chain executions filtered by namespace, tenant, and optional status.
+   * List chain executions filtered by optional status within the credential context.
    */
-  async listChains(namespace: string, tenant: string, status?: string): Promise<ListChainsResponse> {
+  async listChains(status?: string): Promise<ListChainsResponse> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     if (status !== undefined) {
       params.set("status", status);
     }
@@ -2436,10 +2378,9 @@ export class ActeonClient {
   /**
    * Get full details of a chain execution including step results.
    */
-  async getChain(chainId: string, namespace: string, tenant: string): Promise<ChainDetailResponse | null> {
+  async getChain(chainId: string): Promise<ChainDetailResponse | null> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("GET", `/v1/chains/${chainId}`, { params });
 
     if (response.ok) {
@@ -2455,14 +2396,9 @@ export class ActeonClient {
   /**
    * Cancel a running chain execution.
    */
-  async cancelChain(
-    chainId: string,
-    namespace: string,
-    tenant: string,
-    reason?: string,
-    cancelledBy?: string
+  async cancelChain(chainId: string, reason?: string, cancelledBy?: string
   ): Promise<ChainDetailResponse> {
-    const body: Record<string, unknown> = { namespace, tenant };
+    const body: Record<string, unknown> = { };
     if (reason !== undefined) {
       body.reason = reason;
     }
@@ -2486,10 +2422,9 @@ export class ActeonClient {
   /**
    * Get the DAG representation for a running chain instance.
    */
-  async getChainDag(chainId: string, namespace: string, tenant: string): Promise<DagResponse> {
+  async getChainDag(chainId: string): Promise<DagResponse> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("GET", `/v1/chains/${chainId}/dag`, { params });
 
     if (response.ok) {
@@ -2521,10 +2456,9 @@ export class ActeonClient {
   /**
    * Get the retry history for a chain execution.
    */
-  async getChainHistory(chainId: string, namespace: string, tenant: string): Promise<ChainHistoryResponse> {
+  async getChainHistory(chainId: string): Promise<ChainHistoryResponse> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request("GET", `/v1/chains/${chainId}/history`, { params });
 
     if (response.ok) {
@@ -2608,8 +2542,7 @@ export class ActeonClient {
    */
   async rulesCoverage(query?: CoverageQuery): Promise<CoverageReport> {
     const params = new URLSearchParams();
-    if (query?.namespace) params.set("namespace", query.namespace);
-    if (query?.tenant) params.set("tenant", query.tenant);
+
     if (query?.from) params.set("from", query.from);
     if (query?.to) params.set("to", query.to);
 
@@ -2635,11 +2568,11 @@ export class ActeonClient {
    *
    * @param entityType - The entity type: "chain", "group", or "action".
    * @param entityId - The entity ID to subscribe to.
-   * @param options - Optional namespace, tenant, and includeHistory settings.
+   * @param options - Optional includeHistory setting.
    *
    * @example
    * ```typescript
-   * for await (const event of client.subscribe("chain", "chain-42", { namespace: "ns", tenant: "t1" })) {
+   * for await (const event of client.subscribe("chain", "chain-42")) {
    *   console.log(`${event.event}: ${JSON.stringify(event.data)}`);
    * }
    * ```
@@ -2650,12 +2583,6 @@ export class ActeonClient {
     options?: SubscribeOptions
   ): AsyncGenerator<SseEvent, void, undefined> {
     const params = new URLSearchParams();
-    if (options?.namespace !== undefined) {
-      params.set("namespace", options.namespace);
-    }
-    if (options?.tenant !== undefined) {
-      params.set("tenant", options.tenant);
-    }
     if (options?.includeHistory !== undefined) {
       params.set("include_history", options.includeHistory.toString());
     }
@@ -2673,21 +2600,18 @@ export class ActeonClient {
    * Returns an `AsyncGenerator` that yields parsed SSE events.
    * The generator completes when the connection is closed.
    *
-   * @param options - Optional filters for namespace, actionType, outcome, eventType,
+   * @param options - Optional filters for actionType, outcome, eventType,
    *   chainId, groupId, actionId, and lastEventId for reconnection catch-up.
    *
    * @example
    * ```typescript
-   * for await (const event of client.stream({ namespace: "alerts", eventType: "action_dispatched" })) {
+   * for await (const event of client.stream({ eventType: "action_dispatched" })) {
    *   console.log(`${event.event}: ${JSON.stringify(event.data)}`);
    * }
    * ```
    */
   async *stream(options?: StreamOptions): AsyncGenerator<SseEvent, void, undefined> {
     const params = new URLSearchParams();
-    if (options?.namespace !== undefined) {
-      params.set("namespace", options.namespace);
-    }
     if (options?.actionType !== undefined) {
       params.set("action_type", options.actionType);
     }
@@ -3058,10 +2982,9 @@ export class ActeonClient {
     return parseBusTopic((await response.json()) as Record<string, unknown>);
   }
 
-  async listBusTopics(filter: { namespace?: string; tenant?: string } = {}): Promise<BusTopic[]> {
+  async listBusTopics(): Promise<BusTopic[]> {
     const params = new URLSearchParams();
-    if (filter.namespace) params.set("namespace", filter.namespace);
-    if (filter.tenant) params.set("tenant", filter.tenant);
+
     const response = await this.request("GET", "/v1/bus/topics", {
       params: params.toString() ? params : undefined,
     });
@@ -3070,15 +2993,16 @@ export class ActeonClient {
     return (body.topics ?? []).map(parseBusTopic);
   }
 
-  async getBusTopic(namespace: string, tenant: string, name: string): Promise<BusTopic> {
-    const topics = await this.listBusTopics({ namespace, tenant });
+  async getBusTopic(name: string): Promise<BusTopic> {
+    const { namespace, tenant } = (await this.identity()).scope;
+    const topics = await this.listBusTopics();
     const topic = topics.find(t => t.namespace === namespace && t.tenant === tenant && t.name === name);
     if (!topic) throw new HttpError(404, "Bus topic not found");
     return topic;
   }
 
-  async deleteBusTopic(namespace: string, tenant: string, name: string): Promise<void> {
-    const topic = await this.getBusTopic(namespace, tenant, name);
+  async deleteBusTopic(name: string): Promise<void> {
+    const topic = await this.getBusTopic(name);
     const response = await this.request("DELETE", `/v1/bus/topics/${this.busSeg(topic.kafkaName)}`);
     if (!response.ok) await this.busThrowFromResponse(response);
   }
@@ -3102,11 +3026,10 @@ export class ActeonClient {
   }
 
   async listBusSubscriptions(
-    filter: { namespace?: string; tenant?: string; topic?: string } = {},
+    filter: { topic?: string } = {},
   ): Promise<BusSubscription[]> {
     const params = new URLSearchParams();
-    if (filter.namespace) params.set("namespace", filter.namespace);
-    if (filter.tenant) params.set("tenant", filter.tenant);
+
     if (filter.topic) params.set("topic", filter.topic);
     const response = await this.request("GET", "/v1/bus/subscriptions", {
       params: params.toString() ? params : undefined,
@@ -3116,33 +3039,28 @@ export class ActeonClient {
     return (body.subscriptions ?? []).map(parseBusSubscription);
   }
 
-  async getBusSubscription(namespace: string, tenant: string, subId: string): Promise<BusSubscription> {
-    const subscriptions = await this.listBusSubscriptions({ namespace, tenant });
+  async getBusSubscription(subId: string): Promise<BusSubscription> {
+    const { namespace, tenant } = (await this.identity()).scope;
+    const subscriptions = await this.listBusSubscriptions({ });
     const subscription = subscriptions.find(s => s.namespace === namespace && s.tenant === tenant && s.id === subId);
     if (!subscription) throw new HttpError(404, "Bus subscription not found");
     return subscription;
   }
 
-  async deleteBusSubscription(
-    namespace: string,
-    tenant: string,
-    subId: string,
+  async deleteBusSubscription(subId: string
   ): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/v1/bus/subscriptions/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subId)}`,
+      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
   }
 
-  async getBusSubscriptionLag(
-    namespace: string,
-    tenant: string,
-    subId: string,
+  async getBusSubscriptionLag(subId: string
   ): Promise<BusLag> {
     const response = await this.request(
       "GET",
-      `/v1/bus/subscriptions/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subId)}/lag`,
+      `/v1/bus/subscriptions/${this.busSeg(subId)}/lag`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusLag((await response.json()) as Record<string, unknown>);
@@ -3160,15 +3078,12 @@ export class ActeonClient {
 
   async listBusSchemas(
     filter: {
-      namespace?: string;
-      tenant?: string;
       subject?: string;
       latestOnly?: boolean;
     } = {},
   ): Promise<BusSchema[]> {
     const params = new URLSearchParams();
-    if (filter.namespace) params.set("namespace", filter.namespace);
-    if (filter.tenant) params.set("tenant", filter.tenant);
+
     if (filter.subject) params.set("subject", filter.subject);
     if (filter.latestOnly) params.set("latest_only", "true");
     const response = await this.request("GET", "/v1/bus/schemas", {
@@ -3179,29 +3094,21 @@ export class ActeonClient {
     return (body.schemas ?? []).map(parseBusSchema);
   }
 
-  async getBusSchema(
-    namespace: string,
-    tenant: string,
-    subject: string,
-    version: number,
+  async getBusSchema(subject: string, version: number
   ): Promise<BusSchema> {
     const response = await this.request(
       "GET",
-      `/v1/bus/schemas/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subject)}/${version}`,
+      `/v1/bus/schemas/${this.busSeg(subject)}/${version}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusSchema((await response.json()) as Record<string, unknown>);
   }
 
-  async deleteBusSchema(
-    namespace: string,
-    tenant: string,
-    subject: string,
-    version: number,
+  async deleteBusSchema(subject: string, version: number
   ): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/v1/bus/schemas/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subject)}/${version}`,
+      `/v1/bus/schemas/${this.busSeg(subject)}/${version}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
   }
@@ -3216,10 +3123,9 @@ export class ActeonClient {
     return parseBusAgent((await response.json()) as Record<string, unknown>);
   }
 
-  async listBusAgents(filter: { namespace?: string; tenant?: string } = {}): Promise<BusAgent[]> {
+  async listBusAgents(): Promise<BusAgent[]> {
     const params = new URLSearchParams();
-    if (filter.namespace) params.set("namespace", filter.namespace);
-    if (filter.tenant) params.set("tenant", filter.tenant);
+
     const response = await this.request("GET", "/v1/bus/agents", {
       params: params.toString() ? params : undefined,
     });
@@ -3228,31 +3134,28 @@ export class ActeonClient {
     return (body.agents ?? []).map(parseBusAgent);
   }
 
-  async getBusAgent(namespace: string, tenant: string, agentId: string): Promise<BusAgent> {
+  async getBusAgent(agentId: string): Promise<BusAgent> {
     const response = await this.request(
       "GET",
-      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}`,
+      `/v1/bus/agents/${this.busSeg(agentId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusAgent((await response.json()) as Record<string, unknown>);
   }
 
-  async deleteBusAgent(namespace: string, tenant: string, agentId: string): Promise<void> {
+  async deleteBusAgent(agentId: string): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}`,
+      `/v1/bus/agents/${this.busSeg(agentId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
   }
 
-  async heartbeatBusAgent(
-    namespace: string,
-    tenant: string,
-    agentId: string,
+  async heartbeatBusAgent(agentId: string
   ): Promise<BusAgent> {
     const response = await this.request(
       "PATCH",
-      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/heartbeat`,
+      `/v1/bus/agents/${this.busSeg(agentId)}/heartbeat`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusAgent((await response.json()) as Record<string, unknown>);
@@ -3264,15 +3167,11 @@ export class ActeonClient {
    * server returns 400 if `req.expiresAt` is set on anything other
    * than `"suspended"`.
    */
-  async setBusAgentAdminState(
-    namespace: string,
-    tenant: string,
-    agentId: string,
-    req: SetBusAgentAdminState,
+  async setBusAgentAdminState(agentId: string, req: SetBusAgentAdminState
   ): Promise<BusAgent> {
     const response = await this.request(
       "PUT",
-      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/admin-state`,
+      `/v1/bus/agents/${this.busSeg(agentId)}/admin-state`,
       { body: setBusAgentAdminStateBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3290,11 +3189,10 @@ export class ActeonClient {
   }
 
   async listBusConversations(
-    filter: { namespace?: string; tenant?: string; state?: string; participant?: string } = {},
+    filter: { state?: string; participant?: string } = {},
   ): Promise<BusConversation[]> {
     const params = new URLSearchParams();
-    if (filter.namespace) params.set("namespace", filter.namespace);
-    if (filter.tenant) params.set("tenant", filter.tenant);
+
     if (filter.state) params.set("state", filter.state);
     if (filter.participant) params.set("participant", filter.participant);
     const response = await this.request("GET", "/v1/bus/conversations", {
@@ -3305,73 +3203,55 @@ export class ActeonClient {
     return (body.conversations ?? []).map(parseBusConversation);
   }
 
-  async getBusConversation(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
+  async getBusConversation(conversationId: string
   ): Promise<BusConversation> {
     const response = await this.request(
       "GET",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusConversation((await response.json()) as Record<string, unknown>);
   }
 
-  async deleteBusConversation(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
+  async deleteBusConversation(conversationId: string
   ): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
   }
 
-  async transitionBusConversation(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    targetState: string,
+  async transitionBusConversation(conversationId: string, targetState: string
   ): Promise<BusConversation> {
     const response = await this.request(
       "POST",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/transition`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/transition`,
       { body: { target_state: targetState } },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusConversation((await response.json()) as Record<string, unknown>);
   }
 
-  async appendBusConversationMessage(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    req: AppendBusConversationMessage,
+  async appendBusConversationMessage(conversationId: string, req: AppendBusConversationMessage
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "POST",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/messages`,
       { body: appendBusConversationMessageBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return (await response.json()) as Record<string, unknown>;
   }
 
-  async replayBusConversationMessages(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    options: { limit?: number; cursor?: string } = {},
+  async replayBusConversationMessages(conversationId: string, options: { limit?: number; cursor?: string } = {}
   ): Promise<BusReplayResponse> {
     const params = new URLSearchParams();
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.cursor) params.set("cursor", options.cursor);
     const response = await this.request(
       "GET",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/messages`,
       { params: params.toString() ? params : undefined },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3388,15 +3268,11 @@ export class ActeonClient {
    * parked it under a Phase 6c HITL approval (driven by
    * `req.requireApproval`).
    */
-  async postBusToolCall(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    req: PostBusToolCall,
+  async postBusToolCall(conversationId: string, req: PostBusToolCall
   ): Promise<PostBusToolCallOutcome> {
     const response = await this.request(
       "POST",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/tool-calls`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/tool-calls`,
       { body: postBusToolCallBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3407,30 +3283,22 @@ export class ActeonClient {
     return { kind: "produced", receipt: parseBusToolEnvelopeReceipt(body) };
   }
 
-  async postBusToolResult(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    req: PostBusToolResult,
+  async postBusToolResult(conversationId: string, req: PostBusToolResult
   ): Promise<BusToolEnvelopeReceipt> {
     const response = await this.request(
       "POST",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/tool-results`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/tool-results`,
       { body: postBusToolResultBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusToolEnvelopeReceipt((await response.json()) as Record<string, unknown>);
   }
 
-  async lookupBusToolResult(
-    namespace: string,
-    tenant: string,
-    callId: string,
-    params: BusToolResultLookupParams,
+  async lookupBusToolResult(callId: string, params: BusToolResultLookupParams
   ): Promise<BusToolResultLookup> {
     const response = await this.request(
       "GET",
-      `/v1/bus/tool-calls/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(callId)}/result`,
+      `/v1/bus/tool-calls/${this.busSeg(callId)}/result`,
       { params: busToolResultLookupParams(params) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3439,30 +3307,22 @@ export class ActeonClient {
 
   // --------------- Phase 6b: Stream envelopes ---------------
 
-  async postBusStreamChunk(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    req: PostBusStreamChunk,
+  async postBusStreamChunk(conversationId: string, req: PostBusStreamChunk
   ): Promise<BusStreamEnvelopeReceipt> {
     const response = await this.request(
       "POST",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/stream-chunks`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/stream-chunks`,
       { body: postBusStreamChunkBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusStreamEnvelopeReceipt((await response.json()) as Record<string, unknown>);
   }
 
-  async postBusStreamEnd(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    req: PostBusStreamEnd,
+  async postBusStreamEnd(conversationId: string, req: PostBusStreamEnd
   ): Promise<BusStreamEnvelopeReceipt> {
     const response = await this.request(
       "POST",
-      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/stream-end`,
+      `/v1/bus/conversations/${this.busSeg(conversationId)}/stream-end`,
       { body: postBusStreamEndBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3475,15 +3335,11 @@ export class ActeonClient {
    * package on the server, etc.). Path segments are encoded the
    * same way the Rust + Python SDKs encode them.
    */
-  busStreamConsumeUrl(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    streamId: string,
+  busStreamConsumeUrl(conversationId: string, streamId: string
   ): string {
     return (
       `${this.baseUrl}/v1/bus/streams/` +
-      `${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
+      `` +
       `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`
     );
   }
@@ -3577,7 +3433,7 @@ export class ActeonClient {
 
   /**
    * Consume a typed stream via SSE
-   * (`GET /v1/bus/streams/{ns}/{tenant}/{conversationId}/{streamId}`).
+   * (`GET /v1/bus/streams/{conversationId}/{streamId}`).
    * The server filters records by `(envelope_kind, conversation_id,
    * stream_id)`, so this generator only emits chunks for the requested
    * stream id and closes after the terminal `kind: "end"`.
@@ -3590,14 +3446,10 @@ export class ActeonClient {
    * }
    * ```
    */
-  async *consumeBusStream(
-    namespace: string,
-    tenant: string,
-    conversationId: string,
-    streamId: string,
+  async *consumeBusStream(conversationId: string, streamId: string
   ): AsyncGenerator<BusStreamItem, void, undefined> {
     const path =
-      `/v1/bus/streams/${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
+      `/v1/bus/streams/` +
       `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`;
     for await (const env of this.connectBusSse(path)) {
       const item = this.envelopeToStreamItem(env);
@@ -3608,17 +3460,14 @@ export class ActeonClient {
 
   // --------------- Phase 6c: HITL approvals ---------------
 
-  async listBusApprovals(
-    namespace: string,
-    tenant: string,
-    filter: { status?: BusApprovalStatus; conversationId?: string } = {},
+  async listBusApprovals(filter: { status?: BusApprovalStatus; conversationId?: string } = {}
   ): Promise<BusApprovalView[]> {
     const params = new URLSearchParams();
     if (filter.status) params.set("status", filter.status);
     if (filter.conversationId) params.set("conversation_id", filter.conversationId);
     const response = await this.request(
       "GET",
-      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}`,
+      "/v1/bus/approvals",
       { params: params.toString() ? params : undefined },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3626,43 +3475,32 @@ export class ActeonClient {
     return (body.approvals ?? []).map(parseBusApprovalView);
   }
 
-  async getBusApproval(
-    namespace: string,
-    tenant: string,
-    approvalId: string,
+  async getBusApproval(approvalId: string
   ): Promise<BusApprovalView> {
     const response = await this.request(
       "GET",
-      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}`,
+      `/v1/bus/approvals/${this.busSeg(approvalId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusApprovalView((await response.json()) as Record<string, unknown>);
   }
 
-  async approveBusApproval(
-    namespace: string,
-    tenant: string,
-    approvalId: string,
-    decision: BusApprovalDecision,
+  async approveBusApproval(approvalId: string, decision: BusApprovalDecision
   ): Promise<BusApprovalDecisionResponse> {
     const response = await this.request(
       "POST",
-      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}/approve`,
+      `/v1/bus/approvals/${this.busSeg(approvalId)}/approve`,
       { body: busApprovalDecisionBody(decision) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
   }
 
-  async rejectBusApproval(
-    namespace: string,
-    tenant: string,
-    approvalId: string,
-    decision: BusApprovalDecision,
+  async rejectBusApproval(approvalId: string, decision: BusApprovalDecision
   ): Promise<BusApprovalDecisionResponse> {
     const response = await this.request(
       "POST",
-      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}/reject`,
+      `/v1/bus/approvals/${this.busSeg(approvalId)}/reject`,
       { body: busApprovalDecisionBody(decision) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
@@ -3702,16 +3540,12 @@ export class ActeonClient {
    * Returned tasks carry the `leaseToken` required by heartbeat /
    * complete / fail.
    */
-  async pollTasks(
-    queue: string,
-    namespace: string,
-    tenant: string,
-    options?: PollTasksOptions,
+  async pollTasks(queue: string, options?: PollTasksOptions
   ): Promise<WorkerTask[]> {
     const response = await this.request(
       "POST",
       `/v1/queues/${encodeURIComponent(queue)}/poll`,
-      { body: pollTasksBody(namespace, tenant, options) },
+      { body: pollTasksBody(options) },
     );
 
     if (response.ok) {
@@ -3724,18 +3558,12 @@ export class ActeonClient {
   /**
    * Enqueue a task on a queue.
    */
-  async enqueueTask(
-    queue: string,
-    namespace: string,
-    tenant: string,
-    actionType: string,
-    payload: unknown,
-    options?: EnqueueTaskOptions,
+  async enqueueTask(queue: string, actionType: string, payload: unknown, options?: EnqueueTaskOptions
   ): Promise<WorkerTask> {
     const response = await this.request(
       "POST",
       `/v1/queues/${encodeURIComponent(queue)}/tasks`,
-      { body: enqueueTaskBody(namespace, tenant, actionType, payload, options) },
+      { body: enqueueTaskBody(actionType, payload, options) },
     );
 
     if (response.status === 201) {
@@ -3748,17 +3576,12 @@ export class ActeonClient {
   /**
    * Extend the lease on a task while a handler is still working on it.
    */
-  async heartbeatTask(
-    taskId: string,
-    namespace: string,
-    tenant: string,
-    leaseToken: string,
-    extendSeconds?: number,
+  async heartbeatTask(taskId: string, leaseToken: string, extendSeconds?: number
   ): Promise<WorkerTask> {
     const response = await this.request(
       "POST",
       `/v1/queues/tasks/${encodeURIComponent(taskId)}/heartbeat`,
-      { body: heartbeatTaskBody(namespace, tenant, leaseToken, extendSeconds) },
+      { body: heartbeatTaskBody(leaseToken, extendSeconds) },
     );
 
     if (response.ok) {
@@ -3771,17 +3594,12 @@ export class ActeonClient {
   /**
    * Settle a leased task as completed, recording `result`.
    */
-  async completeTask(
-    taskId: string,
-    namespace: string,
-    tenant: string,
-    leaseToken: string,
-    result: unknown,
+  async completeTask(taskId: string, leaseToken: string, result: unknown
   ): Promise<WorkerTask> {
     const response = await this.request(
       "POST",
       `/v1/queues/tasks/${encodeURIComponent(taskId)}/complete`,
-      { body: completeTaskBody(namespace, tenant, leaseToken, result) },
+      { body: completeTaskBody(leaseToken, result) },
     );
 
     if (response.ok) {
@@ -3796,18 +3614,12 @@ export class ActeonClient {
    * default worker behaviour) the server redelivers while attempts
    * remain; with `retryable: false` the task fails terminally.
    */
-  async failTask(
-    taskId: string,
-    namespace: string,
-    tenant: string,
-    leaseToken: string,
-    error: string,
-    retryable: boolean = true,
+  async failTask(taskId: string, leaseToken: string, error: string, retryable: boolean = true
   ): Promise<WorkerTask> {
     const response = await this.request(
       "POST",
       `/v1/queues/tasks/${encodeURIComponent(taskId)}/fail`,
-      { body: failTaskBody(namespace, tenant, leaseToken, error, retryable) },
+      { body: failTaskBody(leaseToken, error, retryable) },
     );
 
     if (response.ok) {
@@ -3820,14 +3632,10 @@ export class ActeonClient {
   /**
    * Get a single task by ID. Returns `null` if not found.
    */
-  async getTask(
-    taskId: string,
-    namespace: string,
-    tenant: string,
+  async getTask(taskId: string
   ): Promise<WorkerTask | null> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request(
       "GET",
       `/v1/queues/tasks/${encodeURIComponent(taskId)}`,
@@ -3846,15 +3654,10 @@ export class ActeonClient {
   /**
    * List tasks on a queue, optionally filtered by status.
    */
-  async listTasks(
-    queue: string,
-    namespace: string,
-    tenant: string,
-    status?: WorkerTaskStatus,
+  async listTasks(queue: string, status?: WorkerTaskStatus
   ): Promise<WorkerTask[]> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     if (status !== undefined) params.set("status", status);
     const response = await this.request(
       "GET",
@@ -3882,16 +3685,10 @@ export class ActeonClient {
    * `queue`; a `Worker` polling that queue with the workflow
    * registered drives the execution.
    */
-  async startWorkflow(
-    namespace: string,
-    tenant: string,
-    workflow: string,
-    queue: string,
-    input: unknown,
-    options?: StartWorkflowOptions,
+  async startWorkflow(workflow: string, queue: string, input: unknown, options?: StartWorkflowOptions
   ): Promise<WorkflowExecution> {
     const response = await this.request("POST", "/v1/workflows/start", {
-      body: startWorkflowBody(namespace, tenant, workflow, queue, input, options),
+      body: startWorkflowBody(workflow, queue, input, options),
     });
 
     if (response.status === 201) {
@@ -3905,14 +3702,10 @@ export class ActeonClient {
    * List workflow executions, optionally filtered by workflow name
    * and status.
    */
-  async listWorkflowExecutions(
-    namespace: string,
-    tenant: string,
-    options?: { workflow?: string; status?: WorkflowStatus; limit?: number },
+  async listWorkflowExecutions(options?: { workflow?: string; status?: WorkflowStatus; limit?: number }
   ): Promise<WorkflowExecution[]> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     if (options?.workflow !== undefined) params.set("workflow", options.workflow);
     if (options?.status !== undefined) params.set("status", options.status);
     if (options?.limit !== undefined) params.set("limit", options.limit.toString());
@@ -3933,14 +3726,10 @@ export class ActeonClient {
   /**
    * Get a workflow execution by ID. Returns `null` if not found.
    */
-  async getWorkflowExecution(
-    executionId: string,
-    namespace: string,
-    tenant: string,
+  async getWorkflowExecution(executionId: string
   ): Promise<WorkflowExecution | null> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request(
       "GET",
       `/v1/workflows/executions/${encodeURIComponent(executionId)}`,
@@ -3964,14 +3753,9 @@ export class ActeonClient {
    * is returned by the awaiting `ctx.waitForSignal(name)` call (or
    * buffered until the workflow awaits it).
    */
-  async signalWorkflow(
-    executionId: string,
-    signalName: string,
-    namespace: string,
-    tenant: string,
-    payload?: unknown,
+  async signalWorkflow(executionId: string, signalName: string, payload?: unknown
   ): Promise<void> {
-    const body: Record<string, unknown> = { namespace, tenant };
+    const body: Record<string, unknown> = { };
     if (payload !== undefined) body.payload = payload;
     const response = await this.request(
       "POST",
@@ -3987,13 +3771,9 @@ export class ActeonClient {
   /**
    * Cancel a workflow execution.
    */
-  async cancelWorkflow(
-    executionId: string,
-    namespace: string,
-    tenant: string,
-    reason?: string,
+  async cancelWorkflow(executionId: string, reason?: string
   ): Promise<void> {
-    const body: Record<string, unknown> = { namespace, tenant };
+    const body: Record<string, unknown> = { };
     if (reason !== undefined) body.reason = reason;
     const response = await this.request(
       "POST",
@@ -4011,17 +3791,12 @@ export class ActeonClient {
    * name: replays return the originally-recorded data. Normally
    * called through `ctx.step(...)` rather than directly.
    */
-  async recordWorkflowCheckpoint(
-    executionId: string,
-    namespace: string,
-    tenant: string,
-    name: string,
-    data: unknown,
+  async recordWorkflowCheckpoint(executionId: string, name: string, data: unknown
   ): Promise<RecordCheckpointResponse> {
     const response = await this.request(
       "POST",
       `/v1/workflows/executions/${encodeURIComponent(executionId)}/checkpoints`,
-      { body: { namespace, tenant, name, data } },
+      { body: {name, data } },
     );
 
     if (response.ok) {
@@ -4037,21 +3812,9 @@ export class ActeonClient {
    * recorded one on replay). Normally called through
    * `ctx.startChild(...)` rather than directly.
    */
-  async startChildWorkflow(
-    executionId: string,
-    namespace: string,
-    tenant: string,
-    checkpoint: string,
-    workflow: string,
-    input: unknown,
-    options?: StartChildOptions,
+  async startChildWorkflow(executionId: string, checkpoint: string, workflow: string, input: unknown, options?: StartChildOptions
   ): Promise<string> {
-    const body: Record<string, unknown> = {
-      namespace,
-      tenant,
-      checkpoint,
-      workflow,
-      input,
+    const body: Record<string, unknown> = {checkpoint, workflow, input
     };
     if (options?.queue !== undefined) body.queue = options.queue;
     if (options?.parentClosePolicy !== undefined) {
@@ -4073,14 +3836,10 @@ export class ActeonClient {
   /**
    * Get the ordered event history of an execution.
    */
-  async getExecutionHistory(
-    executionId: string,
-    namespace: string,
-    tenant: string,
+  async getExecutionHistory(executionId: string
   ): Promise<ExecutionHistory> {
     const params = new URLSearchParams();
-    params.set("namespace", namespace);
-    params.set("tenant", tenant);
+
     const response = await this.request(
       "GET",
       `/v1/executions/${encodeURIComponent(executionId)}/history`,
@@ -4131,47 +3890,38 @@ export class ActeonClient {
     );
   }
 
-  /** `POST /a2a/{namespace}/{tenant}/v1/message:send`. */
-  async a2aSendMessage(
-    namespace: string,
-    tenant: string,
-    message: Record<string, unknown>,
+  /** `POST /a2a/v1/message:send`. */
+  async a2aSendMessage(message: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "POST",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/message:send`,
+      `/a2a/v1/message:send`,
       { body: { message }, extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
     return (await response.json()) as Record<string, unknown>;
   }
 
-  /** `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`. */
-  async a2aGetTask(
-    namespace: string,
-    tenant: string,
-    taskId: string,
+  /** `GET /a2a/v1/tasks/{id}`. */
+  async a2aGetTask(taskId: string
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "GET",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}`,
+      `/a2a/v1/tasks/${a2aSegment(taskId)}`,
       { extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
     return (await response.json()) as Record<string, unknown>;
   }
 
-  /** `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel`. The
+  /** `POST /a2a/v1/tasks/{id}:cancel`. The
    *  `:cancel` verb is part of the URL (spec §11) — the server
    *  splits it off in-handler. */
-  async a2aCancelTask(
-    namespace: string,
-    tenant: string,
-    taskId: string,
+  async a2aCancelTask(taskId: string
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "POST",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}:cancel`,
+      `/a2a/v1/tasks/${a2aSegment(taskId)}:cancel`,
       { extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
@@ -4181,15 +3931,11 @@ export class ActeonClient {
   /** `POST .../v1/tasks/{id}/pushNotificationConfigs` — register or
    *  upsert a push-notification webhook for a Task. Use
    *  {@link makePushConfig} to build `config`. */
-  async a2aSetPushConfig(
-    namespace: string,
-    tenant: string,
-    taskId: string,
-    config: Record<string, unknown>,
+  async a2aSetPushConfig(taskId: string, config: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "POST",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
+      `/a2a/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
       { body: config, extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
@@ -4198,14 +3944,11 @@ export class ActeonClient {
 
   /** `GET .../v1/tasks/{id}/pushNotificationConfigs` — list every
    *  config registered for the task. */
-  async a2aListPushConfigs(
-    namespace: string,
-    tenant: string,
-    taskId: string,
+  async a2aListPushConfigs(taskId: string
   ): Promise<Record<string, unknown>[]> {
     const response = await this.request(
       "GET",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
+      `/a2a/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
       { extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
@@ -4213,15 +3956,11 @@ export class ActeonClient {
   }
 
   /** `GET …/pushNotificationConfigs/{cfgId}` — read one config. */
-  async a2aGetPushConfig(
-    namespace: string,
-    tenant: string,
-    taskId: string,
-    configId: string,
+  async a2aGetPushConfig(taskId: string, configId: string
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "GET",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
+      `/a2a/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
       { extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
@@ -4231,31 +3970,25 @@ export class ActeonClient {
   /** `DELETE …/pushNotificationConfigs/{cfgId}`. Throws an
    *  `ApiError` with HTTP 404 when the config doesn't exist — the
    *  server never silently no-ops. */
-  async a2aDeletePushConfig(
-    namespace: string,
-    tenant: string,
-    taskId: string,
-    configId: string,
+  async a2aDeletePushConfig(taskId: string, configId: string
   ): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
+      `/a2a/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
       { extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
   }
 
-  /** `GET /a2a/{namespace}/{tenant}/.well-known/agent.json` — the
+  /** `GET /a2a/.well-known/agent.json` — the
    *  unauthenticated discovery endpoint. Issued **without** the
    *  Authorization header per A2A spec. */
   async a2aDiscoverAgent(
-    namespace: string,
-    tenant: string,
   ): Promise<Record<string, unknown>> {
     const response = await this.request(
       "GET",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/.well-known/agent.json`,
-      { skipAuth: true },
+      `/a2a/.well-known/agent.json`,
+      { skipAuth: false },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);
     return (await response.json()) as Record<string, unknown>;
@@ -4263,12 +3996,10 @@ export class ActeonClient {
 
   /** JSON-RPC `agent/getAuthenticatedExtendedCard` — authenticated
    *  discovery variant. Issued through the JSON-RPC envelope against
-   *  `POST /a2a/{ns}/{tenant}` (the A2A spec defines no REST
+   *  `POST /a2a` (the A2A spec defines no REST
    *  counterpart). The returned card has
    *  `capabilities.extendedAgentCard = true`. */
   async a2aGetAuthenticatedExtendedCard(
-    namespace: string,
-    tenant: string,
   ): Promise<Record<string, unknown>> {
     const envelope = {
       jsonrpc: "2.0",
@@ -4277,7 +4008,7 @@ export class ActeonClient {
     };
     const response = await this.request(
       "POST",
-      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}`,
+      `/a2a`,
       { body: envelope, extraHeaders: { ...A2A_HEADERS } },
     );
     if (!response.ok) await this.a2aThrowFromResponse(response);

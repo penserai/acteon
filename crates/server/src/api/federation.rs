@@ -17,7 +17,7 @@ use acteon_core::{
 use acteon_governance::federation::{SignedFederationEnvelope, SignedFederationInvocation};
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -37,9 +37,9 @@ pub struct FederationCapabilityCardResponse {
 
 #[utoipa::path(
     get,
-    path = "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+    path = "/a2a/federation/agents/{agent}/capabilities",
     tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path)),
+    params(("agent" = String, Path)),
     responses(
         (status = 200, body = FederationCapabilityCardResponse, description = "Audience-bound signed peer capability card"),
         (status = 401, description = "Private authentication required"),
@@ -51,7 +51,9 @@ pub struct FederationCapabilityCardResponse {
 pub async fn capabilities(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
 ) -> Result<Json<FederationCapabilityCardResponse>, GovernanceApiError> {
     let proof = super::governance::authentication(proof)?;
     let signed = super::governance::runtime(&state)?
@@ -171,9 +173,9 @@ enum ExportOperation {
 
 #[utoipa::path(
     post,
-    path = "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+    path = "/a2a/federation/envelopes:import",
     tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path)),
+    params(),
     request_body = ImportFederationEnvelopeRequest,
     responses(
         (status = 200, body = FederationImportReceipt, description = "Signed authority retained; no execution started"),
@@ -187,7 +189,10 @@ enum ExportOperation {
 pub async fn import_envelope(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant)): Path<(String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant)): crate::auth::context::ScopedPath<(
+        String,
+        String,
+    )>,
     Json(request): Json<ImportFederationEnvelopeRequest>,
 ) -> Result<Json<FederationImportReceipt>, GovernanceApiError> {
     let proof = super::governance::authentication(proof)?;
@@ -220,9 +225,9 @@ pub async fn import_envelope(
 
 #[utoipa::path(
     post,
-    path = "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+    path = "/a2a/federation/agents/{agent}/v1/message:send",
     tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path)),
+    params(("agent" = String, Path)),
     request_body = InvokeFederatedAgentRequest,
     responses(
         (status = 200, body = acteon_core::Task, description = "Exact signed message executed or replayed through the governed local agent"),
@@ -237,7 +242,9 @@ pub async fn import_envelope(
 pub async fn invoke_agent(
     State(state): State<AppState>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+    crate::auth::context::ScopedPath((namespace, tenant, agent)): crate::auth::context::ScopedPath<
+        (String, String, String),
+    >,
     Json(request): Json<InvokeFederatedAgentRequest>,
 ) -> Result<Json<acteon_core::Task>, GovernanceApiError> {
     let proof = super::governance::authentication(proof)?;
@@ -272,9 +279,9 @@ pub async fn invoke_agent(
 
 #[utoipa::path(
     post,
-    path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+    path = "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
     tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    params(("agent" = String, Path),
         ("task_id" = String, Path), ("profile" = String, Path)),
     request_body = FederationExportMessage,
     responses(
@@ -290,7 +297,7 @@ pub async fn export_message(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, profile)): Path<(
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id, profile)): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -318,9 +325,9 @@ pub async fn export_message(
 
 #[utoipa::path(
     post,
-    path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+    path = "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
     tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    params(("agent" = String, Path),
         ("task_id" = String, Path), ("profile" = String, Path)),
     request_body = FederationExportMessage,
     responses(
@@ -335,7 +342,7 @@ pub async fn observe_export_message(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, profile)): Path<(
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id, profile)): crate::auth::context::ScopedPath<(
         String,
         String,
         String,
@@ -363,9 +370,9 @@ pub async fn observe_export_message(
 
 #[utoipa::path(
     post,
-    path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+    path = "/a2a/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
     tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+    params(("agent" = String, Path),
         ("task_id" = String, Path), ("profile" = String, Path)),
     request_body = FederationExportMessage,
     responses(
@@ -380,7 +387,7 @@ pub async fn replay_export_message(
     State(state): State<AppState>,
     Extension(identity): Extension<CallerIdentity>,
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
-    Path((namespace, tenant, agent, task_id, profile)): Path<(
+    crate::auth::context::ScopedPath((namespace, tenant, agent, task_id, profile)): crate::auth::context::ScopedPath<(
         String,
         String,
         String,

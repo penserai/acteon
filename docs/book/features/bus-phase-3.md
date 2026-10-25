@@ -17,7 +17,7 @@ contract for you.
 | Core type | `acteon_core::Schema` — `{subject, version, namespace, tenant, format, body, labels, created_at}` |
 | State | `KeyKind::BusSchema`; key id = `"{subject}:{version}"` |
 | Validator | `acteon_bus::SchemaValidator` — compiled-schema cache keyed by `(namespace, tenant, subject, version)`. Uses the `jsonschema` crate (draft 2020-12). |
-| HTTP | `POST/GET /v1/bus/schemas`, `GET /v1/bus/schemas/{ns}/{t}/{subject}`, `GET|DELETE /v1/bus/schemas/{ns}/{t}/{subject}/{version}`, `PUT|DELETE /v1/bus/topics/{ns}/{t}/{name}/schema` |
+| HTTP | `POST/GET /v1/bus/schemas`, `GET /v1/bus/schemas/{subject}`, `GET|DELETE /v1/bus/schemas/{subject}/{version}`, `PUT|DELETE /v1/bus/topics/{name}/schema` |
 | Rust client | `register_bus_schema`, `list_bus_schemas`, `get_bus_schema_versions`, `get_bus_schema`, `delete_bus_schema`, `bind_topic_schema`, `unbind_topic_schema`, `publish_typed` |
 | Tests | 7 validator unit tests (register/validate/versioning/remove/compile-fail) |
 | Simulation | `bus_schema_simulation.rs` — registers v1 and v2, demonstrates acceptance, rejection-with-paths, and version independence |
@@ -65,7 +65,7 @@ touching state.
 ### Bind a topic
 
 ```http
-PUT /v1/bus/topics/agents/demo/orders/schema
+PUT /v1/bus/topics/orders/schema
 { "subject": "orders", "version": 1 }
 → 200 { "topic": "agents.demo.orders", "subject": "orders", "version": 1 }
 ```
@@ -103,7 +103,7 @@ offending field without re-running a local validator.
 ### Unbind
 
 ```http
-DELETE /v1/bus/topics/agents/demo/orders/schema
+DELETE /v1/bus/topics/orders/schema
 → 204
 ```
 
@@ -113,7 +113,7 @@ not deleted — call `DELETE /v1/bus/schemas/...` if you want that too.
 ### Delete a schema version
 
 ```http
-DELETE /v1/bus/schemas/agents/demo/orders/1
+DELETE /v1/bus/schemas/orders/1
 → 204
 ```
 

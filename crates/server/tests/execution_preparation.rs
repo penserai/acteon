@@ -252,6 +252,7 @@ async fn root_policy_contract(state: Arc<dyn StateStore>, peer: Arc<dyn StateSto
         },
         users: Vec::new(),
         api_keys: vec![ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("prod", "acme"),
             authority_id: Some("credential/maya".into()),
             name: "maya".into(),
             principal: Some(config.scopes[0].subjects[0].clone()),
@@ -855,6 +856,7 @@ async fn dispatch_fixture(url: &str, rule: Option<RuleAction>, fallback: bool) -
         },
         users: Vec::new(),
         api_keys: vec![ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("prod", "acme"),
             authority_id: Some("credential/maya".into()),
             name: "maya".into(),
             principal: Some(prepared.declaration().subjects[0].clone()),
@@ -1318,6 +1320,7 @@ async fn authenticated_workforce_contract(state: Arc<dyn StateStore>, peer: Arc<
         },
         users: Vec::new(),
         api_keys: vec![ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("prod", "acme"),
             authority_id: Some("credential/maya".into()),
             name: "maya".into(),
             principal: Some(config.scopes[0].subjects[0].clone()),
@@ -1728,6 +1731,7 @@ async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc
         },
         users: vec![],
         api_keys: vec![ApiKeyConfig {
+            scope: acteon_core::TenantContext::new("prod", "acme"),
             authority_id: Some("credential/maya".into()),
             name: "maya".into(),
             principal: Some(actor.clone()),
@@ -1751,9 +1755,11 @@ async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc
             auth.api_keys[0].role = "viewer".into();
         } else {
             auth.api_keys[0].grants[0].namespaces = vec!["other".into()];
+            auth.api_keys[0].scope.namespace = "other".into();
         }
         let projection = runtime.projectors()[0].project(&authority, &auth).unwrap();
         auth.api_keys[0].role = role;
+        auth.api_keys[0].scope.namespace = namespaces[0].clone();
         auth.api_keys[0].grants[0].namespaces = namespaces;
         assert!(projection.credentials.iter().all(|credential| {
             credential

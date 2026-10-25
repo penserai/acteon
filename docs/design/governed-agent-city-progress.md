@@ -2227,7 +2227,7 @@ official TCK run remains the external release gate.
 
 An exact-agent official JSON-RPC adapter now connects inbound A2A work to the
 governed agent-service runtime at
-`/a2a/{namespace}/{tenant}/agents/{agent}`. `SendMessage` uses the installed
+`/a2a/agents/{agent}`. `SendMessage` uses the installed
 service binding, current private caller authentication, source grant, permits,
 registry qualification, destination authentication and bounded execution
 contexts before durable acceptance. `GetTask` revalidates the original source,

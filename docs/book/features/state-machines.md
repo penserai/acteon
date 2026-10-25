@@ -174,13 +174,13 @@ sequenceDiagram
 curl http://localhost:8080/v1/events
 
 # Filter by status
-curl "http://localhost:8080/v1/events?status=firing&namespace=monitoring"
+curl "http://localhost:8080/v1/events?status=firing"
 ```
 
 ### Get Event State
 
 ```bash
-curl "http://localhost:8080/v1/events/{fingerprint}?namespace=monitoring&tenant=tenant-1"
+curl "http://localhost:8080/v1/events/{fingerprint}"
 ```
 
 ### Transition Event

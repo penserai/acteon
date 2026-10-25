@@ -10,8 +10,8 @@ test.describe('Approvals', () => {
   })
 
   test('filter inputs are present', async ({ page }) => {
-    await expect(page.getByPlaceholder('Namespace')).toBeVisible()
-    await expect(page.getByPlaceholder('Tenant')).toBeVisible()
+    await expect(page.getByPlaceholder('Namespace')).toHaveCount(0)
+    await expect(page.getByPlaceholder('Tenant')).toHaveCount(0)
   })
 
   test('shows approval cards or empty state', async ({ page }) => {

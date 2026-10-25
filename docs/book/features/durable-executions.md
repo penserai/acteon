@@ -13,7 +13,7 @@ log: when it started, each step's completion/failure/retry, timers started
 and fired, signals awaited and received, and the terminal outcome.
 
 ```bash
-curl "$ACTEON/v1/executions/$EXECUTION_ID/history?namespace=ns&tenant=t1" \
+curl "$ACTEON/v1/executions/$EXECUTION_ID/history" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -71,7 +71,11 @@ Deliver a signal:
 ```bash
 curl -X POST "$ACTEON/v1/executions/$EXECUTION_ID/signal/approved" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"namespace": "ns", "tenant": "t1", "payload": {"approver": "renzo"}}'
+  -d '{
+  "payload": {
+    "approver": "renzo"
+  }
+}'
 ```
 
 Semantics:
@@ -110,7 +114,7 @@ terminal ones — filtered by definition name, status, start-time window,
 and **search attributes**:
 
 ```bash
-curl "$ACTEON/v1/executions?namespace=ns&tenant=t1&status=waiting_signal&attr=team=payments" \
+curl "$ACTEON/v1/executions?status=waiting_signal&attr=team=payments" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -120,7 +124,11 @@ can be updated mid-execution:
 ```bash
 curl -X PUT "$ACTEON/v1/executions/$EXECUTION_ID/attributes" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"namespace": "ns", "tenant": "t1", "attributes": {"priority": "high"}}'
+  -d '{
+  "attributes": {
+    "priority": "high"
+  }
+}'
 ```
 
 ## Resetting executions
@@ -131,7 +139,10 @@ to re-run from that step:
 ```bash
 curl -X POST "$ACTEON/v1/executions/$EXECUTION_ID/reset" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"namespace": "ns", "tenant": "t1", "step": "send-email", "reason": "SMTP outage resolved"}'
+  -d '{
+  "step": "send-email",
+  "reason": "SMTP outage resolved"
+}'
 ```
 
 Step results from the reset point onward are discarded; results of steps

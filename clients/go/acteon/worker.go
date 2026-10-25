@@ -61,9 +61,9 @@ func IsNonRetryable(err error) bool {
 // WorkerConfig configures a Worker.
 type WorkerConfig struct {
 	// Namespace scopes every queue call. Required.
-	Namespace string
+
 	// Tenant scopes every queue call. Required.
-	Tenant string
+
 	// Queue is the queue to poll. Required.
 	Queue string
 	// WorkerID identifies this worker in poll requests (for
@@ -130,8 +130,8 @@ func (w *Worker) Register(actionType string, handler TaskHandler) {
 // would reject the calls anyway, but failing fast keeps the error
 // out of the poll loop.
 func (w *Worker) validate() error {
-	if w.cfg.Namespace == "" || w.cfg.Tenant == "" || w.cfg.Queue == "" {
-		return fmt.Errorf("acteon worker: namespace, tenant, and queue are required")
+	if w.cfg.Queue == "" {
+		return fmt.Errorf("acteon worker: queue is required")
 	}
 	return nil
 }
@@ -177,8 +177,7 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	maxTasks := w.cfg.MaxConcurrent
 	leaseSeconds := w.cfg.LeaseSeconds
 	tasks, err := w.client.PollTasks(ctx, w.cfg.Queue, &PollTasksRequest{
-		Namespace:    w.cfg.Namespace,
-		Tenant:       w.cfg.Tenant,
+
 		MaxTasks:     &maxTasks,
 		LeaseSeconds: &leaseSeconds,
 		WorkerID:     w.cfg.WorkerID,
@@ -217,8 +216,7 @@ func (w *Worker) processTask(ctx context.Context, task *WorkerTask) {
 		// be re-leased — another worker on the same queue may carry
 		// the handler.
 		_, _ = w.client.FailTask(reportCtx, task.TaskID, &FailTaskRequest{
-			Namespace:  w.cfg.Namespace,
-			Tenant:     w.cfg.Tenant,
+
 			LeaseToken: task.LeaseToken,
 			Error:      fmt.Sprintf("no handler registered for action type %q", task.ActionType),
 			Retryable:  true,
@@ -241,8 +239,7 @@ func (w *Worker) processTask(ctx context.Context, task *WorkerTask) {
 
 	if err != nil {
 		_, _ = w.client.FailTask(reportCtx, task.TaskID, &FailTaskRequest{
-			Namespace:  w.cfg.Namespace,
-			Tenant:     w.cfg.Tenant,
+
 			LeaseToken: task.LeaseToken,
 			Error:      err.Error(),
 			Retryable:  !IsNonRetryable(err),
@@ -250,8 +247,7 @@ func (w *Worker) processTask(ctx context.Context, task *WorkerTask) {
 		return
 	}
 	_, _ = w.client.CompleteTask(reportCtx, task.TaskID, &CompleteTaskRequest{
-		Namespace:  w.cfg.Namespace,
-		Tenant:     w.cfg.Tenant,
+
 		LeaseToken: task.LeaseToken,
 		Result:     result,
 	})
@@ -275,8 +271,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, task *WorkerTask) {
 		case <-ticker.C:
 			extendSeconds := w.cfg.LeaseSeconds
 			_, _ = w.client.HeartbeatTask(ctx, task.TaskID, &HeartbeatTaskRequest{
-				Namespace:     w.cfg.Namespace,
-				Tenant:        w.cfg.Tenant,
+
 				LeaseToken:    task.LeaseToken,
 				ExtendSeconds: &extendSeconds,
 			})

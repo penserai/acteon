@@ -10,15 +10,10 @@ class WebhookActionTest {
 
     @Test
     void createBasicWebhookAction() {
-        Action action = WebhookAction.create(
-                "notifications",
-                "tenant-1",
-                "https://example.com/hook",
-                Map.of("message", "hello")
-        );
+        Action action = WebhookAction.create("https://example.com/hook", Map.of("message", "hello"));
 
-        assertEquals("notifications", action.getNamespace());
-        assertEquals("tenant-1", action.getTenant());
+        assertFalse(new com.fasterxml.jackson.databind.ObjectMapper().convertValue(action, Map.class).containsKey("namespace"));
+        assertFalse(new com.fasterxml.jackson.databind.ObjectMapper().convertValue(action, Map.class).containsKey("tenant"));
         assertEquals("webhook", action.getProvider());
         assertEquals("webhook", action.getActionType());
         assertNotNull(action.getId());
@@ -34,8 +29,7 @@ class WebhookActionTest {
     @Test
     void builderWithAllOptions() {
         Action action = WebhookAction.builder()
-                .namespace("ns")
-                .tenant("t1")
+
                 .url("https://example.com/hook")
                 .method("PUT")
                 .actionType("custom_hook")
@@ -46,8 +40,8 @@ class WebhookActionTest {
                 .labels(Map.of("env", "prod"))
                 .build();
 
-        assertEquals("ns", action.getNamespace());
-        assertEquals("t1", action.getTenant());
+        assertFalse(new com.fasterxml.jackson.databind.ObjectMapper().convertValue(action, Map.class).containsKey("namespace"));
+        assertFalse(new com.fasterxml.jackson.databind.ObjectMapper().convertValue(action, Map.class).containsKey("tenant"));
         assertEquals("webhook", action.getProvider());
         assertEquals("custom_hook", action.getActionType());
         assertEquals("dedup-1", action.getDedupKey());
@@ -67,8 +61,7 @@ class WebhookActionTest {
     @Test
     void builderDefaultMethod() {
         Action action = WebhookAction.builder()
-                .namespace("ns")
-                .tenant("t1")
+
                 .url("https://example.com/hook")
                 .body(Map.of())
                 .build();
@@ -79,8 +72,7 @@ class WebhookActionTest {
     @Test
     void builderDefaultActionType() {
         Action action = WebhookAction.builder()
-                .namespace("ns")
-                .tenant("t1")
+
                 .url("https://example.com/hook")
                 .body(Map.of())
                 .build();
@@ -89,10 +81,10 @@ class WebhookActionTest {
     }
 
     @Test
-    void builderRejectsNullNamespace() {
-        assertThrows(IllegalArgumentException.class, () ->
+    void builderDoesNotRequireContext() {
+        assertDoesNotThrow( () ->
                 WebhookAction.builder()
-                        .tenant("t1")
+
                         .url("https://example.com/hook")
                         .body(Map.of())
                         .build()
@@ -100,22 +92,16 @@ class WebhookActionTest {
     }
 
     @Test
-    void builderRejectsNullTenant() {
-        assertThrows(IllegalArgumentException.class, () ->
-                WebhookAction.builder()
-                        .namespace("ns")
-                        .url("https://example.com/hook")
-                        .body(Map.of())
-                        .build()
-        );
+    void builderAllowsTenantInBusinessPayload() {
+        Action action = WebhookAction.create("https://example.com/hook", Map.of("tenant", "business-tenant"));
+        assertEquals(Map.of("tenant", "business-tenant"), action.getPayload().get("body"));
     }
 
     @Test
     void builderRejectsNullUrl() {
         assertThrows(IllegalArgumentException.class, () ->
                 WebhookAction.builder()
-                        .namespace("ns")
-                        .tenant("t1")
+
                         .body(Map.of())
                         .build()
         );
@@ -124,8 +110,7 @@ class WebhookActionTest {
     @Test
     void providerIsAlwaysWebhook() {
         Action action = WebhookAction.builder()
-                .namespace("ns")
-                .tenant("t1")
+
                 .url("https://example.com/hook")
                 .body(Map.of())
                 .build();
@@ -136,8 +121,7 @@ class WebhookActionTest {
     @Test
     void headersOmittedWhenEmpty() {
         Action action = WebhookAction.builder()
-                .namespace("ns")
-                .tenant("t1")
+
                 .url("https://example.com/hook")
                 .body(Map.of("data", 123))
                 .build();
@@ -148,8 +132,7 @@ class WebhookActionTest {
     @Test
     void headersMapMerge() {
         Action action = WebhookAction.builder()
-                .namespace("ns")
-                .tenant("t1")
+
                 .url("https://example.com/hook")
                 .body(Map.of())
                 .header("X-First", "1")

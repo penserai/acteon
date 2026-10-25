@@ -14,8 +14,6 @@ use crate::{ActeonClient, Error};
 /// Request body for creating a silence.
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateSilenceRequest {
-    pub namespace: String,
-    pub tenant: String,
     pub matchers: Vec<SilenceMatcher>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<DateTime<Utc>>,
@@ -61,8 +59,6 @@ pub struct ListSilencesResponse {
 /// Query parameters for listing silences.
 #[derive(Debug, Clone, Default)]
 pub struct ListSilencesQuery {
-    pub namespace: Option<String>,
-    pub tenant: Option<String>,
     pub include_expired: bool,
 }
 
@@ -77,8 +73,6 @@ impl ActeonClient {
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
     /// let req = CreateSilenceRequest {
-    ///     namespace: "prod".into(),
-    ///     tenant: "acme".into(),
     ///     matchers: vec![
     ///         SilenceMatcher::new("severity", "warning", MatchOp::Equal).unwrap(),
     ///     ],
@@ -117,19 +111,13 @@ impl ActeonClient {
         }
     }
 
-    /// List silences, optionally filtered by namespace, tenant, or expiry.
+    /// List silences, filtered by expiry within the credential context.
     pub async fn list_silences(
         &self,
         query: &ListSilencesQuery,
     ) -> Result<ListSilencesResponse, Error> {
         let url = format!("{}/v1/silences", self.base_url);
         let mut req = self.add_auth(self.client.get(&url));
-        if let Some(ref ns) = query.namespace {
-            req = req.query(&[("namespace", ns)]);
-        }
-        if let Some(ref t) = query.tenant {
-            req = req.query(&[("tenant", t)]);
-        }
         if query.include_expired {
             req = req.query(&[("include_expired", "true")]);
         }

@@ -17,7 +17,7 @@
 //! Environment variables:
 //!   ACTEON_URL - Server URL (default: http://localhost:8080)
 
-use acteon_core::Action;
+use acteon_core::ActionRequest;
 use acteon_simulation::{ActeonClient, AuditQuery, ReplayQuery};
 use tracing::info;
 
@@ -63,9 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dispatched_ids = Vec::new();
 
     for i in 1..=3 {
-        let action = Action::new(
-            "notifications",
-            "tenant-replay-demo",
+        let action = ActionRequest::new(
             "email",
             "send_notification",
             serde_json::json!({
@@ -96,7 +94,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let audit_query = AuditQuery {
-        tenant: Some("tenant-replay-demo".to_string()),
         limit: Some(10),
         ..Default::default()
     };
@@ -167,7 +164,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let replay_query = ReplayQuery {
-        tenant: Some("tenant-replay-demo".to_string()),
         action_type: Some("send_notification".to_string()),
         limit: Some(10),
         ..Default::default()
@@ -204,7 +200,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let verify_query = AuditQuery {
-        tenant: Some("tenant-replay-demo".to_string()),
         limit: Some(20),
         ..Default::default()
     };

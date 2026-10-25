@@ -50,10 +50,6 @@ export type TaskHandler = (
 export interface WorkerOptions {
   /** Client used for polling, heartbeats, and settlement. */
   client: ActeonClient;
-  /** Namespace the worker operates in. */
-  namespace: string;
-  /** Tenant the worker operates in. */
-  tenant: string;
   /** Queue to poll. */
   queue: string;
   /** Stable worker identity recorded on leases. */
@@ -90,8 +86,6 @@ export interface WorkerOptions {
  */
 export class Worker {
   private readonly client: ActeonClient;
-  private readonly namespace: string;
-  private readonly tenant: string;
   private readonly queue: string;
   private readonly workerId?: string;
   private readonly pollIntervalMs: number;
@@ -107,8 +101,6 @@ export class Worker {
 
   constructor(options: WorkerOptions) {
     this.client = options.client;
-    this.namespace = options.namespace;
-    this.tenant = options.tenant;
     this.queue = options.queue;
     this.workerId = options.workerId;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
@@ -141,15 +133,11 @@ export class Worker {
    * tests and for callers driving their own scheduling loop.
    */
   async runOnce(): Promise<number> {
-    const tasks = await this.client.pollTasks(
-      this.queue,
-      this.namespace,
-      this.tenant,
-      {
+    const tasks = await this.client.pollTasks(this.queue, {
         maxTasks: this.maxConcurrent,
         leaseSeconds: this.leaseSeconds,
         workerId: this.workerId,
-      },
+      }
     );
     if (tasks.length === 0) {
       return 0;
@@ -234,12 +222,7 @@ export class Worker {
     let leaseToken = task.leaseToken;
     const heartbeat = setInterval(() => {
       void this.client
-        .heartbeatTask(
-          task.taskId,
-          this.namespace,
-          this.tenant,
-          leaseToken,
-          this.leaseSeconds,
+        .heartbeatTask(task.taskId, leaseToken, this.leaseSeconds
         )
         .then((updated) => {
           if (updated.leaseToken) {
@@ -261,13 +244,7 @@ export class Worker {
 
       const handler = this.handlers.get(task.actionType);
       if (!handler) {
-        await this.client.failTask(
-          task.taskId,
-          this.namespace,
-          this.tenant,
-          leaseToken,
-          `no handler registered for action type: ${task.actionType}`,
-          true,
+        await this.client.failTask(task.taskId, leaseToken, `no handler registered for action type: ${task.actionType}`, true
         );
         return;
       }
@@ -278,22 +255,11 @@ export class Worker {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
-        await this.client.failTask(
-          task.taskId,
-          this.namespace,
-          this.tenant,
-          leaseToken,
-          message,
-          !(error instanceof NonRetryableError),
+        await this.client.failTask(task.taskId, leaseToken, message, !(error instanceof NonRetryableError)
         );
         return;
       }
-      await this.client.completeTask(
-        task.taskId,
-        this.namespace,
-        this.tenant,
-        leaseToken,
-        result ?? null,
+      await this.client.completeTask(task.taskId, leaseToken, result ?? null
       );
     } finally {
       clearInterval(heartbeat);
@@ -315,46 +281,24 @@ export class Worker {
         ? this.workflows.get(payload.workflow)
         : undefined;
     if (!fn) {
-      await this.client.failTask(
-        task.taskId,
-        this.namespace,
-        this.tenant,
-        leaseToken(),
-        `no workflow registered: ${payload?.workflow ?? "<missing>"}`,
-        true,
+      await this.client.failTask(task.taskId, leaseToken(), `no workflow registered: ${payload?.workflow ?? "<missing>"}`, true
       );
       return;
     }
     let directive: WorkflowDirective;
     try {
-      directive = await runWorkflowTask(
-        this.client,
-        this.namespace,
-        this.tenant,
-        fn,
-        payload,
+      directive = await runWorkflowTask(this.client, fn, payload
       );
     } catch (error) {
       // The runner only throws when the execution state could not be
       // resolved (the workflow function itself never ran): permanently
       // for a missing execution, retryably for transport failures.
       const message = error instanceof Error ? error.message : String(error);
-      await this.client.failTask(
-        task.taskId,
-        this.namespace,
-        this.tenant,
-        leaseToken(),
-        message,
-        !(error instanceof WorkflowExecutionNotFoundError),
+      await this.client.failTask(task.taskId, leaseToken(), message, !(error instanceof WorkflowExecutionNotFoundError)
       );
       return;
     }
-    await this.client.completeTask(
-      task.taskId,
-      this.namespace,
-      this.tenant,
-      leaseToken(),
-      directive,
+    await this.client.completeTask(task.taskId, leaseToken(), directive
     );
   }
 }

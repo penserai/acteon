@@ -46,7 +46,6 @@ messages and prevent resurrection. They are not part of the seven-day payload TT
 
 ```json
 {
-  "scope": { "namespace": "deployments", "tenant": "acme" },
   "change": {
     "schemaVersion": 1,
     "changeId": "deployment-42-change-1",
@@ -88,7 +87,7 @@ have persisted some work: retry with the same change ID and revision. A local-on
 ledger cannot preserve history if its disk is lost. Backend replication and write
 acknowledgement settings remain deployment responsibilities.
 
-`POST /v1/timeline/changes/batch` accepts `{ "scope": ..., "changes": [...] }`
+`POST /v1/timeline/changes/batch` accepts `{ "changes": [...] }`
 with 1–500 changes, returning an ordered `results` array of receipts/errors. It is
 not an atomic multi-event transaction. The server's HTTP body-size limit also applies.
 Individual envelopes are limited to 256 KiB; attributes allow depth 16 and 1,000
@@ -102,7 +101,6 @@ words to 8,192 bytes. Occurrence timestamps use the shared nanosecond range
 
 ```json
 {
-  "scope": { "namespace": "deployments", "tenant": "acme" },
   "query": {
     "eventGroup": "cluster-eu-42",
     "equals": [
@@ -144,7 +142,6 @@ when both are supplied, they are combined with AND.
 
 ```json
 {
-  "scope": { "namespace": "deployments", "tenant": "acme" },
   "query": {
     "eventGroup": "cluster-eu-42",
     "filter": "attributes.region in [\"eu-west-1\", \"us-west-2\"] && (attributes.attempt == 1 || attributes.attempt == 2) && textMatch(\"deployment started\")",
@@ -206,8 +203,8 @@ and other query options when using `nextCursor`. Default ordering still depends
 on the structured `eventGroup` option; set `ascending` explicitly if the group
 condition is written only inside CEL.
 
-Open **Event Timeline** in the admin navigation (`/timeline`) to query a namespace
-and tenant. The page provides a multiline CEL editor with examples and
+Open **Event Timeline** in the admin navigation (`/timeline`) to query the authenticated credential’s namespace
+and tenant. The context is read-only. The page provides a multiline CEL editor with examples and
 Ctrl/Command+Enter submission. Event group and event type are available directly;
 **Additional filters** includes full-text scope and word matching, local occurrence
 time bounds (converted to UTC), and repeatable typed attribute conditions. Choose
@@ -219,15 +216,15 @@ rejects these rather than changing their representation during JSON serializatio
 Choose the result order and page size before submitting. Previous/next navigation
 preserves the submitted query even if the form is edited; an explicit notice marks
 unapplied changes. Previous pages show cached results, while new pages read live
-data. Search again to refresh. Changing namespace or tenant clears results and
+data. Search again to refresh. Changing credentials clears results and
 cancels outstanding requests. Selecting an event opens its identity, timestamps,
-and expandable event JSON. Ledger status is loaded separately for the selected scope.
+and expandable event JSON. Ledger status is loaded separately for the authenticated context.
 
 All SDK query helpers accept `filter` in the query object; Rust exposes it as
 `TimelineQuery.filter`:
 
 ```python
-client.query_timeline("deployments", "acme", {
+client.query_timeline({
     "filter": 'attributes.region == "eu-west-1" && !has(attributes.error)',
     "limit": 50,
 })
@@ -238,7 +235,7 @@ indexes. Projections created by an earlier preview without these entries must be
 rebuilt before using CEL attribute filters; changing the mapping alone is not
 sufficient. No dynamic per-attribute backend mappings are introduced.
 
-`GET /v1/timeline/events/{source}/{eventId}?namespace=...&tenant=...` returns the
+`GET /v1/timeline/events/{source}/{eventId}` returns the
 current event or 404. Every request checks both role permission and tenant/namespace
 grants. Read permission is available to existing roles; ingest is available to
 admin/operator/executor; ledger administration is available to admin/operator.
@@ -313,7 +310,7 @@ same committed object set. Exclude obsolete/uncommitted objects and apply the
 same expiry and ledger-ID deduplication rules.
 
 `GET /v1/timeline/ledger/status` reports scoped local records, bytes, pending work,
-and oldest receipt. `POST /v1/timeline/replays` accepts a scope and returns a job;
+and oldest receipt. `POST /v1/timeline/replays` uses the credential context and returns a job;
 `GET /v1/timeline/replays/{id}` reports its status. Replay reapplies retained local
 records against existing durable version fences. It is a projection repair tool,
 not reconstruction of a lost coordination store. Cold archive queries are external;

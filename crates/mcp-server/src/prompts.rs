@@ -22,22 +22,12 @@ use crate::server::ActeonMcpServer;
 pub struct InvestigateIncidentArgs {
     /// The name of the service experiencing the incident.
     pub service: String,
-    /// Tenant context.
-    #[serde(default = "default_tenant")]
-    pub tenant: String,
-}
-
-fn default_tenant() -> String {
-    "default".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OptimizeAlertsArgs {
     /// The notification provider to analyze (e.g. "slack", "email", "pagerduty").
     pub provider: String,
-    /// Tenant context.
-    #[serde(default = "default_tenant")]
-    pub tenant: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -75,17 +65,16 @@ impl ActeonMcpServer {
         let messages = vec![PromptMessage::new_text(
             PromptMessageRole::User,
             format!(
-                "I see a spike in errors for service '{service}' (tenant: '{tenant}'). \
+                "I see a spike in errors for service '{service}' in the authenticated context. \
                      Please help me investigate:\n\n\
                      1. Use the `query_audit` tool to find events related to '{service}' \
                         in the last 30 minutes.\n\
                      2. Use `list_events` to check for any open/acknowledged stateful events \
-                        in the '{tenant}' tenant.\n\
+                        in the authenticated context.\n\
                      3. Use `list_rules` to see if any rules were recently changed or disabled.\n\
                      4. Correlate the findings and summarize the probable root cause.\n\
                      5. Suggest next steps (acknowledge, escalate, or resolve).",
                 service = args.service,
-                tenant = args.tenant,
             ),
         )];
 
@@ -107,8 +96,8 @@ impl ActeonMcpServer {
             PromptMessageRole::User,
             format!(
                 "Analyze notifications sent to the '{provider}' provider for \
-                     tenant '{tenant}' over the last 24 hours.\n\n\
-                     1. Use `query_audit` with provider='{provider}' and tenant='{tenant}' \
+                     the authenticated context over the last 24 hours.\n\n\
+                     1. Use `query_audit` with provider='{provider}' \
                         to see recent dispatch history.\n\
                      2. Identify noisy patterns — action types that fire frequently \
                         but are often duplicates.\n\
@@ -117,7 +106,6 @@ impl ActeonMcpServer {
                      4. Suggest grouping or deduplication rules to reduce fatigue.\n\
                      5. Show before/after metrics (estimated notification counts).",
                 provider = args.provider,
-                tenant = args.tenant,
             ),
         )];
 
