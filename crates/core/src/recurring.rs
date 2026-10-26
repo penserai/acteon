@@ -137,8 +137,7 @@ pub const DEFAULT_MIN_INTERVAL_SECONDS: u64 = 60;
 ///
 /// Returns an error if the expression is invalid.
 pub fn validate_cron_expr(expr: &str) -> Result<croner::Cron, CronValidationError> {
-    croner::Cron::new(expr)
-        .parse()
+    expr.parse()
         .map_err(|e| CronValidationError::InvalidExpression(format!("{e}")))
 }
 

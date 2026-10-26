@@ -333,7 +333,7 @@ impl BusBackend for KafkaBackend {
                 {
                     return Err(BusError::Transport(format!("commit_transaction: {e}")));
                 }
-                p
+                (p.partition, p.offset)
             }
             Err((e, _msg)) => {
                 if let Some(txn) = &self.transactional {

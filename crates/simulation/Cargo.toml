@@ -61,7 +61,7 @@ thiserror.workspace = true
 uuid.workspace = true
 
 parking_lot = "0.12"
-rand = "0.8"
+rand = "0.10"
 
 [dev-dependencies]
 criterion.workspace = true
