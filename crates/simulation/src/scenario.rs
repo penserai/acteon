@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use acteon_core::{Action, ActionOutcome};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -402,7 +402,7 @@ async fn dedup(report: &mut ScenarioReport) -> Result<(), SimulationError> {
         serde_json::json!({}),
     );
     first.dedup_key = Some("same-effect-key".into());
-    let node = rng.gen_range(0..2);
+    let node = rng.random_range(0..2);
     let initial = harness
         .dispatch_to(node, &first)
         .await
@@ -558,7 +558,7 @@ async fn approval(report: &mut ScenarioReport) -> Result<(), SimulationError> {
 
 async fn retry(report: &mut ScenarioReport) -> Result<(), SimulationError> {
     let scenario = Scenario::RetryRecovery;
-    let failures = rand::rngs::StdRng::seed_from_u64(report.manifest.seed).gen_range(1..=3);
+    let failures = rand::rngs::StdRng::seed_from_u64(report.manifest.seed).random_range(1..=3);
     let provider = RecordingProvider::new("effect")
         .with_seed(report.manifest.seed)
         .with_failure_mode(FailureMode::FirstN(failures));
