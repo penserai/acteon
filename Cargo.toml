@@ -297,7 +297,7 @@ opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto"]
 tracing-opentelemetry = "0.33"
 
 # Cron scheduling
-croner = "2"
+croner = "4"
 
 # MCP
 rmcp = { version = "1.4.0", features = ["server", "transport-io"] }
