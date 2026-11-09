@@ -31,7 +31,7 @@ uuid.workspace = true
 tracing.workspace = true
 fs2 = "0.4"
 unicode-segmentation = "1.12"
-parquet = { version = "56", default-features = false, features = ["zstd"], optional = true }
+parquet = { version = "60", default-features = false, features = ["zstd"], optional = true }
 object_store = { version = "0.14.2", features = ["aws"], optional = true }
 futures = { workspace = true, optional = true }
 bytes = { version = "1", optional = true }

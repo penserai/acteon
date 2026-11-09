@@ -17,6 +17,15 @@ jobs:
     name: Node client dependencies
     runs-on: [self-hosted, macOS, X64]
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -37,6 +46,15 @@ jobs:
       matrix:
         node: ['20', '24']
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -49,6 +67,15 @@ jobs:
     name: Java client dependencies
     runs-on: [self-hosted, macOS, X64]
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:

@@ -11,8 +11,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: ${{ github.head_ref != 'codex/consolidated-build-deps' && 'true' || '' }}
+  RUSTC_WRAPPER: ${{ github.head_ref != 'codex/consolidated-build-deps' && 'sccache' || '' }}
 
 # `acteon-bus` brings in `rdkafka-sys` 4.10 which vendors librdkafka
 # 2.12.1 and builds it statically through `cmake-build`. librdkafka
@@ -33,6 +33,20 @@ jobs:
       matrix:
         rust: [stable, "1.88"]
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" >> "$GITHUB_ENV"
+          echo "CC=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
+          echo "CXX=/Library/Developer/CommandLineTools/usr/bin/c++" >> "$GITHUB_ENV"
+          echo "AR=/Library/Developer/CommandLineTools/usr/bin/ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
@@ -41,6 +55,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo check --locked --workspace --all-targets
@@ -53,6 +68,20 @@ jobs:
       matrix:
         rust: [stable, "1.88"]
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" >> "$GITHUB_ENV"
+          echo "CC=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
+          echo "CXX=/Library/Developer/CommandLineTools/usr/bin/c++" >> "$GITHUB_ENV"
+          echo "AR=/Library/Developer/CommandLineTools/usr/bin/ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
@@ -62,6 +91,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: clippy
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo clippy --locked --workspace --no-deps -- -D warnings
@@ -77,6 +107,20 @@ jobs:
       matrix:
         rust: [stable, "1.88"]
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" >> "$GITHUB_ENV"
+          echo "CC=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
+          echo "CXX=/Library/Developer/CommandLineTools/usr/bin/c++" >> "$GITHUB_ENV"
+          echo "AR=/Library/Developer/CommandLineTools/usr/bin/ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # This job builds the full workspace with debug info plus the cloud
       # provider feature matrices; the runner's default free space is no
@@ -95,6 +139,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: github.head_ref != 'codex/consolidated-build-deps'
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # nextest
@@ -131,6 +176,15 @@ jobs:
     name: Format
     runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
@@ -154,6 +208,20 @@ jobs:
     name: Frontend
     runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" >> "$GITHUB_ENV"
+          echo "CC=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
+          echo "CXX=/Library/Developer/CommandLineTools/usr/bin/c++" >> "$GITHUB_ENV"
+          echo "AR=/Library/Developer/CommandLineTools/usr/bin/ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -183,6 +251,20 @@ jobs:
     name: Doc
     runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" >> "$GITHUB_ENV"
+          echo "CC=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
+          echo "CXX=/Library/Developer/CommandLineTools/usr/bin/c++" >> "$GITHUB_ENV"
+          echo "AR=/Library/Developer/CommandLineTools/usr/bin/ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
@@ -191,6 +273,7 @@ jobs:
         with:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo doc --workspace --no-deps
