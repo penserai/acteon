@@ -188,10 +188,10 @@ impl RecordingProvider {
             FailureMode::None => false,
             FailureMode::EveryN(n) => call_number.is_multiple_of(*n),
             FailureMode::Probabilistic(p) => {
-                use rand::{Rng, SeedableRng};
+                use rand::{RngExt, SeedableRng};
                 let mut rng =
                     rand::rngs::StdRng::seed_from_u64(self.seed.wrapping_add(call_number as u64));
-                rng.gen_range(0.0..1.0) < *p
+                rng.random_range(0.0..1.0) < *p
             }
             FailureMode::FirstN(n) => call_number <= *n,
             FailureMode::Always => true,

@@ -266,7 +266,7 @@ utoipa-swagger-ui = { version = "10.0.2", features = ["axum"] }
 utoipa-axum = "0.2"
 
 # File watching
-notify = "7"
+notify = "8"
 
 # Configuration
 toml = "0.8"
@@ -291,26 +291,26 @@ percent-encoding = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
 # OpenTelemetry
-opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto"] }
-tracing-opentelemetry = "0.33"
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "http-proto"] }
+tracing-opentelemetry = "0.34"
 
 # Cron scheduling
-croner = "2"
+croner = "4"
 
 # MCP
-rmcp = { version = "1.4.0", features = ["server", "transport-io"] }
+rmcp = { version = "3.9.0", features = ["server", "transport-io"] }
 schemars = "1"
 
 # TLS
 rustls = { version = "0.23.46", features = ["ring"] }
 rustls-pemfile = "2"
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 tokio-rustls = "0.26"
 
 # WASM
-wasmtime = { version = "36.0.19", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
+wasmtime = { version = "36.0.20", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }

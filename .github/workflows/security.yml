@@ -14,11 +14,25 @@ jobs:
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '["ubuntu-latest"]' || '["self-hosted","macOS","X64"]') }}
     timeout-minutes: 30
     steps:
+      - name: Configure macOS arm64 toolchain
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-bin"
+          printf '#!/bin/sh\nexec /usr/bin/arch -arm64 /usr/bin/xcrun "$@"\n' > "$RUNNER_TEMP/arm64-bin/xcrun"
+          chmod +x "$RUNNER_TEMP/arm64-bin/xcrun"
+          echo "$RUNNER_TEMP/arm64-bin" >> "$GITHUB_PATH"
+          echo "/Library/Developer/CommandLineTools/usr/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" >> "$GITHUB_ENV"
+          echo "CC=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
+          echo "CXX=/Library/Developer/CommandLineTools/usr/bin/c++" >> "$GITHUB_ENV"
+          echo "AR=/Library/Developer/CommandLineTools/usr/bin/ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/Library/Developer/CommandLineTools/usr/bin/cc" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32
         with:
           tool: cargo-audit@0.22.1,cargo-deny@0.20.2
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

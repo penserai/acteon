@@ -1,5 +1,6 @@
 [advisories]
-# sqlx's lockfile contains its optional MySQL/RSA dependency graph. Acteon only
-# compiles PostgreSQL; scripts/ci/security.sh verifies RSA remains unreachable.
-# No RSA private-key operation is authorized by this exception.
-ignore = ["RUSTSEC-2023-0071"]
+# sqlx's lockfile contains its optional MySQL/RSA and SQLite dependency graphs.
+# Acteon only compiles PostgreSQL; scripts/ci/security.sh verifies RSA and
+# libsqlite3-sys remain unreachable.
+# No RSA private-key or SQLite operation is authorized by this exception.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]

@@ -6,7 +6,7 @@
 use rmcp::{
     ErrorData as McpError, RoleServer,
     handler::server::wrapper::Parameters,
-    model::{GetPromptResult, PromptMessage, PromptMessageRole},
+    model::{GetPromptResult, PromptMessage, Role},
     prompt, prompt_router, schemars,
     service::RequestContext,
 };
@@ -63,7 +63,7 @@ impl ActeonMcpServer {
         _ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
         let messages = vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             format!(
                 "I see a spike in errors for service '{service}' in the authenticated context. \
                      Please help me investigate:\n\n\
@@ -93,7 +93,7 @@ impl ActeonMcpServer {
         _ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
         let messages = vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             format!(
                 "Analyze notifications sent to the '{provider}' provider for \
                      the authenticated context over the last 24 hours.\n\n\
@@ -126,7 +126,7 @@ impl ActeonMcpServer {
         };
 
         let messages = vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             format!(
                 "I need a policy that prevents notifications from being sent to \
                      '{team}' {quiet_window} unless the severity is 'critical'.\n\n\

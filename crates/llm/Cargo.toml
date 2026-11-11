@@ -10,7 +10,7 @@ rust-version.workspace = true
 acteon-core = { workspace = true }
 acteon-provider = { workspace = true }
 async-trait = { workspace = true }
-jsonschema = { version = "0.46", default-features = false }
+jsonschema = { version = "0.49", default-features = false }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
