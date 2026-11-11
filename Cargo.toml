@@ -300,7 +300,7 @@ tracing-opentelemetry = "0.34"
 croner = "4"
 
 # MCP
-rmcp = { version = "1.4.0", features = ["server", "transport-io"] }
+rmcp = { version = "3.9.0", features = ["server", "transport-io"] }
 schemars = "1"
 
 # TLS

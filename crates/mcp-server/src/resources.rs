@@ -8,8 +8,8 @@ use acteon_ops::acteon_client::{AuditQuery, EventQuery};
 use rmcp::{
     ErrorData as McpError,
     model::{
-        AnnotateAble, ListResourcesResult, RawResource, ReadResourceRequestParams,
-        ReadResourceResult, ResourceContents,
+        ListResourcesResult, ReadResourceRequestParams, ReadResourceResult, Resource,
+        ResourceContents,
     },
 };
 use serde_json::json;
@@ -17,15 +17,11 @@ use serde_json::json;
 /// List the static top-level resources.
 pub fn list_resources() -> ListResourcesResult {
     let resources = vec![
-        RawResource::new("acteon://health", "Gateway health".to_string()).no_annotation(),
-        RawResource::new("acteon://rules", "Active rules".to_string()).no_annotation(),
+        Resource::new("acteon://health", "Gateway health"),
+        Resource::new("acteon://rules", "Active rules"),
     ];
 
-    ListResourcesResult {
-        resources,
-        next_cursor: None,
-        meta: None,
-    }
+    ListResourcesResult::with_all_items(resources)
 }
 
 /// Read a specific resource by URI.

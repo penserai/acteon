@@ -5,10 +5,9 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::{prompt::PromptRouter, tool::ToolRouter},
     model::{
-        AnnotateAble, GetPromptRequestParams, GetPromptResult, Implementation, ListPromptsResult,
-        ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
-        RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ServerCapabilities,
-        ServerInfo,
+        Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
+        ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ResourceTemplate,
+        ServerCapabilities, ServerConfig,
     },
     prompt_handler,
     service::RequestContext,
@@ -48,8 +47,8 @@ impl ActeonMcpServer {
     reason = "rmcp handler macros generate async methods for synchronous listings"
 )]
 impl ServerHandler for ActeonMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_resources().enable_prompts().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_resources().enable_prompts().build())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_server_info(Implementation::new("acteon-mcp-server", env!("CARGO_PKG_VERSION"))
                 .with_title("Acteon MCP Server")
@@ -69,8 +68,10 @@ impl ServerHandler for ActeonMcpServer {
         &self,
         request: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        resources::read_resource(&self.ops, request).await
+    ) -> Result<ReadResourceResponse, McpError> {
+        resources::read_resource(&self.ops, request)
+            .await
+            .map(ReadResourceResponse::from)
     }
 
     fn list_resource_templates(
@@ -79,44 +80,16 @@ impl ServerHandler for ActeonMcpServer {
         _ctx: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send
     {
-        std::future::ready(Ok(ListResourceTemplatesResult {
-            resource_templates: vec![
-                RawResourceTemplate {
-                    uri_template: "acteon://audit".into(),
-                    name: "Audit trail".into(),
-                    title: None,
-                    description: Some(
-                        "Recent audit records in the authenticated context".to_string(),
-                    ),
-                    mime_type: Some("application/json".into()),
-                    icons: None,
-                }
-                .no_annotation(),
-                RawResourceTemplate {
-                    uri_template: "acteon://rules".into(),
-                    name: "Active rules".into(),
-                    title: None,
-                    description: Some(
-                        "The active rule set in the authenticated context".to_string(),
-                    ),
-                    mime_type: Some("application/json".into()),
-                    icons: None,
-                }
-                .no_annotation(),
-                RawResourceTemplate {
-                    uri_template: "acteon://events".into(),
-                    name: "Stateful events".into(),
-                    title: None,
-                    description: Some(
-                        "Open stateful events in the authenticated context".to_string(),
-                    ),
-                    mime_type: Some("application/json".into()),
-                    icons: None,
-                }
-                .no_annotation(),
-            ],
-            next_cursor: None,
-            meta: None,
-        }))
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(vec![
+            ResourceTemplate::new("acteon://audit", "Audit trail")
+                .with_description("Recent audit records in the authenticated context")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("acteon://rules", "Active rules")
+                .with_description("The active rule set in the authenticated context")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("acteon://events", "Stateful events")
+                .with_description("Open stateful events in the authenticated context")
+                .with_mime_type("application/json"),
+        ])))
     }
 }
