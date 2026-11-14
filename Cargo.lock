@@ -17,7 +17,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "utoipa 5.4.0",
+ "utoipa 6.0.0",
  "uuid",
 ]
 
@@ -219,7 +219,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "utoipa 5.4.0",
+ "utoipa 6.0.0",
  "uuid",
 ]
 
@@ -604,7 +604,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tokio",
- "utoipa 5.4.0",
+ "utoipa 6.0.0",
 ]
 
 [[package]]
@@ -694,7 +694,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
- "utoipa 5.4.0",
+ "utoipa 6.0.0",
  "utoipa-axum",
  "utoipa-swagger-ui",
  "uuid",
@@ -896,7 +896,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "utoipa 5.4.0",
+ "utoipa 6.0.0",
  "uuid",
 ]
 
@@ -8202,14 +8202,14 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "utoipa"
-version = "5.4.0"
+version = "5.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fcc29c80c21c31608227e0912b2d7fddba57ad76b606890627ba8ee7964e993"
+checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
 dependencies = [
  "indexmap 2.13.0",
  "serde",
  "serde_json",
- "utoipa-gen 5.4.0",
+ "utoipa-gen 5.5.0",
 ]
 
 [[package]]
@@ -8234,14 +8234,14 @@ dependencies = [
  "paste",
  "tower-layer",
  "tower-service",
- "utoipa 5.4.0",
+ "utoipa 5.5.0",
 ]
 
 [[package]]
 name = "utoipa-gen"
-version = "5.4.0"
+version = "5.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d79d08d92ab8af4c5e8a6da20c47ae3f61a0f1dabc1997cdf2d082b757ca08b"
+checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
 dependencies = [
  "proc-macro2",
  "quote",
