@@ -261,7 +261,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 # OpenAPI / Swagger
-utoipa = { version = "5", features = ["chrono"] }
+utoipa = { version = "6", features = ["chrono"] }
 utoipa-swagger-ui = { version = "10.0.2", features = ["axum"] }
 utoipa-axum = "0.2"
 
