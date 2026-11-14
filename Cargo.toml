@@ -316,7 +316,7 @@ wasmtime = { version = "36.0.20", default-features = false, features = ["runtime
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 # Testing
-axum-test = "16"
+axum-test = "19"
 proptest = "1"
 
 # ---------------------------------------------------------------------------
